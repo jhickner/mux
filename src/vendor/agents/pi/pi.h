@@ -644,6 +644,7 @@ Backend *pi_backend_open(const backend_opts *opts) {
     b->set_abort_check = pi_backend_set_abort;
     b->session_id = pi_backend_session_id;
     b->model = backend_none;
+    b->effort = backend_stored_effort;
     b->auth_source = backend_none;
     b->last_error = backend_none;
     return b;

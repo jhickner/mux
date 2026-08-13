@@ -92,6 +92,8 @@ void codex_set_event_cb(codex_client *c,
 void codex_set_abort_check(codex_client *c, int (*cb)(void));
 /* Override subsequent turns' reasoning effort. NULL clears the override. */
 int codex_set_effort(codex_client *c, const char *effort);
+/* Override if one was set, else the config/stream default, or NULL. */
+const char *codex_effort(codex_client *c);
 /* Latest context occupancy reported by thread/tokenUsage/updated. */
 void codex_usage(codex_client *c, long *context_tokens, long *context_window);
 /* Latest primary subscription window from the account rate-limit methods. */
@@ -129,6 +131,7 @@ struct codex_client {
     char *model, *effort, *sandbox, *sys, *resume;
     int effort_changed;
     char session_id[128];
+    char resolved[32];         /* config or stream effort when none was set */
     long context_tokens, context_window;
     codex_rate_limit rate_limit;
     char *buf;
@@ -139,6 +142,68 @@ struct codex_client {
 };
 
 static char *cx_dup(const char *s) { return (s && *s) ? strdup(s) : NULL; }
+
+/* Top-level model_reasoning_effort only: table keys belong to a profile. */
+static void cx_read_effort_file(codex_client *c, const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[256];
+    int in_table = 0;
+    while (fgets(line, sizeof line, f)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '\0' || *p == '\n') continue;
+        if (*p == '[') { in_table = 1; continue; }
+        if (in_table) continue;
+        if (strncmp(p, "model_reasoning_effort", 22) != 0) continue;
+        p += 22;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p != '=') continue;
+        p++;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p != '"' && *p != '\'') continue;
+        char q = *p++;
+        char *end = strchr(p, q);
+        if (!end || end - p <= 0 || end - p >= (long)sizeof c->resolved)
+            continue;
+        memcpy(c->resolved, p, (size_t)(end - p));
+        c->resolved[end - p] = '\0';
+        break;
+    }
+    fclose(f);
+}
+
+static void cx_seed_effort(codex_client *c, const char *cwd) {
+    if (c->effort && *c->effort) {
+        snprintf(c->resolved, sizeof c->resolved, "%s", c->effort);
+        return;
+    }
+    const char *home = getenv("HOME");
+    char path[512];
+    if (home && *home) {
+        snprintf(path, sizeof path, "%s/.codex/config.toml", home);
+        cx_read_effort_file(c, path);
+    }
+    if (cwd && *cwd) {
+        snprintf(path, sizeof path, "%s/.codex/config.toml", cwd);
+        cx_read_effort_file(c, path);
+    }
+}
+
+static void cx_note_effort(codex_client *c, cJSON *obj) {
+    if (!cJSON_IsObject(obj)) return;
+    const char *e = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(obj, "effort"));
+    if (!e || !*e) {
+        cJSON *mode = cJSON_GetObjectItemCaseSensitive(obj, "collaboration_mode");
+        cJSON *settings = cJSON_IsObject(mode) ?
+            cJSON_GetObjectItemCaseSensitive(mode, "settings") : NULL;
+        e = settings ? cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(settings, "reasoning_effort")) : NULL;
+    }
+    if (e && *e)
+        snprintf(c->resolved, sizeof c->resolved, "%s", e);
+}
 
 static void cx_emit(codex_client *c, const codex_event *ev) {
     static const char *const kinds[] = {
@@ -269,6 +334,10 @@ static int cx_handle_notification(codex_client *c, cJSON *msg) {
     const char *method = cJSON_GetStringValue(
         cJSON_GetObjectItemCaseSensitive(msg, "method"));
     cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
+    if (params) {
+        cx_note_effort(c, params);
+        cx_note_effort(c, cJSON_GetObjectItemCaseSensitive(params, "turn"));
+    }
     if (method && !strcmp(method, "thread/tokenUsage/updated")) {
         cx_note_usage(c, params);
         return 1;
@@ -346,6 +415,7 @@ static int cx_open_thread(codex_client *c, const char *resume) {
     const char *sid = thread ? cJSON_GetStringValue(
         cJSON_GetObjectItemCaseSensitive(thread, "id")) : NULL;
     if (sid) snprintf(c->session_id, sizeof c->session_id, "%s", sid);
+    cx_note_effort(c, thread);
     cJSON_Delete(r); return sid != NULL;
 }
 
@@ -380,6 +450,7 @@ codex_client *codex_start(const codex_opts *opts) {
     c->in_fd = c->out_fd = -1; c->next_id = 1;
     c->model = cx_dup(o.model); c->effort = cx_dup(o.effort);
     c->sys = cx_dup(o.append_system);
+    cx_seed_effort(c, o.cwd);
     c->resume = cx_dup(o.resume_session);
     c->sandbox = strdup(o.bypass_approvals ? "danger-full-access" :
                         (o.sandbox && *o.sandbox ? o.sandbox : "workspace-write"));
@@ -424,11 +495,22 @@ codex_client *codex_start(const codex_opts *opts) {
 
 void codex_set_verbose(codex_client *c, int on) { if (c) c->verbose = on; }
 void codex_set_abort_check(codex_client *c, int (*cb)(void)) { if (c) c->abort = cb; }
+const char *codex_effort(codex_client *c) {
+    if (!c) return NULL;
+    if (c->effort && *c->effort) return c->effort;
+    return c->resolved[0] ? c->resolved : NULL;
+}
+
 int codex_set_effort(codex_client *c, const char *effort) {
     if (!c) return 0;
     free(c->effort);
     c->effort = cx_dup(effort);
     c->effort_changed = 1;
+    c->resolved[0] = '\0';
+    if (c->effort && *c->effort)
+        snprintf(c->resolved, sizeof c->resolved, "%s", c->effort);
+    else
+        cx_seed_effort(c, NULL);
     return 1;
 }
 void codex_usage(codex_client *c, long *tokens, long *window) {
@@ -825,6 +907,7 @@ char *codex_send_ex(codex_client *c, const char *user_text, codex_result *meta) 
         cJSON_GetObjectItemCaseSensitive(turn, "id")) : NULL;
     char turn_id[128] = "";
     if (tid) snprintf(turn_id, sizeof turn_id, "%s", tid);
+    cx_note_effort(c, turn);
     cJSON_Delete(response);
     if (!turn_id[0]) return NULL;
     c->effort_changed = 0;

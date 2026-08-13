@@ -14,14 +14,11 @@ static const char *const FRAMES[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "
  * often the caller happens to tick. */
 #define FRAME_MS 90
 
-/* What the turn is doing, in one word. Naming the tool and its argument here
- * put whole shell pipelines on the row; the row is a heartbeat, not a log. */
-#define SPIN_WORD " · working"
-
 static double  started;
 static int     visible;
 static int     frame;
 static double  frame_at;
+static char    word[64] = "working"; /* what the turn is doing */
 static char    note[128]; /* the conversation's name, when it has one */
 
 static status_paint_fn  below;
@@ -48,6 +45,16 @@ static double now_seconds(void)
 double status_elapsed(void) { return now_seconds() - started; }
 
 void status_touch(void) { dirty = 1; }
+
+void status_set_word(const char *text)
+{
+    char next[sizeof word];
+    snprintf(next, sizeof next, "%s", text && *text ? text : "working");
+    if (strcmp(next, word) == 0)
+        return;
+    memcpy(word, next, sizeof word);
+    dirty = 1;
+}
 
 void status_set_note(const char *text)
 {
@@ -162,11 +169,13 @@ static void paint(void)
     /* Keep a column clear at the margin: a row filled to the edge leaves the
      * terminal holding a deferred wrap, which resolves into a second row that
      * the next resize then rewraps. */
-    int word = (int)ui_cells(SPIN_WORD);
-    if (spin_width + word <= ui_columns() - 1) {
+    char spin_word[80];
+    snprintf(spin_word, sizeof spin_word, " · %s", word[0] ? word : "working");
+    int word_width = (int)ui_cells(spin_word);
+    if (spin_width + word_width <= ui_columns() - 1) {
         ui_esc(ui_style(UI_DIM));
-        ui_put(SPIN_WORD);
-        spin_width += word;
+        ui_put(spin_word);
+        spin_width += word_width;
     }
     /* The name is the least important thing on the row: it goes last, and only
      * when the row has room for all of it. */

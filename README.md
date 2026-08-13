@@ -43,7 +43,8 @@ block in the history above.
 - Authenticates with the claude.ai subscription (`ANTHROPIC_API_KEY` is unset in
   the child); `/session` reports which credential is in use
 - Live rendering: assistant text, tool calls, and tool results appear as they
-  stream, with a spinner and elapsed time. Reasoning shows as highlighted ✻ rows
+  stream, with a spinner, elapsed time, and the current thinking effort
+  ("thinking with medium effort"). Reasoning shows as highlighted ✻ rows
   with the same blank-line spacing as tool calls, which `/thinking` hides for good
 - A call that only reads — a file read, or a shell command built entirely of
   read-only parts, including the reporting halves of `git` — collapses to one

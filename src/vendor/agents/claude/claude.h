@@ -89,6 +89,11 @@ int claude_set_effort(claude_client *c, const char *effort);
  * NULL until the first turn has been sent. */
 const char *claude_model(claude_client *c);
 
+/* The effort level in force: `--effort` if one was passed, else the
+ * settings.json default, else whatever a later stream event reported.
+ * NULL until one of those is known. */
+const char *claude_effort(claude_client *c);
+
 /* How the CLI authenticated, as it reports it: "none" means the claude.ai
  * login (what use_subscription asks for), otherwise the env var it used, e.g.
  * "ANTHROPIC_API_KEY". NULL until the first turn has been sent. */
@@ -189,6 +194,7 @@ struct claude_client {
     void *on_event_ud;
     char  session_id[128];
     char  model[128];
+    char  effort[32];
     char  auth[64];
     claude_result *meta;      /* filled from the in-flight turn's result event */
     char *buf;                /* line-assembly buffer for out_fd       */
@@ -211,6 +217,65 @@ void claude_set_event_cb(claude_client *c,
 
 const char *claude_model(claude_client *c) {
     return (c && c->model[0]) ? c->model : NULL;
+}
+
+const char *claude_effort(claude_client *c) {
+    return (c && c->effort[0]) ? c->effort : NULL;
+}
+
+/* `--effort` wins; otherwise take effortLevel from the user's settings, then
+ * a project overlay. Stream events may replace this with the resolved level. */
+static void cl_read_effort_file(claude_client *c, const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return; }
+    long n = ftell(f);
+    if (n <= 0 || n > 1 << 20) { fclose(f); return; }
+    rewind(f);
+    char *buf = malloc((size_t)n + 1);
+    if (!buf) { fclose(f); return; }
+    size_t got = fread(buf, 1, (size_t)n, f);
+    fclose(f);
+    buf[got] = '\0';
+    cJSON *j = cJSON_Parse(buf);
+    free(buf);
+    if (!j) return;
+    const char *level = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(j, "effortLevel"));
+    if (level && *level)
+        snprintf(c->effort, sizeof c->effort, "%s", level);
+    cJSON_Delete(j);
+}
+
+static void cl_seed_effort(claude_client *c, const claude_opts *o) {
+    if (o->effort && *o->effort) {
+        snprintf(c->effort, sizeof c->effort, "%s", o->effort);
+        return;
+    }
+    if (!o->allow_customizations) return;
+    const char *home = getenv("HOME");
+    char path[512];
+    if (home && *home) {
+        snprintf(path, sizeof path, "%s/.claude/settings.json", home);
+        cl_read_effort_file(c, path);
+    }
+    if (o->cwd && *o->cwd) {
+        snprintf(path, sizeof path, "%s/.claude/settings.json", o->cwd);
+        cl_read_effort_file(c, path);
+    }
+}
+
+static void cl_note_effort(claude_client *c, cJSON *ev) {
+    cJSON *e = cJSON_GetObjectItemCaseSensitive(ev, "effort");
+    if (cJSON_IsString(e) && e->valuestring && e->valuestring[0]) {
+        snprintf(c->effort, sizeof c->effort, "%s", e->valuestring);
+        return;
+    }
+    if (!cJSON_IsObject(e)) return;
+    const char *level = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(e, "level"));
+    if (level && *level)
+        snprintf(c->effort, sizeof c->effort, "%s", level);
 }
 
 /* Read whatever the child has written to stderr, keeping only the tail. Never
@@ -336,6 +401,7 @@ claude_client *claude_start(const claude_opts *opts) {
     c->in_fd = in_pipe[1];
     c->out_fd = out_pipe[0];
     c->err_fd = err_pipe[0];
+    cl_seed_effort(c, &o);
     /* Never block the parent on the child's diagnostics. */
     fcntl(c->err_fd, F_SETFL, O_NONBLOCK);
     atomic_init(&c->warm_state, 0);
@@ -513,6 +579,7 @@ static int cl_handle_line(claude_client *c, const char *line, char **out) {
     cJSON *ev = cJSON_Parse(line);
     if (!ev) return 0;                     /* non-JSON noise (shouldn't hit stdout) */
     cl_note_session(c, ev);
+    cl_note_effort(c, ev);
     cJSON *type = cJSON_GetObjectItemCaseSensitive(ev, "type");
     const char *ts = (type && cJSON_IsString(type)) ? type->valuestring : "";
     if (strcmp(ts, "system") == 0) {
@@ -617,6 +684,7 @@ static void *cl_warm(void *arg) {
         cJSON *ev = NULL;
         if (!cl_warm_read(c, &ev)) { ok = 0; break; }
         cl_note_session(c, ev);
+        cl_note_effort(c, ev);
         const char *type = cJSON_GetStringValue(
             cJSON_GetObjectItemCaseSensitive(ev, "type"));
         cJSON *response = cJSON_GetObjectItemCaseSensitive(ev, "response");
@@ -755,6 +823,8 @@ int claude_set_effort(claude_client *c, const char *effort) {
     free(command);
     int ok = result && strncmp(result, "Invalid argument:", 17) != 0;
     free(result);
+    if (ok)
+        snprintf(c->effort, sizeof c->effort, "%s", level);
     return ok;
 }
 

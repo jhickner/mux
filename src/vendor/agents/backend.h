@@ -138,6 +138,7 @@ struct Backend {
     /* NULL until known, or when the driver never reports it. */
     const char *(*session_id)(Backend *b);
     const char *(*model)(Backend *b);       /* the model the CLI resolved       */
+    const char *(*effort)(Backend *b);      /* resolved effort, or NULL         */
     const char *(*auth_source)(Backend *b); /* "none" -> a subscription login   */
     const char *(*last_error)(Backend *b);  /* the tail of the child's stderr   */
 
@@ -259,6 +260,9 @@ static void backend_set_model_generic(Backend *b, const char *model) {
 static int backend_set_effort_generic(Backend *b, const char *effort) {
     backend_set(&((backend_state *)b->ctx)->effort, effort);
     return 1;
+}
+static const char *backend_stored_effort(Backend *b) {
+    return ((backend_state *)b->ctx)->effort;
 }
 static void backend_set_permission_generic(Backend *b, const char *mode) {
     backend_set(&((backend_state *)b->ctx)->permission, mode);
@@ -396,6 +400,14 @@ static const char *backend_claude_model(Backend *b) {
     backend_claude *x = b->ctx;
     return x->client ? claude_model(x->client) : NULL;
 }
+static const char *backend_claude_effort(Backend *b) {
+    backend_claude *x = b->ctx;
+    if (x->client) {
+        const char *e = claude_effort(x->client);
+        if (e) return e;
+    }
+    return x->st.effort;
+}
 static const char *backend_claude_auth(Backend *b) {
     backend_claude *x = b->ctx;
     return x->client ? claude_auth_source(x->client) : NULL;
@@ -432,6 +444,7 @@ static Backend *backend_claude_open(const backend_opts *o) {
     b->set_abort_check = backend_claude_set_abort;
     b->session_id = backend_claude_session_id;
     b->model = backend_claude_model;
+    b->effort = backend_claude_effort;
     b->auth_source = backend_claude_auth;
     b->last_error = backend_claude_error;
     return b;
@@ -558,6 +571,15 @@ static const char *backend_codex_session_id(Backend *b) {
     return x->client ? codex_session_id(x->client) : NULL;
 }
 
+static const char *backend_codex_effort(Backend *b) {
+    backend_codex *x = b->ctx;
+    if (x->client) {
+        const char *e = codex_effort(x->client);
+        if (e) return e;
+    }
+    return x->st.effort;
+}
+
 static void backend_codex_close(Backend *b) {
     backend_codex *x = b->ctx;
     if (x->client) codex_stop(x->client);
@@ -586,6 +608,7 @@ static Backend *backend_codex_open(const backend_opts *o) {
     b->set_abort_check = backend_codex_set_abort;
     b->session_id = backend_codex_session_id;
     b->model = backend_none;
+    b->effort = backend_codex_effort;
     b->auth_source = backend_none;
     b->last_error = backend_none;
     return b;
@@ -685,6 +708,14 @@ static const char *backend_grok_session_id(Backend *b) {
     return x->client ? grok_session_id(x->client) : NULL;
 }
 
+static const char *backend_grok_effort(Backend *b) {
+    backend_grok *x = b->ctx;
+    if (x->st.effort && *x->st.effort)
+        return x->st.effort;
+    const char *env = getenv("GROK_EFFORT");
+    return (env && *env) ? env : NULL;
+}
+
 static void backend_grok_close(Backend *b) {
     backend_grok *x = b->ctx;
     if (x->client) grok_stop(x->client);
@@ -711,6 +742,7 @@ static Backend *backend_grok_open(const backend_opts *o) {
     b->set_abort_check = backend_grok_set_abort;
     b->session_id = backend_grok_session_id;
     b->model = backend_none;
+    b->effort = backend_grok_effort;
     b->auth_source = backend_none;
     b->last_error = backend_none;
     return b;
