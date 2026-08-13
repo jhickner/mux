@@ -29,7 +29,7 @@ typedef struct {
     const char *model;          /* driver/CLI model identifier; NULL -> its default   */
     const char *system;         /* applied to every turn; NULL -> none                */
     const char *cwd;            /* where the agent runs its tools; NULL -> inherit    */
-    const char *resume_session; /* continue a prior session (claude, codex)           */
+    const char *resume_session; /* continue a prior session (claude, codex, grok)     */
     const char *permission_mode;/* claude: --permission-mode; NULL -> bypassPermissions*/
     int allow_customizations;   /* claude: load skills, CLAUDE.md, MCP servers, ...   */
 } backend_opts;
@@ -530,42 +530,66 @@ static Backend *backend_codex_open(const backend_opts *o) {
 
 typedef struct { backend_state st; grok_client *client; } backend_grok;
 
-/* ACP reports assistant and reasoning text only, both chunked, and no tools. */
-static void backend_grok_event(void *ud, const char *kind, const char *text) {
+static void backend_grok_event(void *ud, const grok_event *e) {
     backend_grok *x = ((Backend *)ud)->ctx;
-    backend_emit_str(&x->st, kind, text, NULL,
-                     BACKEND_DELTA_ASSISTANT | BACKEND_DELTA_THINKING);
+    switch (e->kind) {
+    case GROK_EV_ASSISTANT:
+        backend_delta(&x->st, BACKEND_EV_ASSISTANT, e->text);
+        return;
+    case GROK_EV_THINKING:
+        backend_delta(&x->st, BACKEND_EV_THINKING, e->text);
+        return;
+    case GROK_EV_TOOL: {
+        backend_event ev = {
+            .kind = BACKEND_EV_TOOL,
+            .name = e->name,
+            .input_json = e->input_json,
+            .arg = e->text,
+        };
+        backend_flush(&x->st);
+        backend_emit(&x->st, &ev);
+        return;
+    }
+    case GROK_EV_TOOL_RESULT: {
+        backend_event ev = { .kind = BACKEND_EV_TOOL_RESULT, .text = e->text };
+        backend_flush(&x->st);
+        backend_emit(&x->st, &ev);
+        return;
+    }
+    }
 }
 
-/* Grok's ACP session cannot be resumed, so `resume` is ignored. */
 static int backend_grok_start(Backend *b, const char *resume) {
     backend_grok *x = b->ctx;
-    (void)resume;
     grok_opts o = {0};
     o.cwd = x->st.cwd;
     o.model = x->st.model;
     o.append_system = x->st.system;
     o.reasoning_effort = getenv("GROK_EFFORT");
+    o.resume_session = resume;
     grok_client *c = grok_start(&o);
     if (!c) return 0;
     grok_set_event_cb(c, backend_grok_event, b);
     grok_set_abort_check(c, x->st.abort);
     if (x->client) grok_stop(x->client);
     x->client = c;
+    backend_set(&x->st.resume, resume);
     return 1;
 }
 
-static char *backend_grok_ask(Backend *b, const char *user) {
+static char *backend_grok_ask_ex(Backend *b, const char *user, backend_result *meta) {
     backend_grok *x = b->ctx;
-    if (!x->client && !backend_grok_start(b, NULL)) return NULL;
-    char *reply = grok_send(x->client, user);
+    if (meta) memset(meta, 0, sizeof *meta);
+    if (!x->client && !backend_grok_start(b, x->st.resume)) return NULL;
+    grok_result gr = {0};
+    char *reply = grok_send_ex(x->client, user, &gr);
     backend_flush(&x->st);
+    if (meta) meta->interrupted = gr.interrupted;
     return reply;
 }
 
-static char *backend_grok_ask_ex(Backend *b, const char *user, backend_result *meta) {
-    if (meta) memset(meta, 0, sizeof *meta);
-    return backend_grok_ask(b, user);
+static char *backend_grok_ask(Backend *b, const char *user) {
+    return backend_grok_ask_ex(b, user, NULL);
 }
 
 /* There is no clear command, so a fresh context means a fresh process. */
@@ -603,6 +627,7 @@ static Backend *backend_grok_open(const backend_opts *o) {
     if (!x || !b) { free(x); free(b); return NULL; }
     backend_state_init(&x->st, o);
     b->ctx = x;
+    b->caps = BACKEND_CAP_RESUME;
     b->ask = backend_grok_ask;
     b->reset = backend_grok_reset;
     b->close = backend_grok_close;

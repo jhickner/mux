@@ -103,15 +103,17 @@ invoked (`/todo buy milk`, `/w what do I know about X`).
 | | claude | codex | grok | pi |
 |---|---|---|---|---|
 | Streamed text and reasoning | ✓ | ✓ | ✓ | ✓ |
-| Tool calls and their output | ✓ | shell commands | — | tool names |
+| Tool calls and their output | ✓ | shell commands | ✓ | tool names |
 | Tokens, context window, cost | ✓ | — | — | — |
-| Resume a past conversation | ✓ | ✓ | — | — |
+| Resume a past conversation | ✓ | ✓ | ✓ | — |
 | `/new` without restarting | ✓ | ✓ | restarts | ✓ |
 | `/model` picker | ✓ | pass a name | pass a name | pass a name |
 
-`/resume` and `-r` list Claude Code's own transcripts, so they are Claude-only.
-Forking needs a session id and is available wherever resume is. Pi has no
-default model configured by itself — pass one with `-m`.
+`/resume` and `-r` list this directory's transcripts: Claude Code's under
+`~/.claude/projects`, Grok's under `~/.grok/sessions`. `--session` and the
+command printed on quit work wherever resume is. Forking needs a session id and
+is available wherever resume is. Pi has no default model configured by itself
+— pass one with `-m`.
 
 ## Keys
 
@@ -151,8 +153,10 @@ simple-agent [-b backend] [-m model] [-C dir] [-s] [-r] [prompt...]
 - `~/.config/simple-agent/history` — prompt history
 - `~/.config/simple-agent/settings` — `key=value` per line; `/thinking`,
   `/tools` and `/permission` write here
-- `~/.claude/projects/<encoded cwd>/*.jsonl` — Claude Code's own transcripts,
-  read by `/resume`
+- `~/.claude/projects/<encoded cwd>/*.jsonl` — Claude Code's transcripts,
+  read by `/resume` on `-b claude`
+- `~/.grok/sessions/<encoded cwd>/<id>/` — Grok's sessions, read by `/resume`
+  on `-b grok`
 
 ## Build
 

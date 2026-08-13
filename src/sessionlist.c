@@ -134,9 +134,19 @@ static int by_recency(const void *a, const void *b)
     return x->modified < y->modified ? 1 : -1;
 }
 
-int sessionlist_load(const char *cwd, const char *skip_id, struct past_session **out)
+static int finish_list(struct past_session *list, int count, struct past_session **out)
 {
-    *out = NULL;
+    if (count == 0) {
+        free(list);
+        return 0;
+    }
+    qsort(list, (size_t)count, sizeof *list, by_recency);
+    *out = list;
+    return count;
+}
+
+static int load_claude(const char *cwd, const char *skip_id, struct past_session **out)
+{
     const char *home = getenv("HOME");
     if (!home || !cwd)
         return 0;
@@ -189,12 +199,188 @@ int sessionlist_load(const char *cwd, const char *skip_id, struct past_session *
         count++;
     }
     closedir(d);
+    return finish_list(list, count, out);
+}
 
-    if (count == 0) {
-        free(list);
+/* Grok URL-encodes the cwd; when that name would exceed 255 bytes it uses a
+ * slug and writes the original path in a .cwd file inside the group. */
+static void encode_cwd_grok(const char *cwd, char *out, size_t size)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t o = 0;
+    for (const unsigned char *p = (const unsigned char *)cwd; *p && o + 1 < size; p++) {
+        unsigned char c = *p;
+        int keep = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                   (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+        if (keep) {
+            out[o++] = (char)c;
+        } else if (o + 3 < size) {
+            out[o++] = '%';
+            out[o++] = hex[c >> 4];
+            out[o++] = hex[c & 15];
+        } else {
+            break;
+        }
+    }
+    out[o] = '\0';
+}
+
+static int grok_home(char *out, size_t size)
+{
+    const char *env = getenv("GROK_HOME");
+    if (env && *env) {
+        snprintf(out, size, "%s", env);
+        return 1;
+    }
+    const char *home = getenv("HOME");
+    if (!home)
+        return 0;
+    snprintf(out, size, "%s/.grok", home);
+    return 1;
+}
+
+static int grok_group_dir(const char *cwd, char *out, size_t size)
+{
+    char home[1024], encoded[2048];
+    if (!grok_home(home, sizeof home) || !cwd)
+        return 0;
+    encode_cwd_grok(cwd, encoded, sizeof encoded);
+
+    snprintf(out, size, "%s/sessions/%s", home, encoded);
+    struct stat st;
+    if (stat(out, &st) == 0 && S_ISDIR(st.st_mode))
+        return 1;
+
+    char sessions[1200];
+    snprintf(sessions, sizeof sessions, "%s/sessions", home);
+    DIR *d = opendir(sessions);
+    if (!d)
+        return 0;
+    int found = 0;
+    struct dirent *entry;
+    while ((entry = readdir(d))) {
+        if (entry->d_name[0] == '.')
+            continue;
+        char marker[3200];
+        snprintf(marker, sizeof marker, "%s/%s/.cwd", sessions, entry->d_name);
+        FILE *f = fopen(marker, "r");
+        if (!f)
+            continue;
+        char line[4096];
+        int match = 0;
+        if (fgets(line, sizeof line, f)) {
+            line[strcspn(line, "\n")] = '\0';
+            match = strcmp(line, cwd) == 0;
+        }
+        fclose(f);
+        if (match) {
+            snprintf(out, size, "%s/%s", sessions, entry->d_name);
+            found = 1;
+            break;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+static int grok_label(const char *dir, char *out, size_t size)
+{
+    char path[3072];
+    snprintf(path, sizeof path, "%s/summary.json", dir);
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return 0;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
         return 0;
     }
-    qsort(list, (size_t)count, sizeof *list, by_recency);
-    *out = list;
-    return count;
+    long n = ftell(f);
+    if (n <= 0 || n > 1 << 20) {
+        fclose(f);
+        return 0;
+    }
+    rewind(f);
+    char *buf = malloc((size_t)n + 1);
+    if (!buf) {
+        fclose(f);
+        return 0;
+    }
+    size_t got = fread(buf, 1, (size_t)n, f);
+    fclose(f);
+    buf[got] = '\0';
+
+    int ok = 0;
+    cJSON *root = cJSON_ParseWithLength(buf, got);
+    free(buf);
+    if (!root)
+        return 0;
+    const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(root, "generated_title"));
+    if (!title || !*title)
+        title = cJSON_GetStringValue(cJSON_GetObjectItem(root, "session_summary"));
+    if (title && *title) {
+        flatten(title, out, size);
+        ok = out[0] != '\0';
+    }
+    cJSON_Delete(root);
+    return ok;
+}
+
+static int load_grok(const char *cwd, const char *skip_id, struct past_session **out)
+{
+    char dir[2048];
+    if (!grok_group_dir(cwd, dir, sizeof dir))
+        return 0;
+    DIR *d = opendir(dir);
+    if (!d)
+        return 0;
+
+    struct past_session *list = calloc(MAX_SESSIONS, sizeof *list);
+    if (!list) {
+        closedir(d);
+        return 0;
+    }
+
+    int count = 0;
+    struct dirent *entry;
+    while (count < MAX_SESSIONS && (entry = readdir(d))) {
+        if (entry->d_name[0] == '.')
+            continue;
+        if (strlen(entry->d_name) >= sizeof list[0].id)
+            continue;
+        if (skip_id && strcmp(entry->d_name, skip_id) == 0)
+            continue;
+
+        char path[3072];
+        snprintf(path, sizeof path, "%s/%s", dir, entry->d_name);
+        struct stat st;
+        if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode))
+            continue;
+
+        struct past_session *s = &list[count];
+        if (!title_lookup(entry->d_name, s->label, sizeof s->label) &&
+            !grok_label(path, s->label, sizeof s->label))
+            continue;
+        snprintf(s->id, sizeof s->id, "%s", entry->d_name);
+        s->modified = st.st_mtime;
+        relative_time(s->modified, s->when, sizeof s->when);
+        count++;
+    }
+    closedir(d);
+    return finish_list(list, count, out);
+}
+
+int sessionlist_available(const char *backend)
+{
+    return backend && (!strcmp(backend, "claude") || !strcmp(backend, "grok"));
+}
+
+int sessionlist_load(const char *backend, const char *cwd, const char *skip_id,
+                     struct past_session **out)
+{
+    *out = NULL;
+    if (!backend || !strcmp(backend, "claude"))
+        return load_claude(cwd, skip_id, out);
+    if (!strcmp(backend, "grok"))
+        return load_grok(cwd, skip_id, out);
+    return 0;
 }

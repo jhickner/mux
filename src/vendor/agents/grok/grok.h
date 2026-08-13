@@ -3,8 +3,10 @@
  *
  * Spawns `grok agent stdio` as a persistent subprocess and speaks its ACP
  * (Agent Client Protocol, JSON-RPC 2.0 over stdio): initialize -> session/new
- * -> session/prompt, accumulating the streamed agent_message_chunk text into
- * the final reply. One process stays alive and retains context across turns.
+ * (or session/resume) -> session/prompt, accumulating the streamed
+ * agent_message_chunk text into the final reply. Tool calls arrive as session/update tool_call /
+ * tool_call_update notifications. One process stays alive and retains context
+ * across turns.
  *
  *     #define GROK_IMPLEMENTATION      // in exactly one .c file
  *     #include "grok.h"
@@ -33,6 +35,7 @@ typedef struct {
     const char *model;           /* -m value (e.g. "grok-4.5"); NULL -> default */
     const char *reasoning_effort;/* --reasoning-effort low|medium|high; NULL    */
     const char *append_system;   /* prepended to each user turn; NULL -> none   */
+    const char *resume_session;  /* ACP session/resume this id; NULL -> new     */
 } grok_opts;
 
 /* Spawn a persistent `grok agent stdio` process. Returns NULL only on a local
@@ -44,8 +47,17 @@ grok_client *grok_start(const grok_opts *opts);
 /* Send one user turn (plain text) and return the final assistant text (malloc'd,
  * caller frees), or NULL on failure / process death. Blocks until the turn's
  * prompt response, and completes the handshake first when it is still pending.
- * Context is retained across calls by the CLI itself. */
+ * Context is retained across calls by the CLI itself. An interrupted turn
+ * still returns the text received so far (possibly "") rather than NULL. */
 char *grok_send(grok_client *c, const char *user_text);
+
+/* Accounting from a turn. Fields a driver cannot fill stay 0. */
+typedef struct {
+    int interrupted;   /* the abort predicate ended the turn */
+} grok_result;
+
+/* As grok_send, but also fills *meta (zeroed first). `meta` may be NULL. */
+char *grok_send_ex(grok_client *c, const char *user_text, grok_result *meta);
 
 /* The ACP session id, or NULL until the first turn has established one. */
 const char *grok_session_id(grok_client *c);
@@ -53,14 +65,36 @@ const char *grok_session_id(grok_client *c);
 /* When on, grok_send echoes a readable trace of the stream to stderr. */
 void grok_set_verbose(grok_client *c, int on);
 
-/* Per-event callback: `kind` is "assistant" | "thinking" | "tool"; `text` its
- * content. Runs on the grok_send thread. Pass NULL to clear. */
+/* One interesting event from the stream, handed to the event callback. */
+typedef enum {
+    GROK_EV_ASSISTANT,   /* text: an assistant text chunk                      */
+    GROK_EV_THINKING,    /* text: a reasoning chunk                            */
+    GROK_EV_TOOL,        /* name + input_json: a tool the model invoked        */
+    GROK_EV_TOOL_RESULT, /* text: the tool's output                            */
+} grok_event_kind;
+
+typedef struct {
+    grok_event_kind kind;
+    const char *text;       /* NULL unless the kind documents it */
+    const char *name;       /* tool name, for TOOL               */
+    const char *input_json; /* tool input as compact JSON, TOOL  */
+} grok_event;
+
+/* Per-event callback. Runs on the grok_send thread; the event and its strings
+ * are borrowed for the call. Pass NULL to clear. */
 void grok_set_event_cb(grok_client *c,
-                       void (*cb)(void *ud, const char *kind, const char *text),
+                       void (*cb)(void *ud, const grok_event *ev),
                        void *ud);
 
-/* Abort predicate; while it returns nonzero an in-flight grok_send stops
- * waiting and returns NULL. */
+/* Ask the agent to abandon the in-flight turn (ACP session/cancel). The turn
+ * still ends with a prompt response, so the stream stays usable for the next
+ * send. Returns nonzero on success. */
+int grok_interrupt(grok_client *c);
+
+/* Abort predicate; while it returns nonzero an in-flight grok_send cancels
+ * the turn (via session/cancel) and returns the text so far. The predicate is
+ * still polled during the handshake so it can tick a UI, but cancel waits
+ * until a session exists. */
 void grok_set_abort_check(grok_client *c, int (*cb)(void));
 
 /* Terminate and reap the process, free the client. */
@@ -84,27 +118,37 @@ void grok_stop(grok_client *c);
 #include <sys/wait.h>
 #include "cJSON.h"
 
+#define GK_TOOL_CAP 64
+#define GK_TOOL_ID  80
+
 struct grok_client {
     pid_t pid;
     int   in_fd;
     int   out_fd;
     int  (*abort)(void);
     int   verbose;
-    void (*on_event)(void *ud, const char *kind, const char *text);
+    void (*on_event)(void *ud, const grok_event *ev);
     void *on_event_ud;
     char  session_id[128];
     char *cwd;                /* session/new working directory copy         */
     char *sys;                /* append_system copy, prepended to each turn */
+    char *resume;             /* session/resume this id; NULL -> session/new */
     int   handshake_failed;   /* the deferred handshake was tried and lost  */
     int   next_id;            /* JSON-RPC request id counter                */
+    int   abort_latched;      /* ESC arrived before a session was live      */
+    int   cancelling;         /* session/cancel has been sent this turn     */
+    grok_result *meta;
     char *buf;                /* line-assembly buffer for out_fd            */
     size_t len, cap;
+    char  tool_id[GK_TOOL_CAP][GK_TOOL_ID];
+    unsigned tool_flags[GK_TOOL_CAP]; /* bit0 announced, bit1 resulted      */
+    int   n_tools;
 };
 
 void grok_set_verbose(grok_client *c, int on) { if (c) c->verbose = on; }
 void grok_set_abort_check(grok_client *c, int (*cb)(void)) { if (c) c->abort = cb; }
 void grok_set_event_cb(grok_client *c,
-                       void (*cb)(void *ud, const char *kind, const char *text),
+                       void (*cb)(void *ud, const grok_event *ev),
                        void *ud) {
     if (c) { c->on_event = cb; c->on_event_ud = ud; }
 }
@@ -112,11 +156,17 @@ const char *grok_session_id(grok_client *c) {
     return (c && c->session_id[0]) ? c->session_id : NULL;
 }
 
-static void gk_sink(grok_client *c, const char *kind, const char *text) {
-    if (!text) return;
-    if (c->verbose)
+static void gk_emit(grok_client *c, const grok_event *ev) {
+    if (c->verbose) {
+        const char *kind =
+            ev->kind == GROK_EV_ASSISTANT   ? "assistant" :
+            ev->kind == GROK_EV_THINKING    ? "thinking"  :
+            ev->kind == GROK_EV_TOOL        ? "tool"      :
+            ev->kind == GROK_EV_TOOL_RESULT ? "tool-result" : "?";
+        const char *text = ev->text ? ev->text : ev->name ? ev->name : "";
         fprintf(stderr, "  [%s] %.400s%s\n", kind, text, strlen(text) > 400 ? " ..." : "");
-    if (c->on_event) c->on_event(c->on_event_ud, kind, text);
+    }
+    if (c->on_event) c->on_event(c->on_event_ud, ev);
 }
 
 /* Write one JSON-RPC object as a newline-delimited line. Frees `obj`. */
@@ -138,9 +188,186 @@ static int gk_write(grok_client *c, cJSON *obj) {
     return ok;
 }
 
-/* Answer an agent->client request so the turn never blocks. We only expect
- * permission requests (our task uses no tools); approve the first allow-ish
- * option, else reply an empty result. */
+int grok_interrupt(grok_client *c) {
+    if (!c || !c->session_id[0]) return 0;
+    cJSON *n = cJSON_CreateObject();
+    cJSON_AddStringToObject(n, "jsonrpc", "2.0");
+    cJSON_AddStringToObject(n, "method", "session/cancel");
+    cJSON *p = cJSON_AddObjectToObject(n, "params");
+    cJSON_AddStringToObject(p, "sessionId", c->session_id);
+    c->cancelling = 1;
+    return gk_write(c, n);
+}
+
+static void gk_reset_tools(grok_client *c) {
+    c->n_tools = 0;
+    memset(c->tool_flags, 0, sizeof c->tool_flags);
+}
+
+static int gk_tool_slot(grok_client *c, const char *id) {
+    if (!id || !*id) return -1;
+    for (int i = 0; i < c->n_tools; i++)
+        if (strcmp(c->tool_id[i], id) == 0) return i;
+    if (c->n_tools >= GK_TOOL_CAP) return -1;
+    int i = c->n_tools++;
+    snprintf(c->tool_id[i], sizeof c->tool_id[i], "%s", id);
+    c->tool_flags[i] = 0;
+    return i;
+}
+
+static void gk_lower_copy(char *dst, size_t n, const char *src) {
+    size_t i = 0;
+    for (; src[i] && i + 1 < n; i++) {
+        char ch = src[i];
+        dst[i] = (ch >= 'A' && ch <= 'Z') ? (char)(ch + 32) : ch;
+    }
+    dst[i] = '\0';
+}
+
+/* Prefer the ACP kind (mapped to the names the rest of the stack already
+ * styles), then Grok's own tool name, then the title. The first tool_call
+ * often has no top-level kind — only `_meta["x.ai/tool"].kind`. */
+static const char *gk_tool_name(cJSON *u, char *scratch, size_t n) {
+    cJSON *meta = cJSON_GetObjectItem(u, "_meta");
+    cJSON *tool = meta ? cJSON_GetObjectItem(meta, "x.ai/tool") : NULL;
+    const char *kind = cJSON_GetStringValue(cJSON_GetObjectItem(u, "kind"));
+    if ((!kind || !*kind) && cJSON_IsObject(tool))
+        kind = cJSON_GetStringValue(cJSON_GetObjectItem(tool, "kind"));
+    if (kind && *kind) {
+        if (!strcmp(kind, "execute")) return "bash";
+        if (!strcmp(kind, "search"))  return "grep";
+        return kind;
+    }
+    if (cJSON_IsString(tool) && tool->valuestring[0]) {
+        gk_lower_copy(scratch, n, tool->valuestring);
+        return scratch;
+    }
+    if (cJSON_IsObject(tool)) {
+        const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(tool, "name"));
+        if (!name) name = cJSON_GetStringValue(cJSON_GetObjectItem(tool, "label"));
+        if (name && *name) {
+            gk_lower_copy(scratch, n, name);
+            for (char *p = scratch; *p; p++)
+                if (*p == ' ') *p = '_';
+            if (!strcmp(scratch, "run_command") || !strcmp(scratch, "run_terminal_command"))
+                return "bash";
+            if (!strcmp(scratch, "list_files") || !strcmp(scratch, "list_dir"))
+                return "ls";
+            return scratch;
+        }
+    }
+    const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(u, "title"));
+    if (title && *title) {
+        gk_lower_copy(scratch, n, title);
+        char *sp = strchr(scratch, ' ');
+        if (sp) *sp = '\0';
+        return scratch[0] ? scratch : "tool";
+    }
+    return "tool";
+}
+
+static void gk_concat(char **dst, const char *src) {
+    if (!src || !*src) return;
+    size_t al = *dst ? strlen(*dst) : 0, tl = strlen(src);
+    char *n = realloc(*dst, al + tl + 1);
+    if (!n) return;
+    memcpy(n + al, src, tl + 1);
+    *dst = n;
+}
+
+static void gk_append(char **dst, const char *src) {
+    if (!src || !*src) return;
+    size_t al = *dst ? strlen(*dst) : 0;
+    if (al && (*dst)[al - 1] != '\n') gk_concat(dst, "\n");
+    gk_concat(dst, src);
+}
+
+/* Flatten a tool_call content[] array into plain text. */
+static char *gk_content_text(cJSON *content) {
+    if (!cJSON_IsArray(content)) return NULL;
+    char *out = NULL;
+    cJSON *item;
+    cJSON_ArrayForEach(item, content) {
+        const char *type = cJSON_GetStringValue(cJSON_GetObjectItem(item, "type"));
+        if (type && !strcmp(type, "content")) {
+            cJSON *inner = cJSON_GetObjectItem(item, "content");
+            const char *txt = inner ? cJSON_GetStringValue(cJSON_GetObjectItem(inner, "text")) : NULL;
+            gk_append(&out, txt);
+        } else if (type && !strcmp(type, "diff")) {
+            const char *path = cJSON_GetStringValue(cJSON_GetObjectItem(item, "path"));
+            if (path) gk_append(&out, path);
+        }
+    }
+    return out;
+}
+
+static char *gk_raw_text(cJSON *raw) {
+    if (!raw) return NULL;
+    if (cJSON_IsString(raw)) return strdup(raw->valuestring ? raw->valuestring : "");
+    const char *keys[] = { "output_for_prompt", "output", "content", "text", "result", NULL };
+    for (int i = 0; keys[i]; i++) {
+        const char *s = cJSON_GetStringValue(cJSON_GetObjectItem(raw, keys[i]));
+        if (s && *s) return strdup(s);
+    }
+    return cJSON_PrintUnformatted(raw);
+}
+
+static char *gk_input_json(cJSON *u) {
+    cJSON *raw = cJSON_GetObjectItem(u, "rawInput");
+    if (raw && (cJSON_IsObject(raw) || cJSON_IsArray(raw) || cJSON_IsString(raw)))
+        return cJSON_PrintUnformatted(raw);
+    cJSON *locs = cJSON_GetObjectItem(u, "locations");
+    if (cJSON_IsArray(locs) && cJSON_GetArraySize(locs) > 0) {
+        const char *path = cJSON_GetStringValue(
+            cJSON_GetObjectItem(cJSON_GetArrayItem(locs, 0), "path"));
+        if (path && *path) {
+            cJSON *obj = cJSON_CreateObject();
+            cJSON_AddStringToObject(obj, "path", path);
+            char *json = cJSON_PrintUnformatted(obj);
+            cJSON_Delete(obj);
+            return json;
+        }
+    }
+    return NULL;
+}
+
+static void gk_tool_update(grok_client *c, cJSON *u) {
+    const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(u, "toolCallId"));
+    int slot = gk_tool_slot(c, id);
+    char namebuf[64];
+    const char *name = gk_tool_name(u, namebuf, sizeof namebuf);
+    const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(u, "title"));
+    const char *status = cJSON_GetStringValue(cJSON_GetObjectItem(u, "status"));
+    char *input = gk_input_json(u);
+    int have_shape = (cJSON_GetObjectItem(u, "kind") || title ||
+                      cJSON_GetObjectItem(u, "rawInput") ||
+                      cJSON_GetObjectItem(u, "_meta"));
+
+    if (slot >= 0 && !(c->tool_flags[slot] & 1) && have_shape) {
+        c->tool_flags[slot] |= 1;
+        grok_event ev = {
+            .kind = GROK_EV_TOOL,
+            .name = name,
+            .input_json = input,
+            .text = title,
+        };
+        gk_emit(c, &ev);
+    }
+
+    int done = status && (!strcmp(status, "completed") || !strcmp(status, "failed"));
+    if (slot >= 0 && done && !(c->tool_flags[slot] & 2)) {
+        c->tool_flags[slot] |= 2;
+        char *text = gk_content_text(cJSON_GetObjectItem(u, "content"));
+        if (!text) text = gk_raw_text(cJSON_GetObjectItem(u, "rawOutput"));
+        grok_event ev = { .kind = GROK_EV_TOOL_RESULT, .text = text ? text : "" };
+        gk_emit(c, &ev);
+        free(text);
+    }
+    free(input);
+}
+
+/* Answer an agent->client request so the turn never blocks. Permission
+ * requests are approved (or cancelled, if we already sent session/cancel). */
 static void gk_answer_request(grok_client *c, cJSON *req, cJSON *id) {
     const char *method = cJSON_GetStringValue(cJSON_GetObjectItem(req, "method"));
     cJSON *resp = cJSON_CreateObject();
@@ -148,35 +375,38 @@ static void gk_answer_request(grok_client *c, cJSON *req, cJSON *id) {
     cJSON_AddItemToObject(resp, "id", cJSON_Duplicate(id, 1));
     cJSON *result = cJSON_AddObjectToObject(resp, "result");
     if (method && strcmp(method, "session/request_permission") == 0) {
-        cJSON *params = cJSON_GetObjectItem(req, "params");
-        cJSON *opts = params ? cJSON_GetObjectItem(params, "options") : NULL;
-        const char *pick = NULL;
-        cJSON *o;
-        cJSON_ArrayForEach(o, opts) {
-            const char *kind = cJSON_GetStringValue(cJSON_GetObjectItem(o, "kind"));
-            const char *oid  = cJSON_GetStringValue(cJSON_GetObjectItem(o, "optionId"));
-            if (!oid) continue;
-            if (!pick) pick = oid;                       /* fallback: first */
-            if (kind && strncmp(kind, "allow", 5) == 0) { pick = oid; break; }
-        }
         cJSON *outcome = cJSON_AddObjectToObject(result, "outcome");
-        cJSON_AddStringToObject(outcome, "outcome", "selected");
-        cJSON_AddStringToObject(outcome, "optionId", pick ? pick : "allow");
+        if (c->cancelling) {
+            cJSON_AddStringToObject(outcome, "outcome", "cancelled");
+        } else {
+            cJSON *params = cJSON_GetObjectItem(req, "params");
+            cJSON *opts = params ? cJSON_GetObjectItem(params, "options") : NULL;
+            const char *pick = NULL;
+            cJSON *o;
+            cJSON_ArrayForEach(o, opts) {
+                const char *kind = cJSON_GetStringValue(cJSON_GetObjectItem(o, "kind"));
+                const char *oid  = cJSON_GetStringValue(cJSON_GetObjectItem(o, "optionId"));
+                if (!oid) continue;
+                if (!pick) pick = oid;
+                if (kind && strncmp(kind, "allow", 5) == 0) { pick = oid; break; }
+            }
+            cJSON_AddStringToObject(outcome, "outcome", "selected");
+            cJSON_AddStringToObject(outcome, "optionId", pick ? pick : "allow");
+        }
     }
     gk_write(c, resp);
 }
 
 /* Handle one parsed event line during a wait for response `want_id`.
  * Accumulates agent_message_chunk text into *acc (if non-NULL). Returns:
- *   1  -> response for want_id arrived successfully; *ok set to result presence
+ *   1  -> response for want_id arrived; *ok set if the result is usable
  *   0  -> not the awaited response (keep reading)                              */
 static int gk_handle(grok_client *c, cJSON *ev, int want_id, char **acc, int *ok) {
     cJSON *idj = cJSON_GetObjectItem(ev, "id");
     cJSON *method = cJSON_GetObjectItem(ev, "method");
 
     if (method && cJSON_IsString(method)) {
-        if (idj) { gk_answer_request(c, ev, idj); return 0; }   /* agent request */
-        /* notification */
+        if (idj) { gk_answer_request(c, ev, idj); return 0; }
         if (strcmp(method->valuestring, "session/update") == 0) {
             cJSON *params = cJSON_GetObjectItem(ev, "params");
             cJSON *u = params ? cJSON_GetObjectItem(params, "update") : NULL;
@@ -185,14 +415,14 @@ static int gk_handle(grok_client *c, cJSON *ev, int want_id, char **acc, int *ok
                 cJSON *content = cJSON_GetObjectItem(u, "content");
                 const char *txt = content ? cJSON_GetStringValue(cJSON_GetObjectItem(content, "text")) : NULL;
                 if (strcmp(su, "agent_message_chunk") == 0 && txt) {
-                    if (acc) {
-                        size_t al = *acc ? strlen(*acc) : 0, tl = strlen(txt);
-                        char *n = realloc(*acc, al + tl + 1);
-                        if (n) { memcpy(n + al, txt, tl + 1); *acc = n; }
-                    }
-                    gk_sink(c, "assistant", txt);
+                    if (acc) gk_concat(acc, txt);
+                    grok_event e = { .kind = GROK_EV_ASSISTANT, .text = txt };
+                    gk_emit(c, &e);
                 } else if (strcmp(su, "agent_thought_chunk") == 0 && txt) {
-                    gk_sink(c, "thinking", txt);
+                    grok_event e = { .kind = GROK_EV_THINKING, .text = txt };
+                    gk_emit(c, &e);
+                } else if (!strcmp(su, "tool_call") || !strcmp(su, "tool_call_update")) {
+                    gk_tool_update(c, u);
                 }
             }
         }
@@ -201,11 +431,22 @@ static int gk_handle(grok_client *c, cJSON *ev, int want_id, char **acc, int *ok
 
     /* response to one of our requests */
     if (idj && cJSON_IsNumber(idj) && (int)cJSON_GetNumberValue(idj) == want_id) {
-        *ok = cJSON_GetObjectItem(ev, "result") != NULL;
-        if (!*ok) {
-            cJSON *err = cJSON_GetObjectItem(ev, "error");
-            const char *m = err ? cJSON_GetStringValue(cJSON_GetObjectItem(err, "message")) : NULL;
-            if (m) fprintf(stderr, "grok: rpc error: %s\n", m);
+        cJSON *err = cJSON_GetObjectItem(ev, "error");
+        cJSON *res = cJSON_GetObjectItem(ev, "result");
+        *ok = res != NULL;
+        if (!*ok && err) {
+            const char *m = cJSON_GetStringValue(cJSON_GetObjectItem(err, "message"));
+            /* A cancel can surface as an RPC error; the turn still ended cleanly. */
+            if (c->cancelling) {
+                *ok = 1;
+            } else if (m) {
+                fprintf(stderr, "grok: rpc error: %s\n", m);
+            }
+        }
+        if (*ok && res) {
+            const char *stop = cJSON_GetStringValue(cJSON_GetObjectItem(res, "stopReason"));
+            if (stop && !strcmp(stop, "cancelled") && c->meta)
+                c->meta->interrupted = 1;
         }
         return 1;
     }
@@ -215,11 +456,20 @@ static int gk_handle(grok_client *c, cJSON *ev, int want_id, char **acc, int *ok
 /* Read/parse lines until the response to `want_id`. On session/new we need the
  * result body, so `sid_out` (if non-NULL) is filled from result.sessionId.
  * Accumulates assistant text into *acc when non-NULL. Returns 1 on a successful
- * result, 0 on error/EOF/abort. */
-static int gk_await(grok_client *c, int want_id, char **acc, char *sid_out, size_t sid_sz) {
+ * result, 0 on error/EOF. `allow_cancel` sends session/cancel the first time
+ * the abort predicate fires (or was latched during the handshake). */
+static int gk_await(grok_client *c, int want_id, char **acc,
+                    char *sid_out, size_t sid_sz, int allow_cancel) {
     char tmp[8192];
+    int sent_cancel = 0;
     for (;;) {
-        if (c->abort && c->abort()) { c->len = 0; return 0; }
+        if (c->abort && c->abort())
+            c->abort_latched = 1;
+        if (allow_cancel && c->abort_latched && !sent_cancel && c->session_id[0]) {
+            sent_cancel = 1;
+            if (c->meta) c->meta->interrupted = 1;
+            grok_interrupt(c);
+        }
         struct pollfd pfd = { c->out_fd, POLLIN, 0 };
         int pr = poll(&pfd, 1, 200);
         if (pr < 0) { if (errno == EINTR) continue; c->len = 0; return 0; }
@@ -295,7 +545,7 @@ grok_client *grok_start(const grok_opts *opts) {
         argv[n++] = "agent";
         if (o.model && *o.model)                     { argv[n++] = "-m"; argv[n++] = o.model; }
         if (o.reasoning_effort && *o.reasoning_effort) { argv[n++] = "--reasoning-effort"; argv[n++] = o.reasoning_effort; }
-        argv[n++] = "--always-approve";   /* belt-and-suspenders with our permission handler */
+        argv[n++] = "--always-approve";
         argv[n++] = "stdio";
         argv[n] = NULL;
         execvp(cli, (char *const *)argv);
@@ -318,6 +568,7 @@ grok_client *grok_start(const grok_opts *opts) {
     c->next_id = 1;
     c->cwd = (o.cwd && *o.cwd) ? strdup(o.cwd) : NULL;
     c->sys = (o.append_system && *o.append_system) ? strdup(o.append_system) : NULL;
+    c->resume = (o.resume_session && *o.resume_session) ? strdup(o.resume_session) : NULL;
 
     return c;
 }
@@ -338,26 +589,46 @@ static int gk_handshake(grok_client *c) {
     cJSON *ip = cJSON_AddObjectToObject(init, "params");
     cJSON_AddNumberToObject(ip, "protocolVersion", 1);
     cJSON_AddObjectToObject(ip, "clientCapabilities");
-    if (!gk_write(c, init) || !gk_await(c, c->next_id, NULL, NULL, 0)) return 0;
+    cJSON *info = cJSON_AddObjectToObject(ip, "clientInfo");
+    cJSON_AddStringToObject(info, "name", "grok.h");
+    cJSON_AddStringToObject(info, "version", "1");
+    if (!gk_write(c, init) || !gk_await(c, c->next_id, NULL, NULL, 0, 0)) return 0;
     c->next_id++;
 
+    /* session/resume keeps prior context without replaying the transcript into
+     * the event stream, which is what this driver wants on a restart. */
+    const char *resume = (c->resume && *c->resume) ? c->resume : NULL;
     cJSON *sn = cJSON_CreateObject();
     cJSON_AddStringToObject(sn, "jsonrpc", "2.0");
     cJSON_AddNumberToObject(sn, "id", c->next_id);
-    cJSON_AddStringToObject(sn, "method", "session/new");
+    cJSON_AddStringToObject(sn, "method", resume ? "session/resume" : "session/new");
     cJSON *sp = cJSON_AddObjectToObject(sn, "params");
+    if (resume)
+        cJSON_AddStringToObject(sp, "sessionId", resume);
     cJSON_AddStringToObject(sp, "cwd", c->cwd ? c->cwd : "/");
     cJSON_AddItemToObject(sp, "mcpServers", cJSON_CreateArray());
-    if (!gk_write(c, sn) || !gk_await(c, c->next_id, NULL, c->session_id, sizeof c->session_id))
+    cJSON *meta = cJSON_AddObjectToObject(sp, "_meta");
+    cJSON_AddBoolToObject(meta, "yoloMode", 1);
+    if (!gk_write(c, sn) || !gk_await(c, c->next_id, NULL, c->session_id, sizeof c->session_id, 0))
         return 0;
     c->next_id++;
+    if (resume && !c->session_id[0])
+        snprintf(c->session_id, sizeof c->session_id, "%s", resume);
 
     c->handshake_failed = 0;
     return 1;
 }
 
-char *grok_send(grok_client *c, const char *user_text) {
+char *grok_send_ex(grok_client *c, const char *user_text, grok_result *meta) {
+    if (meta) memset(meta, 0, sizeof *meta);
     if (!c || !user_text || !gk_handshake(c)) return NULL;
+    /* ESC during the handshake is latched so it is not lost, but there is no
+     * prompt to cancel yet. Treat it as an interrupted empty turn. */
+    if (c->abort_latched) {
+        c->abort_latched = 0;
+        if (meta) meta->interrupted = 1;
+        return strdup("");
+    }
 
     /* Prepend the system prompt to each turn (ACP has no system field). */
     char *full = NULL;
@@ -385,10 +656,20 @@ char *grok_send(grok_client *c, const char *user_text) {
     free(full);
     if (!wrote) return NULL;
 
+    c->meta = meta;
+    c->cancelling = 0;
+    gk_reset_tools(c);
     char *acc = NULL;
-    int ok = gk_await(c, id, &acc, NULL, 0);
+    int ok = gk_await(c, id, &acc, NULL, 0, 1);
+    c->meta = NULL;
+    c->cancelling = 0;
+    c->abort_latched = 0;
     if (!ok) { free(acc); return NULL; }
     return acc ? acc : strdup("");
+}
+
+char *grok_send(grok_client *c, const char *user_text) {
+    return grok_send_ex(c, user_text, NULL);
 }
 
 /* Poll for the child's exit for up to `ms`. Returns nonzero once reaped. */
@@ -417,6 +698,7 @@ void grok_stop(grok_client *c) {
     if (c->out_fd >= 0) close(c->out_fd);
     free(c->cwd);
     free(c->sys);
+    free(c->resume);
     free(c->buf);
     free(c);
 }

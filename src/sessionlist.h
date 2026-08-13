@@ -1,5 +1,6 @@
-/* Past conversations for this directory, read out of the CLI's own transcript
- * store (~/.claude/projects/<encoded cwd>/<session-id>.jsonl). */
+/* Past conversations for this directory, read out of the backend's own
+ * transcript store: ~/.claude/projects/<encoded cwd>/<id>.jsonl, or
+ * ~/.grok/sessions/<encoded cwd>/<id>/summary.json. */
 #ifndef SESSIONLIST_H
 #define SESSIONLIST_H
 
@@ -12,8 +13,12 @@ struct past_session {
     time_t modified;
 };
 
+/* Nonzero when /resume can list this backend's transcripts. */
+int sessionlist_available(const char *backend);
+
 /* Fill *out with sessions for `cwd`, newest first (caller frees *out). Returns
  * the count, or 0 when there are none. `skip_id` may be NULL. */
-int sessionlist_load(const char *cwd, const char *skip_id, struct past_session **out);
+int sessionlist_load(const char *backend, const char *cwd, const char *skip_id,
+                     struct past_session **out);
 
 #endif /* SESSIONLIST_H */

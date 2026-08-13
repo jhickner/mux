@@ -68,7 +68,7 @@ const char *session_permission_name(int index);
 int         session_permission_index(const char *mode);
 
 /* Restart on a past session id, adopting its context. Only the backends that
- * can resume a conversation (claude, codex) carry anything across. */
+ * can resume a conversation (claude, codex, grok) carry anything across. */
 int session_resume(struct session *s, const char *id);
 
 /* Adopt a session id before session_start(), so the CLI comes up already

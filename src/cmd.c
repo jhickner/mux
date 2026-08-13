@@ -254,9 +254,8 @@ static void do_tools(struct session *s, const char *arg)
 
 int cmd_resume(struct session *s)
 {
-    /* The picker reads Claude Code's own transcript store; no other backend
-     * keeps one we can list. */
-    if (!is_claude(s)) {
+    /* The picker reads the backend's own transcript store. */
+    if (!sessionlist_available(session_backend(s))) {
         ui_note("%s keeps no transcripts to resume from", session_backend(s));
         ui_put("\n");
         ui_flush();
@@ -264,7 +263,8 @@ int cmd_resume(struct session *s)
     }
 
     struct past_session *list = NULL;
-    int count = sessionlist_load(session_cwd(s), session_id(s), &list);
+    int count = sessionlist_load(session_backend(s), session_cwd(s), session_id(s),
+                                 &list);
     if (count == 0) {
         ui_note("no past conversations for this directory");
         ui_put("\n");
