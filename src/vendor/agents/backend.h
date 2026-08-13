@@ -27,6 +27,7 @@ typedef struct Backend Backend;
 typedef struct {
     const char *name;           /* "claude" | "codex" | "grok" | "pi"; NULL -> claude */
     const char *model;          /* driver/CLI model identifier; NULL -> its default   */
+    const char *effort;         /* reasoning/thinking effort; NULL -> its default     */
     const char *system;         /* applied to every turn; NULL -> none                */
     const char *cwd;            /* where the agent runs its tools; NULL -> inherit    */
     const char *resume_session; /* continue a prior session (claude, codex, grok)     */
@@ -69,7 +70,9 @@ typedef struct {
 } backend_result;
 
 /* What a driver supports, in Backend.caps. */
-#define BACKEND_CAP_RESUME 1u /* start() can adopt a prior session id */
+#define BACKEND_CAP_RESUME      1u /* start() can adopt a prior session id */
+#define BACKEND_CAP_EFFORT      2u /* set_effort() is supported            */
+#define BACKEND_CAP_LIVE_EFFORT 4u /* set_effort() preserves the process   */
 
 struct Backend {
     unsigned caps;
@@ -96,6 +99,10 @@ struct Backend {
 
     /* Takes effect at the next start(). */
     void (*set_model)(Backend *b, const char *model);
+
+    /* Change the reasoning/thinking effort. For LIVE_EFFORT backends this
+     * applies to the existing process; the others take effect at next start. */
+    int (*set_effort)(Backend *b, const char *effort);
 
     /* Takes effect at the next start(). Ignored by the drivers with no
      * permission model of their own. */
@@ -163,7 +170,7 @@ int backend_run_pool(const char *name, const char *model, const char *system,
  * use it too. */
 
 typedef struct {
-    char *model, *system, *cwd, *resume, *permission;
+    char *model, *effort, *system, *cwd, *resume, *permission;
     int   allow_customizations;
     void (*on_event)(void *ud, const backend_event *ev);
     void *event_ud;
@@ -188,6 +195,7 @@ static void backend_set(char **slot, const char *value) {
 
 static void backend_state_init(backend_state *st, const backend_opts *o) {
     st->model  = backend_dup(o->model);
+    st->effort = backend_dup(o->effort);
     st->system = backend_dup(o->system);
     st->cwd    = backend_dup(o->cwd);
     st->resume = backend_dup(o->resume_session);
@@ -196,7 +204,7 @@ static void backend_state_init(backend_state *st, const backend_opts *o) {
 }
 
 static void backend_state_free(backend_state *st) {
-    free(st->model); free(st->system); free(st->cwd); free(st->resume);
+    free(st->model); free(st->effort); free(st->system); free(st->cwd); free(st->resume);
     free(st->permission); free(st->pending);
 }
 
@@ -262,6 +270,10 @@ static void backend_emit_str(backend_state *st, const char *kind, const char *te
 static void backend_set_model_generic(Backend *b, const char *model) {
     backend_set(&((backend_state *)b->ctx)->model, model);
 }
+static int backend_set_effort_generic(Backend *b, const char *effort) {
+    backend_set(&((backend_state *)b->ctx)->effort, effort);
+    return 1;
+}
 static void backend_set_permission_generic(Backend *b, const char *mode) {
     backend_set(&((backend_state *)b->ctx)->permission, mode);
 }
@@ -307,6 +319,7 @@ static int backend_claude_start(Backend *b, const char *resume) {
     claude_opts o = {0};
     o.cwd = x->st.cwd;
     o.model = x->st.model;
+    o.effort = x->st.effort;
     o.append_system = x->st.system;
     o.permission_mode = x->st.permission ? x->st.permission : "bypassPermissions";
     o.use_subscription = 1;
@@ -410,7 +423,7 @@ static Backend *backend_claude_open(const backend_opts *o) {
     if (!x || !b) { free(x); free(b); return NULL; }
     backend_state_init(&x->st, o);
     b->ctx = x;
-    b->caps = BACKEND_CAP_RESUME;
+    b->caps = BACKEND_CAP_RESUME | BACKEND_CAP_EFFORT;
     b->ask = backend_claude_ask;
     b->reset = backend_claude_reset;
     b->close = backend_claude_close;
@@ -418,6 +431,7 @@ static Backend *backend_claude_open(const backend_opts *o) {
     b->ask_ex = backend_claude_ask_ex;
     b->usage = backend_claude_usage;
     b->set_model = backend_set_model_generic;
+    b->set_effort = backend_set_effort_generic;
     b->set_permission = backend_set_permission_generic;
     b->set_event_cb = backend_claude_set_event_cb;
     b->set_abort_check = backend_claude_set_abort;
@@ -444,6 +458,7 @@ static int backend_codex_start(Backend *b, const char *resume) {
     codex_opts o = {0};
     o.cwd = x->st.cwd;
     o.model = x->st.model;
+    o.effort = x->st.effort;
     o.append_system = x->st.system;
     o.bypass_approvals = 1;
     o.resume_session = resume;
@@ -502,6 +517,13 @@ static void backend_codex_set_abort(Backend *b, int (*cb)(void)) {
     if (x->client) codex_set_abort_check(x->client, cb);
 }
 
+static int backend_codex_set_effort(Backend *b, const char *effort) {
+    backend_codex *x = b->ctx;
+    if (x->client && !codex_set_effort(x->client, effort)) return 0;
+    backend_set(&x->st.effort, effort);
+    return 1;
+}
+
 static const char *backend_codex_session_id(Backend *b) {
     backend_codex *x = b->ctx;
     return x->client ? codex_session_id(x->client) : NULL;
@@ -520,7 +542,7 @@ static Backend *backend_codex_open(const backend_opts *o) {
     if (!x || !b) { free(x); free(b); return NULL; }
     backend_state_init(&x->st, o);
     b->ctx = x;
-    b->caps = BACKEND_CAP_RESUME;
+    b->caps = BACKEND_CAP_RESUME | BACKEND_CAP_EFFORT | BACKEND_CAP_LIVE_EFFORT;
     b->ask = backend_codex_ask;
     b->reset = backend_codex_reset;
     b->close = backend_codex_close;
@@ -528,6 +550,7 @@ static Backend *backend_codex_open(const backend_opts *o) {
     b->ask_ex = backend_codex_ask_ex;
     b->usage = backend_codex_usage;
     b->set_model = backend_set_model_generic;
+    b->set_effort = backend_codex_set_effort;
     b->set_permission = backend_set_permission_none;
     b->set_event_cb = backend_codex_set_event_cb;
     b->set_abort_check = backend_codex_set_abort;
@@ -577,7 +600,7 @@ static int backend_grok_start(Backend *b, const char *resume) {
     o.cwd = x->st.cwd;
     o.model = x->st.model;
     o.append_system = x->st.system;
-    o.reasoning_effort = getenv("GROK_EFFORT");
+    o.reasoning_effort = x->st.effort ? x->st.effort : getenv("GROK_EFFORT");
     o.resume_session = resume;
     grok_client *c = grok_start(&o);
     if (!c) return 0;
@@ -645,13 +668,14 @@ static Backend *backend_grok_open(const backend_opts *o) {
     if (!x || !b) { free(x); free(b); return NULL; }
     backend_state_init(&x->st, o);
     b->ctx = x;
-    b->caps = BACKEND_CAP_RESUME;
+    b->caps = BACKEND_CAP_RESUME | BACKEND_CAP_EFFORT;
     b->ask = backend_grok_ask;
     b->reset = backend_grok_reset;
     b->close = backend_grok_close;
     b->start = backend_grok_start;
     b->ask_ex = backend_grok_ask_ex;
     b->set_model = backend_set_model_generic;
+    b->set_effort = backend_set_effort_generic;
     b->set_permission = backend_set_permission_none;
     b->set_event_cb = backend_grok_set_event_cb;
     b->set_abort_check = backend_grok_set_abort;

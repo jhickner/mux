@@ -61,10 +61,11 @@ static void usage(void)
     char choices[128];
     backend_choices(choices, sizeof choices);
     fprintf(stderr,
-            "usage: " APP " [-b backend] [-m model] [-C dir] [-s] [-r] [prompt...]\n"
+            "usage: " APP " [-b backend] [-m model] [-e effort] [-C dir] [-s] [-r] [prompt...]\n"
             "\n"
             "  -b name    agent CLI to drive: %s (default: claude)\n"
             "  -m model   model to run (default: the CLI's own)\n"
+            "  -e effort  reasoning/thinking effort (default: the CLI's own)\n"
             "  -C dir     working directory for the agent's tools\n"
             "  -s         safe mode: skip skills, CLAUDE.md, MCP servers, hooks\n"
             "  -r         --resume: pick a past conversation to continue\n"
@@ -105,6 +106,7 @@ int main(int argc, char **argv)
     static const struct option LONG_OPTS[] = {
         {"backend", required_argument, NULL, 'b'},
         {"model",   required_argument, NULL, 'm'},
+        {"effort",  required_argument, NULL, 'e'},
         {"dir",     required_argument, NULL, 'C'},
         {"safe",    no_argument,       NULL, 's'},
         {"resume",  no_argument,       NULL, 'r'},
@@ -115,16 +117,18 @@ int main(int argc, char **argv)
 
     const char *backend = "claude";
     const char *model = NULL;
+    const char *effort = NULL;
     const char *dir = NULL;
     const char *session_arg = NULL;
     int safe_mode = 0;
     int resume = 0;
     int opt;
 
-    while ((opt = getopt_long(argc, argv, "b:m:C:srh", LONG_OPTS, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "b:m:e:C:srh", LONG_OPTS, NULL)) != -1) {
         switch (opt) {
         case 'b': backend = optarg; break;
         case 'm': model = optarg; break;
+        case 'e': effort = optarg; break;
         case 'C': dir = optarg; break;
         case 's': safe_mode = 1; break;
         case 'r': resume = 1; break;
@@ -139,6 +143,8 @@ int main(int argc, char **argv)
         fprintf(stderr, APP ": unknown backend '%s' — pick one of %s\n", backend, choices);
         return 2;
     }
+    if (effort && !strcmp(effort, "default"))
+        effort = NULL;
 
     sessionfork_set_program(argv[0]);
 
@@ -171,7 +177,7 @@ int main(int argc, char **argv)
     /* Before session_start(): the CLI it spawns inherits the marker that keeps
      * the plugin's own hook from reporting this pane too. */
     agenttabs_begin();
-    struct session *session = session_new(backend, cwd, model);
+    struct session *session = session_new(backend, cwd, model, effort);
     if (session) {
         session_set_customizations(session, !safe_mode);
         session_set_thinking(session, settings_get_int(SETTING_THINKING, 1));

@@ -31,6 +31,7 @@ typedef struct {
     const char *cli_path;        /* claude binary; NULL/"" -> "claude" (via PATH) */
     const char *cwd;             /* child working directory; NULL -> inherit      */
     const char *model;           /* --model value; NULL -> CLI default            */
+    const char *effort;          /* --effort value; NULL -> CLI default           */
     const char *permission_mode; /* --permission-mode (e.g. "bypassPermissions")  */
     const char *resume_session;  /* --resume <id> to continue a prior session     */
     const char *append_system;   /* --append-system-prompt text; NULL -> none     */
@@ -276,7 +277,7 @@ claude_client *claude_start(const claude_opts *opts) {
         if (o.use_subscription) unsetenv("ANTHROPIC_API_KEY");
 
         /* Build argv: headless, streaming both directions. */
-        const char *argv[32];
+        const char *argv[34];
         int n = 0;
         argv[n++] = cli;
         argv[n++] = "--print";
@@ -285,6 +286,7 @@ claude_client *claude_start(const claude_opts *opts) {
         argv[n++] = "--verbose";
         if (!o.allow_customizations) argv[n++] = "--safe-mode";
         if (o.model && *o.model)           { argv[n++] = "--model";           argv[n++] = o.model; }
+        if (o.effort && *o.effort)         { argv[n++] = "--effort";          argv[n++] = o.effort; }
         if (o.permission_mode && *o.permission_mode) { argv[n++] = "--permission-mode"; argv[n++] = o.permission_mode; }
         if (o.resume_session && *o.resume_session)   { argv[n++] = "--resume"; argv[n++] = o.resume_session; }
         if (o.append_system && *o.append_system)     { argv[n++] = "--append-system-prompt"; argv[n++] = o.append_system; }

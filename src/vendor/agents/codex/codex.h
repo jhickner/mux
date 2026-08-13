@@ -25,6 +25,7 @@ typedef struct {
     const char *cli_path;       /* codex binary; NULL/"" -> "codex" via PATH */
     const char *cwd;            /* child working directory; NULL -> inherit   */
     const char *model;          /* thread model; NULL -> configured default   */
+    const char *effort;         /* turn effort; NULL -> configured default    */
     const char *sandbox;        /* read-only|workspace-write|danger-full-access;
                                    NULL -> "workspace-write"                  */
     const char *resume_session; /* resume this thread instead of starting one */
@@ -61,6 +62,8 @@ void codex_set_event_cb(codex_client *c,
                         void (*cb)(void *ud, const char *kind, const char *text),
                         void *ud);
 void codex_set_abort_check(codex_client *c, int (*cb)(void));
+/* Override subsequent turns' reasoning effort. NULL clears the override. */
+int codex_set_effort(codex_client *c, const char *effort);
 /* Latest context occupancy reported by thread/tokenUsage/updated. */
 void codex_usage(codex_client *c, long *context_tokens, long *context_window);
 void codex_stop(codex_client *c);
@@ -85,7 +88,8 @@ struct codex_client {
     int (*abort)(void);
     void (*on_event)(void *ud, const char *kind, const char *text);
     void *on_event_ud;
-    char *model, *sandbox, *sys;
+    char *model, *effort, *sandbox, *sys;
+    int effort_changed;
     char session_id[128];
     long context_tokens, context_window;
     char *buf;
@@ -240,7 +244,8 @@ codex_client *codex_start(const codex_opts *opts) {
     codex_client *c = calloc(1, sizeof *c);
     if (!c) return NULL;
     c->in_fd = c->out_fd = -1; c->next_id = 1;
-    c->model = cx_dup(o.model); c->sys = cx_dup(o.append_system);
+    c->model = cx_dup(o.model); c->effort = cx_dup(o.effort);
+    c->sys = cx_dup(o.append_system);
     c->sandbox = strdup(o.bypass_approvals ? "danger-full-access" :
                         (o.sandbox && *o.sandbox ? o.sandbox : "workspace-write"));
     if (!c->sandbox) { codex_stop(c); return NULL; }
@@ -282,6 +287,13 @@ codex_client *codex_start(const codex_opts *opts) {
 
 void codex_set_verbose(codex_client *c, int on) { if (c) c->verbose = on; }
 void codex_set_abort_check(codex_client *c, int (*cb)(void)) { if (c) c->abort = cb; }
+int codex_set_effort(codex_client *c, const char *effort) {
+    if (!c) return 0;
+    free(c->effort);
+    c->effort = cx_dup(effort);
+    c->effort_changed = 1;
+    return 1;
+}
 void codex_usage(codex_client *c, long *tokens, long *window) {
     if (tokens) *tokens = c ? c->context_tokens : 0;
     if (window) *window = c ? c->context_window : 0;
@@ -345,6 +357,10 @@ char *codex_send_ex(codex_client *c, const char *user_text, codex_result *meta) 
     cJSON_AddItemToArray(input, text);
     cJSON_AddStringToObject(p, "threadId", c->session_id);
     cJSON_AddItemToObject(p, "input", input);
+    if (c->effort)
+        cJSON_AddStringToObject(p, "effort", c->effort);
+    else if (c->effort_changed)
+        cJSON_AddNullToObject(p, "effort");
     int id = cx_request(c, "turn/start", p);
     cJSON *response = id ? cx_wait_response(c, id) : NULL;
     if (!response) return NULL;
@@ -356,6 +372,7 @@ char *codex_send_ex(codex_client *c, const char *user_text, codex_result *meta) 
     if (tid) snprintf(turn_id, sizeof turn_id, "%s", tid);
     cJSON_Delete(response);
     if (!turn_id[0]) return NULL;
+    c->effort_changed = 0;
 
     char *answer = NULL, *fallback = NULL;
     int completed = 0, failed = 0, interrupted = 0;
@@ -437,7 +454,8 @@ void codex_stop(codex_client *c) {
         }
     }
     if (c->out_fd >= 0) close(c->out_fd);
-    free(c->model); free(c->sandbox); free(c->sys); free(c->buf); free(c);
+    free(c->model); free(c->effort); free(c->sandbox); free(c->sys);
+    free(c->buf); free(c);
 }
 
 #endif /* CODEX_IMPLEMENTATION */
