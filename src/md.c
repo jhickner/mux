@@ -169,6 +169,338 @@ static void emit_styled(const struct styled *s, int first_indent, int indent)
     }
 }
 
+/* ---------- tables ---------- */
+
+static char *take_line(const char **text);
+
+#define TABLE_MAX_COLS 12
+#define TABLE_MIN_COL  6
+
+enum align { ALIGN_LEFT, ALIGN_RIGHT, ALIGN_CENTER };
+
+struct trow {
+    struct styled cell[TABLE_MAX_COLS];
+    int           ncells;
+};
+
+/* Split "| a | b |" into trimmed cell texts. The outer pipes are optional; a
+ * pipe escaped as \| is literal. Returns the cell count. */
+static int split_row(const char *line, char **out, int max)
+{
+    const char *p = line;
+    while (*p == ' ')
+        p++;
+    if (*p == '|')
+        p++;
+
+    char buf[2048];
+    size_t b = 0;
+    int n = 0;
+
+    for (;; p++) {
+        if (*p == '\\' && p[1] == '|') {
+            if (b + 1 < sizeof buf)
+                buf[b++] = '|';
+            p++;
+            continue;
+        }
+        if (*p != '|' && *p != '\0') {
+            if (b + 1 < sizeof buf)
+                buf[b++] = *p;
+            continue;
+        }
+
+        size_t start = 0, end = b;
+        while (start < end && buf[start] == ' ')
+            start++;
+        while (end > start && buf[end - 1] == ' ')
+            end--;
+        if (n < max) {
+            char *cell = malloc(end - start + 1);
+            if (!cell)
+                return n;
+            memcpy(cell, buf + start, end - start);
+            cell[end - start] = '\0';
+            out[n++] = cell;
+        }
+        b = 0;
+
+        if (*p == '\0')
+            break;
+        /* A trailing pipe closes the row rather than opening an empty cell. */
+        const char *q = p + 1;
+        while (*q == ' ')
+            q++;
+        if (*q == '\0')
+            break;
+    }
+    return n;
+}
+
+static int is_delim_cell(const char *s, enum align *out)
+{
+    const char *p = s;
+    int left = 0, right = 0, dashes = 0;
+    if (*p == ':') {
+        left = 1;
+        p++;
+    }
+    while (*p == '-') {
+        dashes++;
+        p++;
+    }
+    if (*p == ':') {
+        right = 1;
+        p++;
+    }
+    if (*p || dashes == 0)
+        return 0;
+    *out = left && right ? ALIGN_CENTER : right ? ALIGN_RIGHT : ALIGN_LEFT;
+    return 1;
+}
+
+/* "|---|:--:|" — the row under a table's header. */
+static int is_delim_row(const char *line, enum align *align, int max)
+{
+    if (!strchr(line, '-') || !strchr(line, '|'))
+        return 0;
+
+    char *cells[TABLE_MAX_COLS];
+    int n = split_row(line, cells, max);
+    int ok = n > 0;
+    for (int i = 0; i < n; i++) {
+        enum align a = ALIGN_LEFT;
+        if (!is_delim_cell(cells[i], &a))
+            ok = 0;
+        else if (align)
+            align[i] = a;
+        free(cells[i]);
+    }
+    return ok;
+}
+
+/* The first line of `text`, without consuming it. */
+static int peek_is_delim(const char *text, enum align *align, int max)
+{
+    const char *nl = strchr(text, '\n');
+    size_t n = nl ? (size_t)(nl - text) : strlen(text);
+    if (n >= 512)
+        return 0;
+    char line[512];
+    memcpy(line, text, n);
+    line[n] = '\0';
+    return is_delim_row(line, align, max);
+}
+
+static void row_init(struct trow *r, const char *line, int ncols)
+{
+    char *cells[TABLE_MAX_COLS];
+    int n = split_row(line, cells, ncols);
+    for (int i = 0; i < ncols; i++) {
+        styled_init(&r->cell[i]);
+        if (i < n) {
+            inline_scan(cells[i], &r->cell[i]);
+            free(cells[i]);
+        }
+    }
+    /* Cells past the column count are dropped, but still owned here. */
+    for (int i = ncols; i < n; i++)
+        free(cells[i]);
+    r->ncells = ncols;
+}
+
+static void row_free(struct trow *r)
+{
+    for (int i = 0; i < r->ncells; i++)
+        styled_free(&r->cell[i]);
+}
+
+/* Emit s[from .. from+len) with its inline styles, unstyled runs falling back
+ * to `base`. */
+static void emit_slice(const struct styled *s, size_t from, size_t len, enum ui_role base)
+{
+    int open = -1;
+    for (size_t i = 0; i < len; i++) {
+        signed char style = s->style[from + i];
+        if (style != open) {
+            ui_esc(ui_style(UI_RESET));
+            ui_esc(ui_style(style ? (enum ui_role)(style - 1) : base));
+            open = style;
+        }
+        ui_putn(s->text + from + i, 1);
+    }
+    if (open >= 0)
+        ui_esc(ui_style(UI_RESET));
+}
+
+static void rule_row(const int *width, int ncols, int indent)
+{
+    pad(indent);
+    ui_esc(ui_style(UI_CHROME));
+    for (int c = 0; c < ncols; c++) {
+        if (c)
+            ui_put("\xe2\x94\x80\xe2\x94\xbc\xe2\x94\x80"); /* ─┼─ */
+        for (int i = 0; i < width[c]; i++)
+            ui_put("\xe2\x94\x80"); /* ─ */
+    }
+    ui_esc(ui_style(UI_RESET));
+    ui_put("\n");
+}
+
+/* One table row, wrapping each cell inside its column so a long cell grows the
+ * row downwards instead of overflowing the terminal. */
+static void render_row(const struct trow *r, const int *width, const enum align *align, int ncols,
+                       int indent, int header)
+{
+    size_t off[TABLE_MAX_COLS] = {0};
+    int more = 1;
+
+    while (more) {
+        more = 0;
+        pad(indent);
+        for (int c = 0; c < ncols; c++) {
+            const struct styled *s = &r->cell[c];
+            size_t take = 0, skip = 0;
+            if (s->text && off[c] < s->len) {
+                take = ui_wrap_row(s->text + off[c], (size_t)width[c], &skip);
+                if (take == 0 && skip == 0) /* a cell wider than its column */
+                    take = s->len - off[c];
+            }
+
+            int used = take ? (int)ui_cells_n(s->text + off[c], take) : 0;
+            int slack = width[c] - used;
+            if (slack < 0)
+                slack = 0;
+            int before = align[c] == ALIGN_RIGHT    ? slack
+                         : align[c] == ALIGN_CENTER ? slack / 2
+                                                    : 0;
+
+            /* Nothing is emitted past the last column's content, so a short or
+             * empty final cell leaves no trailing whitespace. */
+            int last = (c == ncols - 1);
+            int blank = (take == 0);
+
+            if (c) {
+                ui_esc(ui_style(UI_CHROME));
+                ui_put(" \xe2\x94\x82"); /* │ */
+                ui_esc(ui_style(UI_RESET));
+                if (!(last && blank))
+                    ui_put(" ");
+            }
+            if (!(last && blank)) {
+                pad(before);
+                if (take)
+                    emit_slice(s, off[c], take, header ? UI_BOLD : UI_BODY);
+                if (!last)
+                    pad(slack - before);
+            }
+
+            off[c] += take + skip;
+            if (s->text && off[c] < s->len)
+                more = 1;
+        }
+        ui_put("\n");
+    }
+}
+
+/* Natural column widths, shrunk to fit the terminal by taking from the widest
+ * column first so narrow ones stay intact. */
+static void fit_widths(int *width, int ncols, int indent)
+{
+    int avail = ui_columns() - indent - 3 * (ncols - 1);
+    if (avail < ncols * TABLE_MIN_COL)
+        avail = ncols * TABLE_MIN_COL;
+
+    int total = 0;
+    for (int c = 0; c < ncols; c++)
+        total += width[c];
+
+    while (total > avail) {
+        int widest = 0;
+        for (int c = 1; c < ncols; c++)
+            if (width[c] > width[widest])
+                widest = c;
+        if (width[widest] <= TABLE_MIN_COL)
+            break;
+        width[widest]--;
+        total--;
+    }
+}
+
+/* Render the table whose header is `first` and whose remaining lines are read
+ * from *text, which is left just past the table. */
+static void render_table(const char *first, const char **text, int indent)
+{
+    enum align align[TABLE_MAX_COLS];
+    for (int i = 0; i < TABLE_MAX_COLS; i++)
+        align[i] = ALIGN_LEFT;
+
+    char *head[TABLE_MAX_COLS];
+    int ncols = split_row(first, head, TABLE_MAX_COLS);
+    for (int i = 0; i < ncols; i++)
+        free(head[i]);
+    if (ncols == 0)
+        return;
+
+    char *delim = take_line(text);
+    if (!delim)
+        return;
+    is_delim_row(delim, align, ncols);
+    free(delim);
+
+    struct trow *rows = NULL;
+    int count = 0, cap = 0;
+
+    struct trow header;
+    row_init(&header, first, ncols);
+
+    while (**text) {
+        const char *nl = strchr(*text, '\n');
+        size_t n = nl ? (size_t)(nl - *text) : strlen(*text);
+        if (n == 0 || !memchr(*text, '|', n))
+            break;
+
+        char *line = take_line(text);
+        if (!line)
+            break;
+        if (count == cap) {
+            int want = cap ? cap * 2 : 8;
+            struct trow *grown = realloc(rows, (size_t)want * sizeof *grown);
+            if (!grown) {
+                free(line);
+                break;
+            }
+            rows = grown;
+            cap = want;
+        }
+        row_init(&rows[count++], line, ncols);
+        free(line);
+    }
+
+    int width[TABLE_MAX_COLS];
+    for (int c = 0; c < ncols; c++) {
+        width[c] = (int)ui_cells_n(header.cell[c].text, header.cell[c].len);
+        for (int r = 0; r < count; r++) {
+            int w = (int)ui_cells_n(rows[r].cell[c].text, rows[r].cell[c].len);
+            if (w > width[c])
+                width[c] = w;
+        }
+        if (width[c] < 1)
+            width[c] = 1;
+    }
+    fit_widths(width, ncols, indent);
+
+    render_row(&header, width, align, ncols, indent, 1);
+    rule_row(width, ncols, indent);
+    for (int r = 0; r < count; r++)
+        render_row(&rows[r], width, align, ncols, indent, 0);
+
+    row_free(&header);
+    for (int r = 0; r < count; r++)
+        row_free(&rows[r]);
+    free(rows);
+}
+
 static void render_paragraph(const char *text, int first_indent, int indent)
 {
     struct styled s;
@@ -329,6 +661,14 @@ void md_render(const char *text, int indent)
         if (blank_pending) {
             ui_put("\n");
             blank_pending = 0;
+        }
+
+        /* A pipe row followed by a |---|---| row starts a table. */
+        if (strchr(body, '|') && peek_is_delim(text, NULL, TABLE_MAX_COLS)) {
+            render_table(body, &text, indent);
+            wrote_any = 1;
+            free(line);
+            continue;
         }
 
         if (is_rule(body)) {
