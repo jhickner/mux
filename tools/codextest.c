@@ -11,7 +11,8 @@ static int abort_turn;
 static codex_client *test_client;
 static long live_tokens, live_window;
 static int shell_starts, edit_starts, tool_results;
-static char shell_input[512], shell_output[512], edit_input[1024], edit_diff[1024];
+static char shell_input[2][1024], shell_output[512], exec_output[1024];
+static char edit_input[1024], edit_diff[1024];
 
 static long milliseconds(void)
 {
@@ -30,8 +31,9 @@ static void capture_event(void *ud, const codex_event *ev)
 {
     (void)ud;
     if (ev->kind == CODEX_EV_TOOL && ev->name && !strcmp(ev->name, "Shell")) {
+        int index = shell_starts < 2 ? shell_starts : 1;
         shell_starts++;
-        snprintf(shell_input, sizeof shell_input, "%s",
+        snprintf(shell_input[index], sizeof shell_input[index], "%s",
                  ev->input_json ? ev->input_json : "");
     } else if (ev->kind == CODEX_EV_TOOL && ev->name && !strcmp(ev->name, "Edit")) {
         edit_starts++;
@@ -41,8 +43,10 @@ static void capture_event(void *ud, const codex_event *ev)
         tool_results++;
         if (ev->diff) {
             snprintf(edit_diff, sizeof edit_diff, "%s", ev->diff);
-        } else {
+        } else if (tool_results == 1) {
             snprintf(shell_output, sizeof shell_output, "%s", ev->text ? ev->text : "");
+        } else {
+            snprintf(exec_output, sizeof exec_output, "%s", ev->text ? ev->text : "");
         }
     }
 }
@@ -73,6 +77,14 @@ static int mock_server(void)
         int id = cJSON_IsNumber(idj) ? idj->valueint : 0;
 
         if (method && !strcmp(method, "initialize")) {
+            cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
+            cJSON *caps = params ? cJSON_GetObjectItemCaseSensitive(
+                params, "capabilities") : NULL;
+            if (!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(caps, "experimentalApi"))) {
+                respond_error(id);
+                cJSON_Delete(msg);
+                continue;
+            }
             usleep(400000);
             respond(id, "{}");
         } else if (method && !strcmp(method, "account/rateLimits/read")) {
@@ -85,6 +97,13 @@ static int mock_server(void)
             respond(id, "{\"rateLimits\":{\"primary\":{\"usedPercent\":17,"
                         "\"resetsAt\":2000000000,\"windowDurationMins\":10080}}}");
         } else if (method && !strcmp(method, "thread/start")) {
+            cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
+            if (!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(
+                    params, "experimentalRawEvents"))) {
+                respond(id, "{}");
+                cJSON_Delete(msg);
+                continue;
+            }
             respond(id, "{\"thread\":{\"id\":\"thread-1\"}}");
         } else if (method && !strcmp(method, "turn/start")) {
             turns++;
@@ -121,6 +140,14 @@ static int mock_server(void)
                    turns == 1 ? "partial" : turns == 2 ? "done" : "reset");
             if (turns > 1) {
                 if (turns == 2) {
+                    printf("{\"method\":\"rawResponseItem/completed\",\"params\":{"
+                           "\"threadId\":\"thread-1\",\"turnId\":\"turn-2\",\"item\":{"
+                           "\"type\":\"custom_tool_call\",\"id\":\"raw-1\","
+                           "\"call_id\":\"call-1\",\"name\":\"exec\","
+                           "\"status\":\"completed\","
+                           "\"input\":\"const r = await tools.exec_command({cmd:\\\"pwd\\\","
+                           "workdir:\\\"/project\\\",yield_time_ms:10000}); "
+                           "text(r.output);\"}}}\n");
                     printf("{\"method\":\"item/started\",\"params\":{\"item\":{"
                            "\"type\":\"commandExecution\",\"id\":\"cmd-1\","
                            "\"command\":\"sed -n '1,2p' src/session.c\","
@@ -146,6 +173,12 @@ static int mock_server(void)
                            "\"diff\":\"@@ -1 +1 @@\\n-old\\n+new\\n\"},{"
                            "\"path\":\"src/session.h\",\"kind\":{\"type\":\"update\"},"
                            "\"diff\":\"@@ -2 +2 @@\\n-before\\n+after\\n\"}]}}}\n");
+                    printf("{\"method\":\"rawResponseItem/completed\",\"params\":{"
+                           "\"threadId\":\"thread-1\",\"turnId\":\"turn-2\",\"item\":{"
+                           "\"type\":\"custom_tool_call_output\",\"id\":\"raw-out-1\","
+                           "\"call_id\":\"call-1\",\"output\":["
+                           "{\"type\":\"input_text\",\"text\":\"Script completed\\n\"},"
+                           "{\"type\":\"input_text\",\"text\":\"Output:\\n/project\\n\"}]}}}\n");
                 }
                 printf("{\"method\":\"turn/completed\",\"params\":{"
                        "\"turn\":{\"status\":\"completed\"}}}\n");
@@ -229,7 +262,12 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    cJSON *shell = cJSON_Parse(shell_input);
+    cJSON *nested_shell = cJSON_Parse(shell_input[0]);
+    const char *nested_command = nested_shell ? cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(nested_shell, "command")) : NULL;
+    const char *nested_cwd = nested_shell ? cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(nested_shell, "cwd")) : NULL;
+    cJSON *shell = cJSON_Parse(shell_input[1]);
     const char *command = shell ? cJSON_GetStringValue(
         cJSON_GetObjectItemCaseSensitive(shell, "command")) : NULL;
     const char *cwd = shell ? cJSON_GetStringValue(
@@ -238,9 +276,12 @@ int main(int argc, char **argv)
     const char *file_path = edit ? cJSON_GetStringValue(
         cJSON_GetObjectItemCaseSensitive(edit, "file_path")) : NULL;
     cJSON *changes = edit ? cJSON_GetObjectItemCaseSensitive(edit, "changes") : NULL;
-    if (shell_starts != 1 || edit_starts != 1 || tool_results != 2 ||
+    if (shell_starts != 2 || edit_starts != 1 || tool_results != 3 ||
+        !nested_command || strcmp(nested_command, "pwd") ||
+        !nested_cwd || strcmp(nested_cwd, "/project") ||
         !command || strcmp(command, "sed -n '1,2p' src/session.c") ||
         !cwd || strcmp(cwd, "/project") ||
+        strcmp(exec_output, "/project\n") ||
         strcmp(shell_output, "line one\nline two\n") ||
         !file_path || strcmp(file_path, "src/session.c") ||
         !cJSON_IsArray(changes) || cJSON_GetArraySize(changes) != 2 ||
@@ -248,11 +289,21 @@ int main(int argc, char **argv)
                "@@file src/session.c\n@@ -1 +1 @@\n-old\n+new\n"
                "@@file src/session.h\n@@ -2 +2 @@\n-before\n+after\n")) {
         fprintf(stderr, "codextest: structured tool events were not preserved\n");
+        fprintf(stderr, "  starts shell=%d edit=%d results=%d\n"
+                        "  nested=%s cwd=%s legacy=%s cwd=%s\n"
+                        "  legacy-out=%s raw-out=%s\n",
+                shell_starts, edit_starts, tool_results,
+                nested_command ? nested_command : "(null)",
+                nested_cwd ? nested_cwd : "(null)",
+                command ? command : "(null)", cwd ? cwd : "(null)",
+                shell_output, exec_output);
+        cJSON_Delete(nested_shell);
         cJSON_Delete(shell);
         cJSON_Delete(edit);
         codex_stop(client);
         return 1;
     }
+    cJSON_Delete(nested_shell);
     cJSON_Delete(shell);
     cJSON_Delete(edit);
 

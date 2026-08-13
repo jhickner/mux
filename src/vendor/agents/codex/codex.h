@@ -300,9 +300,15 @@ static cJSON *cx_wait_response(codex_client *c, int want) {
 
 static int cx_initialize(codex_client *c) {
     cJSON *p = cJSON_CreateObject(), *info = cJSON_CreateObject();
+    cJSON *capabilities = cJSON_CreateObject();
     cJSON_AddStringToObject(info, "name", "codex.h");
     cJSON_AddStringToObject(info, "version", "1");
     cJSON_AddItemToObject(p, "clientInfo", info);
+    /* Code Mode tools are Responses API custom-tool items rather than the
+     * commandExecution items emitted by the legacy shell. Ask app-server to
+     * expose those raw items alongside its normalized lifecycle events. */
+    cJSON_AddBoolToObject(capabilities, "experimentalApi", 1);
+    cJSON_AddItemToObject(p, "capabilities", capabilities);
     int id = cx_request(c, "initialize", p);
     cJSON *r = id ? cx_wait_response(c, id) : NULL;
     if (!r) return 0;
@@ -325,6 +331,7 @@ static int cx_open_thread(codex_client *c, const char *resume) {
     cJSON *p = cJSON_CreateObject();
     cJSON_AddStringToObject(p, "approvalPolicy", "never");
     cJSON_AddStringToObject(p, "sandbox", c->sandbox);
+    cJSON_AddBoolToObject(p, "experimentalRawEvents", 1);
     if (resume && *resume) {
         cJSON_AddStringToObject(p, "threadId", resume);
     } else {
@@ -484,6 +491,183 @@ static char *cx_command_input(cJSON *item) {
     return json;
 }
 
+/* Code Mode wraps ordinary tool calls in a small JavaScript program. Recover
+ * the common, unambiguous one-command form so it renders like Codex's native
+ * shell row. Anything dynamic or multi-tool stays visible as an Exec program. */
+static int cx_ident_start(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$';
+}
+
+static int cx_ident_char(char c) {
+    return cx_ident_start(c) || (c >= '0' && c <= '9');
+}
+
+/* Find a nested tool reference without mistaking command text containing
+ * `tools.` for another invocation. */
+static const char *cx_tool_ref(const char *text) {
+    char quote = 0;
+    for (const char *p = text; *p; p++) {
+        if (quote) {
+            if (*p == '\\' && p[1]) p++;
+            else if (*p == quote) quote = 0;
+            continue;
+        }
+        if (*p == '"' || *p == '\'' || *p == '`') {
+            quote = *p;
+            continue;
+        }
+        if (!strncmp(p, "tools.", 6)) return p;
+    }
+    return NULL;
+}
+
+/* exec's generated argument is JSON-shaped JavaScript. Codex sometimes leaves
+ * identifier keys such as `cmd` unquoted, so quote those keys while copying the
+ * one object literal; dynamic expressions deliberately fail cJSON parsing. */
+static cJSON *cx_exec_args(const char *start, const char **after) {
+    while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n') start++;
+    if (*start != '{') return NULL;
+    size_t cap = strlen(start) * 2 + 1, out = 0;
+    char *json = malloc(cap);
+    if (!json) return NULL;
+
+    int depth = 0, expect_key = 0;
+    char quote = 0;
+    const char *p = start;
+    for (; *p; p++) {
+        char ch = *p;
+        if (quote) {
+            json[out++] = ch;
+            if (ch == '\\' && p[1]) json[out++] = *++p;
+            else if (ch == quote) quote = 0;
+            continue;
+        }
+        if (ch == '\'' || ch == '`') break; /* not JSON-compatible; keep fallback */
+        if (ch == '"') {
+            quote = ch;
+            json[out++] = ch;
+            expect_key = 0;
+            continue;
+        }
+        if (ch == '{') {
+            depth++;
+            expect_key = 1;
+            json[out++] = ch;
+            continue;
+        }
+        if (ch == '}') {
+            json[out++] = ch;
+            if (--depth == 0) { p++; break; }
+            expect_key = 0;
+            continue;
+        }
+        if (ch == ',') {
+            expect_key = 1;
+            json[out++] = ch;
+            continue;
+        }
+        if (expect_key && cx_ident_start(ch)) {
+            const char *ident_end = p + 1;
+            while (cx_ident_char(*ident_end)) ident_end++;
+            const char *colon = ident_end;
+            while (*colon == ' ' || *colon == '\t' || *colon == '\r' || *colon == '\n')
+                colon++;
+            if (*colon == ':') {
+                json[out++] = '"';
+                while (p < ident_end) json[out++] = *p++;
+                json[out++] = '"';
+                p--;
+                expect_key = 0;
+                continue;
+            }
+        }
+        if (ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n') expect_key = 0;
+        json[out++] = ch;
+    }
+    json[out] = '\0';
+    cJSON *args = depth == 0 && p > start ? cJSON_Parse(json) : NULL;
+    free(json);
+    if (!args) return NULL;
+    *after = p;
+    return args;
+}
+
+static char *cx_nested_command_input(const char *raw) {
+    static const char marker[] = "tools.exec_command(";
+    const char *call = cx_tool_ref(raw);
+    if (!call || strncmp(call, marker, sizeof marker - 1) ||
+        cx_tool_ref(call + sizeof marker - 1)) return NULL;
+
+    const char *end = NULL;
+    cJSON *args = cx_exec_args(call + sizeof marker - 1, &end);
+    while (end && (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')) end++;
+    if (!cJSON_IsObject(args) || !end || *end != ')') {
+        cJSON_Delete(args);
+        return NULL;
+    }
+    const char *command = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(args, "cmd"));
+    const char *cwd = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(args, "workdir"));
+    if (!command) {
+        cJSON_Delete(args);
+        return NULL;
+    }
+
+    cJSON *input = cJSON_CreateObject();
+    cJSON_AddStringToObject(input, "command", command);
+    if (cwd) cJSON_AddStringToObject(input, "cwd", cwd);
+    char *json = cJSON_PrintUnformatted(input);
+    cJSON_Delete(input);
+    cJSON_Delete(args);
+    return json;
+}
+
+static char *cx_custom_input(cJSON *item, int *nested_command) {
+    *nested_command = 0;
+    const char *raw = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(item, "input"));
+    if (!raw) return NULL;
+    char *json = cx_nested_command_input(raw);
+    if (json) {
+        *nested_command = 1;
+        return json;
+    }
+    cJSON *input = cJSON_CreateObject();
+    cJSON_AddStringToObject(input, "command", raw);
+    json = cJSON_PrintUnformatted(input);
+    cJSON_Delete(input);
+    return json;
+}
+
+/* FunctionCallOutputBody is either a string or an array of Responses content
+ * items. The current exec tool returns input_text items; join those in order
+ * and ignore non-text media that this terminal UI cannot preview. */
+static char *cx_custom_output(cJSON *output) {
+    char *text = NULL;
+    if (cJSON_IsString(output)) {
+        text = strdup(output->valuestring);
+    } else if (cJSON_IsArray(output)) {
+        int n = cJSON_GetArraySize(output);
+        for (int i = 0; i < n; i++) {
+            cJSON *part = cJSON_GetArrayItem(output, i);
+            const char *s = part ? cJSON_GetStringValue(
+                cJSON_GetObjectItemCaseSensitive(part, "text")) : NULL;
+            if (s) cx_append(&text, s);
+        }
+    } else {
+        return NULL;
+    }
+    if (text && !strncmp(text, "Script completed\n", 17)) {
+        static const char marker[] = "Output:\n";
+        char *body = strstr(text + 17, marker);
+        if (body && (body == text + 17 || body[-1] == '\n'))
+            memmove(text, body + sizeof marker - 1,
+                    strlen(body + sizeof marker - 1) + 1);
+    }
+    return text;
+}
+
 static char *cx_file_input(cJSON *changes) {
     if (!cJSON_IsArray(changes)) return NULL;
     cJSON *input = cJSON_CreateObject();
@@ -584,6 +768,38 @@ static void cx_item_event(codex_client *c, cJSON *params, int started,
     }
 }
 
+/* Raw response items have only a completed notification. For a custom call it
+ * arrives before the tool runs, while its matching output item arrives after,
+ * so they still form the start/result pair expected by the renderer. */
+static void cx_raw_item_event(codex_client *c, cJSON *params) {
+    cJSON *item = params ? cJSON_GetObjectItemCaseSensitive(params, "item") : NULL;
+    const char *type = item ? cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(item, "type")) : NULL;
+    if (!type) return;
+    if (!strcmp(type, "custom_tool_call")) {
+        const char *name = cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(item, "name"));
+        int nested_command;
+        char *input = cx_custom_input(item, &nested_command);
+        codex_event ev = {
+            .kind = CODEX_EV_TOOL,
+            .name = nested_command ? "Shell" : (name ? name : "Tool"),
+            .input_json = input,
+        };
+        cx_emit(c, &ev);
+        free(input);
+    } else if (!strcmp(type, "custom_tool_call_output")) {
+        char *text = cx_custom_output(
+            cJSON_GetObjectItemCaseSensitive(item, "output"));
+        codex_event ev = {
+            .kind = CODEX_EV_TOOL_RESULT,
+            .text = text ? text : "",
+        };
+        cx_emit(c, &ev);
+        free(text);
+    }
+}
+
 char *codex_send_ex(codex_client *c, const char *user_text, codex_result *meta) {
     if (meta) memset(meta, 0, sizeof *meta);
     if (!c || !user_text) return NULL;
@@ -644,6 +860,8 @@ char *codex_send_ex(codex_client *c, const char *user_text, codex_result *meta) 
             cx_item_event(c, params, 1, &fallback);
         } else if (method && !strcmp(method, "item/completed")) {
             cx_item_event(c, params, 0, &fallback);
+        } else if (method && !strcmp(method, "rawResponseItem/completed")) {
+            cx_raw_item_event(c, params);
         } else if (method && !strcmp(method, "turn/completed")) {
             cJSON *t = params ? cJSON_GetObjectItemCaseSensitive(params, "turn") : NULL;
             const char *status = t ? cJSON_GetStringValue(
