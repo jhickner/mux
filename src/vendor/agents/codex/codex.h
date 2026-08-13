@@ -51,6 +51,13 @@ typedef struct {
     long context_window;
 } codex_result;
 
+typedef struct {
+    int  available;
+    int  used_percent;
+    long resets_at;
+    long window_minutes;
+} codex_rate_limit;
+
 /* As codex_send, but also fills *meta (zeroed first). `meta` may be NULL. */
 char *codex_send_ex(codex_client *c, const char *user_text, codex_result *meta);
 
@@ -87,6 +94,8 @@ void codex_set_abort_check(codex_client *c, int (*cb)(void));
 int codex_set_effort(codex_client *c, const char *effort);
 /* Latest context occupancy reported by thread/tokenUsage/updated. */
 void codex_usage(codex_client *c, long *context_tokens, long *context_window);
+/* Latest primary subscription window from the account rate-limit methods. */
+void codex_get_rate_limit(codex_client *c, codex_rate_limit *out);
 void codex_stop(codex_client *c);
 
 #endif /* CODEX_H */
@@ -121,6 +130,7 @@ struct codex_client {
     int effort_changed;
     char session_id[128];
     long context_tokens, context_window;
+    codex_rate_limit rate_limit;
     char *buf;
     size_t len, cap;
     pthread_t warm_thread;
@@ -229,6 +239,47 @@ static void cx_reject_server_request(codex_client *c, cJSON *msg) {
     cJSON_AddItemToObject(o, "error", err); cx_write(c, o);
 }
 
+static void cx_note_usage(codex_client *c, cJSON *params);
+
+/* Both the snapshot response and rolling notification carry a rateLimits
+ * object. Rolling updates are sparse, so absent/null values preserve the last
+ * good value rather than clearing it. */
+static void cx_note_rate_limit(codex_client *c, cJSON *container) {
+    cJSON *limits = container ? cJSON_GetObjectItemCaseSensitive(container, "rateLimits") : NULL;
+    cJSON *primary = cJSON_IsObject(limits) ?
+        cJSON_GetObjectItemCaseSensitive(limits, "primary") : NULL;
+    if (!cJSON_IsObject(primary)) return;
+    cJSON *used = cJSON_GetObjectItemCaseSensitive(primary, "usedPercent");
+    cJSON *resets = cJSON_GetObjectItemCaseSensitive(primary, "resetsAt");
+    cJSON *window = cJSON_GetObjectItemCaseSensitive(primary, "windowDurationMins");
+    if (cJSON_IsNumber(used)) {
+        int percent = (int)(used->valuedouble + 0.5);
+        if (percent < 0) percent = 0;
+        if (percent > 100) percent = 100;
+        c->rate_limit.used_percent = percent;
+        c->rate_limit.available = 1;
+    }
+    if (cJSON_IsNumber(resets) && resets->valuedouble > 0)
+        c->rate_limit.resets_at = (long)resets->valuedouble;
+    if (cJSON_IsNumber(window) && window->valuedouble > 0)
+        c->rate_limit.window_minutes = (long)window->valuedouble;
+}
+
+static int cx_handle_notification(codex_client *c, cJSON *msg) {
+    const char *method = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(msg, "method"));
+    cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
+    if (method && !strcmp(method, "thread/tokenUsage/updated")) {
+        cx_note_usage(c, params);
+        return 1;
+    }
+    if (method && !strcmp(method, "account/rateLimits/updated")) {
+        cx_note_rate_limit(c, params);
+        return 1;
+    }
+    return 0;
+}
+
 static cJSON *cx_wait_response(codex_client *c, int want) {
     for (;;) {
         cJSON *msg;
@@ -242,6 +293,7 @@ static cJSON *cx_wait_response(codex_client *c, int want) {
             return msg;
         }
         if (id && method) cx_reject_server_request(c, msg);
+        else cx_handle_notification(c, msg);
         cJSON_Delete(msg);
     }
 }
@@ -258,6 +310,15 @@ static int cx_initialize(codex_client *c) {
     cJSON *note = cJSON_CreateObject();
     cJSON_AddStringToObject(note, "method", "initialized");
     return cx_write(c, note);
+}
+
+static void cx_read_rate_limit(codex_client *c) {
+    int id = cx_request(c, "account/rateLimits/read", cJSON_CreateNull());
+    cJSON *r = id ? cx_wait_response(c, id) : NULL;
+    if (!r) return;                 /* older app-server: quota stays unavailable */
+    cJSON *result = cJSON_GetObjectItemCaseSensitive(r, "result");
+    cx_note_rate_limit(c, result);
+    cJSON_Delete(r);
 }
 
 static int cx_open_thread(codex_client *c, const char *resume) {
@@ -286,7 +347,9 @@ static int cx_open_thread(codex_client *c, const char *resume) {
  * of holding the whole interface behind them. */
 static void *cx_warm(void *arg) {
     codex_client *c = arg;
-    int ok = cx_initialize(c) && cx_open_thread(c, c->resume);
+    int initialized = cx_initialize(c);
+    if (initialized) cx_read_rate_limit(c);
+    int ok = initialized && cx_open_thread(c, c->resume);
     atomic_store_explicit(&c->warm_state, ok ? 1 : -1, memory_order_release);
     return NULL;
 }
@@ -364,6 +427,14 @@ int codex_set_effort(codex_client *c, const char *effort) {
 void codex_usage(codex_client *c, long *tokens, long *window) {
     if (tokens) *tokens = c ? c->context_tokens : 0;
     if (window) *window = c ? c->context_window : 0;
+}
+void codex_get_rate_limit(codex_client *c, codex_rate_limit *out) {
+    if (!out) return;
+    if (!c || atomic_load_explicit(&c->warm_state, memory_order_acquire) != 1) {
+        *out = (codex_rate_limit){0};
+        return;
+    }
+    *out = c->rate_limit;
 }
 void codex_set_event_cb(codex_client *c,
                         void (*cb)(void *ud, const codex_event *ev),
@@ -563,8 +634,8 @@ char *codex_send_ex(codex_client *c, const char *user_text, codex_result *meta) 
         cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
         if (jid && method) {
             cx_reject_server_request(c, msg);
-        } else if (method && !strcmp(method, "thread/tokenUsage/updated")) {
-            cx_note_usage(c, params);
+        } else if (method && cx_handle_notification(c, msg)) {
+            /* accounting notification retained above */
         } else if (method && !strcmp(method, "item/agentMessage/delta")) {
             const char *d = params ? cJSON_GetStringValue(
                 cJSON_GetObjectItemCaseSensitive(params, "delta")) : NULL;

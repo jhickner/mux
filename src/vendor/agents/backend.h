@@ -71,6 +71,16 @@ typedef struct {
     int    interrupted;   /* the abort predicate ended the turn */
 } backend_result;
 
+/* Subscription rate limit reported by a backend's local protocol. This is
+ * deliberately separate from context usage above: one measures account quota,
+ * the other measures how full the current model request is. */
+typedef struct {
+    int  available;
+    int  used_percent;
+    long resets_at;
+    long window_minutes;
+} backend_rate_limit;
+
 /* What a driver supports, in Backend.caps. */
 #define BACKEND_CAP_RESUME      1u /* start() can adopt a prior session id */
 #define BACKEND_CAP_EFFORT      2u /* set_effort() is supported            */
@@ -98,6 +108,10 @@ struct Backend {
      * when unknown, and the whole hook is NULL for a driver that never reports
      * usage mid-turn. */
     void (*usage)(Backend *b, long *context_tokens, long *context_window);
+
+    /* Latest primary subscription-rate-limit window, when the backend exposes
+     * it locally. Zeroes *out when no reading is available. */
+    void (*rate_limit)(Backend *b, backend_rate_limit *out);
 
     /* Takes effect at the next start(). */
     void (*set_model)(Backend *b, const char *model);
@@ -493,6 +507,18 @@ static void backend_codex_usage(Backend *b, long *tokens, long *window) {
     codex_usage(x->client, tokens, window);
 }
 
+static void backend_codex_rate_limit(Backend *b, backend_rate_limit *out) {
+    if (!out) return;
+    backend_codex *x = b->ctx;
+    codex_rate_limit limit = {0};
+    memset(out, 0, sizeof *out);
+    codex_get_rate_limit(x->client, &limit);
+    out->available = limit.available;
+    out->used_percent = limit.used_percent;
+    out->resets_at = limit.resets_at;
+    out->window_minutes = limit.window_minutes;
+}
+
 static char *backend_codex_ask(Backend *b, const char *user) {
     return backend_codex_ask_ex(b, user, NULL);
 }
@@ -550,6 +576,7 @@ static Backend *backend_codex_open(const backend_opts *o) {
     b->start = backend_codex_start;
     b->ask_ex = backend_codex_ask_ex;
     b->usage = backend_codex_usage;
+    b->rate_limit = backend_codex_rate_limit;
     b->set_model = backend_set_model_generic;
     b->set_effort = backend_codex_set_effort;
     b->set_permission = backend_set_permission_none;

@@ -53,6 +53,12 @@ static void respond(int id, const char *result)
     fflush(stdout);
 }
 
+static void respond_error(int id)
+{
+    printf("{\"id\":%d,\"error\":{\"code\":-32602,\"message\":\"bad test params\"}}\n", id);
+    fflush(stdout);
+}
+
 static int mock_server(void)
 {
     char *line = NULL;
@@ -69,6 +75,15 @@ static int mock_server(void)
         if (method && !strcmp(method, "initialize")) {
             usleep(400000);
             respond(id, "{}");
+        } else if (method && !strcmp(method, "account/rateLimits/read")) {
+            cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
+            if (!cJSON_IsNull(params)) {
+                respond_error(id);
+                cJSON_Delete(msg);
+                continue;
+            }
+            respond(id, "{\"rateLimits\":{\"primary\":{\"usedPercent\":17,"
+                        "\"resetsAt\":2000000000,\"windowDurationMins\":10080}}}");
         } else if (method && !strcmp(method, "thread/start")) {
             respond(id, "{\"thread\":{\"id\":\"thread-1\"}}");
         } else if (method && !strcmp(method, "turn/start")) {
@@ -83,6 +98,14 @@ static int mock_server(void)
                 respond(id, "{}");
                 cJSON_Delete(msg);
                 continue;
+            }
+            /* Arrives while the client is waiting for turn/start's response;
+             * it must be retained rather than discarded by the response loop. */
+            if (turns == 2) {
+                printf("{\"method\":\"account/rateLimits/updated\",\"params\":{"
+                       "\"rateLimits\":{\"primary\":{\"usedPercent\":29,"
+                       "\"resetsAt\":2000000100}}}}\n");
+                fflush(stdout);
             }
             char started[64];
             snprintf(started, sizeof started, "{\"turn\":{\"id\":\"turn-%d\"}}", turns);
@@ -174,6 +197,15 @@ int main(int argc, char **argv)
     }
     free(reply);
 
+    codex_rate_limit rate = {0};
+    codex_get_rate_limit(client, &rate);
+    if (!rate.available || rate.used_percent != 17 ||
+        rate.resets_at != 2000000000L || rate.window_minutes != 10080) {
+        fprintf(stderr, "codextest: initial account rate limit was not retained\n");
+        codex_stop(client);
+        return 1;
+    }
+
     abort_turn = 0;
     if (!codex_set_effort(client, "low")) {
         fprintf(stderr, "codextest: could not change effort\n");
@@ -188,6 +220,14 @@ int main(int argc, char **argv)
         return 1;
     }
     free(reply);
+
+    codex_get_rate_limit(client, &rate);
+    if (!rate.available || rate.used_percent != 29 ||
+        rate.resets_at != 2000000100L || rate.window_minutes != 10080) {
+        fprintf(stderr, "codextest: rolling account rate limit was not retained\n");
+        codex_stop(client);
+        return 1;
+    }
 
     cJSON *shell = cJSON_Parse(shell_input);
     const char *command = shell ? cJSON_GetStringValue(

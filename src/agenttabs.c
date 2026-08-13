@@ -5,12 +5,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 /* Both empty until agenttabs_begin() claims the tab; every entry point below
  * checks `record` and does nothing without one. */
 static char record[4200];    /* <state>/agents/<pid>.json, the row we own    */
 static char hook_dir[4200];  /* <state>/state, where the CLI's hook writes   */
+static char agent[32];       /* backend name, for usage-provider discovery   */
+static const char *current_status;
+static int usage_percent = -1;
+static long usage_resets_at;
+static long usage_window_minutes;
+static time_t usage_updated_at;
 
 /* Mirrors the plugin's scripts/paths.sh agent_tabs_state_dir(): the tmux config
  * tree, falling back to the legacy ~/.tmux only when it is the one that
@@ -52,9 +59,9 @@ static int pane_id(const char *s)
     return 1;
 }
 
-static void write_status(const char *status)
+static void write_record(void)
 {
-    if (!record[0])
+    if (!record[0] || !current_status)
         return;
 
     char tmp[4300];
@@ -64,9 +71,16 @@ static void write_status(const char *status)
         return;
 
     const char *pane = getenv("TMUX_PANE");
-    fprintf(f, "{\"pid\":%ld,\"status\":\"%s\"", (long)getpid(), status);
+    fprintf(f, "{\"agent\":\"%s\",\"pid\":%ld,\"status\":\"%s\",\"ts\":%ld",
+            agent, (long)getpid(), current_status, (long)time(NULL));
     if (pane_id(pane))
         fprintf(f, ",\"tmux_pane\":\"%s\"", pane);
+    if (usage_percent >= 0) {
+        fprintf(f, ",\"usage_percent\":%d,\"usage_resets_at\":%ld"
+                   ",\"usage_window_minutes\":%ld,\"usage_ts\":%ld",
+                usage_percent, usage_resets_at, usage_window_minutes,
+                (long)usage_updated_at);
+    }
     fprintf(f, "}\n");
 
     /* The plugin re-reads this file every second, so it must never catch one
@@ -83,11 +97,20 @@ static void drop_record(void)
         unlink(record);
 }
 
-void agenttabs_begin(void)
+void agenttabs_begin(const char *backend)
 {
     /* No pane, no tab to report on. */
     if (!getenv("TMUX_PANE"))
         return;
+
+    /* Backend names come from backend_names(), but keep the state file valid
+     * even if a future caller hands us something unexpected. */
+    if (!backend || !*backend || strlen(backend) >= sizeof agent)
+        return;
+    for (const char *p = backend; *p; p++)
+        if ((*p < 'a' || *p > 'z') && (*p < '0' || *p > '9') && *p != '-' && *p != '_')
+            return;
+    snprintf(agent, sizeof agent, "%s", backend);
 
     char dir[4096];
     struct stat st;
@@ -117,9 +140,31 @@ void agenttabs_begin(void)
     agenttabs_finished();
 }
 
+static void write_status(const char *status)
+{
+    current_status = status;
+    write_record();
+}
+
 void agenttabs_working(void)  { write_status("working"); }
 void agenttabs_finished(void) { write_status("finished"); }
 void agenttabs_errored(void)  { write_status("errored"); }
+
+void agenttabs_usage(int percent, long resets_at, long window_minutes)
+{
+    if (!record[0] || percent < 0 || percent > 100)
+        return;
+    resets_at = resets_at > 0 ? resets_at : 0;
+    window_minutes = window_minutes > 0 ? window_minutes : 0;
+    if (percent == usage_percent && resets_at == usage_resets_at &&
+        window_minutes == usage_window_minutes)
+        return;
+    usage_percent = percent;
+    usage_resets_at = resets_at;
+    usage_window_minutes = window_minutes;
+    usage_updated_at = time(NULL);
+    write_record();
+}
 
 void agenttabs_forget_hook(const char *id)
 {

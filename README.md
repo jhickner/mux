@@ -76,7 +76,9 @@ block in the history above.
   [tmux-agent-tabs](https://github.com/jhickner/tmux-agent-tabs) when that
   plugin is installed, so the tmux tab spins while a turn runs and marks a
   background one that finished — including a turn you interrupted, which the
-  CLI's own hook never reports
+  CLI's own hook never reports. The record identifies the active backend so
+  Claude and Grok usage can refresh after short turns; Codex additionally
+  publishes the primary subscription-rate-limit window from app-server
 
 ## Commands
 

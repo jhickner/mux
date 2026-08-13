@@ -568,6 +568,16 @@ static struct session *live;
 
 static void set_id(struct session *s, const char *id);
 
+static void quota_poll(struct session *s)
+{
+    if (!s || !s->agent || !s->agent->rate_limit)
+        return;
+    backend_rate_limit limit = {0};
+    s->agent->rate_limit(s->agent, &limit);
+    if (limit.available)
+        agenttabs_usage(limit.used_percent, limit.resets_at, limit.window_minutes);
+}
+
 /* A conversation is worth naming while its first turn is still running, so the
  * helper is started as soon as the CLI reports the session id and the answer is
  * picked up off the cache a second or so later — both from here, since a turn
@@ -610,6 +620,7 @@ static void name_poll(struct session *s)
 static int abort_check(void)
 {
     name_poll(live);
+    quota_poll(live);
 
     /* Without a raw terminal there is no interrupt key to read, and reading a
      * redirected stdin would see EOF and cancel the turn immediately. */
@@ -972,6 +983,7 @@ int session_turn(struct session *s, const char *text)
 
     backend_result meta = {0};
     char *reply = s->agent->ask_ex(s->agent, text, &meta);
+    quota_poll(s);
     double elapsed = now_seconds() - started;
     live = NULL;
     if (!s->quiet)

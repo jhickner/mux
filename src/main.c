@@ -176,7 +176,7 @@ int main(int argc, char **argv)
     ui_init();
     /* Before session_start(): the CLI it spawns inherits the marker that keeps
      * the plugin's own hook from reporting this pane too. */
-    agenttabs_begin();
+    agenttabs_begin(backend);
     struct session *session = session_new(backend, cwd, model, effort);
     if (session) {
         session_set_customizations(session, !safe_mode);

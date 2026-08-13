@@ -11,13 +11,19 @@
  * Must run before the CLI is spawned: the child inherits the marker that
  * silences its hook. Outside tmux, or with the plugin not installed, this and
  * everything below is a no-op. */
-void agenttabs_begin(void);
+void agenttabs_begin(const char *backend);
 
 /* The three states the plugin renders for us: a spinner, nothing (a finished
  * turn, or a dot if you were on another tab), and an error marker. */
 void agenttabs_working(void);
 void agenttabs_finished(void);
 void agenttabs_errored(void);
+
+/* Record subscription quota reported directly by a backend. The plugin uses
+ * this for Codex, whose app-server exposes the primary rate-limit window
+ * without a lifecycle hook or network request. Invalid/unknown readings are
+ * ignored, and unchanged readings do not rewrite the state file. */
+void agenttabs_usage(int percent, long resets_at, long window_minutes);
 
 /* Discard the hook record left by an earlier run of session `id` — one from
  * before we started silencing the hook. It is keyed by session id, so resuming

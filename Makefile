@@ -47,7 +47,10 @@ claudetest: tools/claudetest.c src/vendor/impl.o src/vendor/cJSON.o
 pitest: tools/pitest.c src/vendor/impl.o src/vendor/cJSON.o
 	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
 
-check: reflowtest toolstyletest sessionlisttest claudetest codextest filedifftest pitest
+agenttabstest: tools/agenttabstest.c src/agenttabs.o src/vendor/cJSON.o
+	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
+
+check: reflowtest toolstyletest sessionlisttest claudetest codextest filedifftest pitest agenttabstest
 	./reflowtest
 	./toolstyletest
 	./sessionlisttest
@@ -55,12 +58,13 @@ check: reflowtest toolstyletest sessionlisttest claudetest codextest filedifftes
 	./codextest
 	./filedifftest
 	./pitest
+	./agenttabstest
 
 install: $(BIN)
 	install -d $(PREFIX)/bin
 	install -m 755 $(BIN) $(PREFIX)/bin/$(BIN)
 
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN) palette spintest reflowtest toolstyletest sessionlisttest claudetest codextest filedifftest pitest src/*.o.tmp src/vendor/*.o.tmp
+	rm -f $(OBJ) $(DEP) $(BIN) palette spintest reflowtest toolstyletest sessionlisttest claudetest codextest filedifftest pitest agenttabstest src/*.o.tmp src/vendor/*.o.tmp
 
 .PHONY: all install clean check
