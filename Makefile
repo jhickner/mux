@@ -53,6 +53,9 @@ agenttabstest: tools/agenttabstest.c src/agenttabs.o src/vendor/cJSON.o
 imagetest: tools/imagetest.c src/image.o src/md.o src/ui.o src/tty.o src/vendor/impl.o src/vendor/cJSON.o
 	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
 
+pastetest: tools/pastetest.c src/paste.o
+	$(CC) $(CFLAGS) -Isrc -o $@ $^
+
 check: reflowtest toolstyletest sessionlisttest claudetest codextest filedifftest pitest agenttabstest
 	./reflowtest
 	./toolstyletest
@@ -68,6 +71,6 @@ install: $(BIN)
 	install -m 755 $(BIN) $(PREFIX)/bin/$(BIN)
 
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN) palette spintest reflowtest toolstyletest sessionlisttest claudetest codextest filedifftest pitest agenttabstest imagetest src/*.o.tmp src/vendor/*.o.tmp
+	rm -f $(OBJ) $(DEP) $(BIN) palette spintest reflowtest toolstyletest sessionlisttest claudetest codextest filedifftest pitest agenttabstest imagetest pastetest src/*.o.tmp src/vendor/*.o.tmp
 
 .PHONY: all install clean check
