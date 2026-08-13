@@ -74,10 +74,10 @@ block in the history above.
 - Interrupt an in-flight turn without losing the session
 - Model switching mid-conversation, carrying context across the restart
 - Resume any past conversation for the current directory
-- Fork a conversation into a second agent: a git worktree off HEAD carrying your
-  uncommitted changes, opened in a tmux split or window, resumed on the same
-  context. The fork commands run immediately even with a turn in flight, so a
-  second agent can be started while the first is still working
+- Fork a conversation into a second agent in the current working directory,
+  opened in a tmux split or window and resumed on the same context. The fork
+  commands run immediately even with a turn in flight, so a second agent can be
+  started while the first is still working
 - Quitting prints the command that reopens the conversation you were in
 - One-shot mode: `simple-agent "question"` prints the answer and exits; piped
   output is plain text with no spinner or footer
@@ -101,9 +101,9 @@ block in the history above.
 | `/sticky [on\|off]` | Keep the latest prompt at the top; no argument flips it |
 | `/image [rows]` | Tallest an inline image may be drawn (2–100, default 20); no argument reports it |
 | `/resume` | Pick a past conversation for this directory |
-| `/fh`, `/fs` | Fork into a horizontal tmux split, in a new worktree |
-| `/fv` | Fork into a vertical tmux split, in a new worktree |
-| `/fw` | Fork into a tmux window, in a new worktree |
+| `/fh`, `/fs` | Fork into a horizontal tmux split |
+| `/fv` | Fork into a vertical tmux split |
+| `/fw` | Fork into a tmux window |
 | `/session` | Backend, model, auth, session id, cwd, turns, context, cost |
 | `/copy` | Copy the last response to the clipboard |
 | `/help` | Command and key reference |

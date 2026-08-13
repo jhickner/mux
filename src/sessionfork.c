@@ -5,14 +5,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include "session.h"
 #include "ui.h"
-
-#define MAX_FORKS 100
 
 /* Bare when found on PATH, absolute once resolved from argv[0]. */
 static char program[4096] = "simple-agent";
@@ -60,79 +57,6 @@ static int run(char *const argv[], const char *out_path)
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
-static int capture_line(char *const argv[], char *out, size_t size)
-{
-    char tmp[] = "/tmp/simple-agent-fork-XXXXXX";
-    int fd = mkstemp(tmp);
-    if (fd < 0)
-        return 0;
-    close(fd);
-
-    int ok = 0;
-    if (run(argv, tmp) == 0) {
-        FILE *f = fopen(tmp, "r");
-        if (f) {
-            if (fgets(out, (int)size, f)) {
-                out[strcspn(out, "\n")] = '\0';
-                ok = *out != '\0';
-            }
-            fclose(f);
-        }
-    }
-    remove(tmp);
-    return ok;
-}
-
-/* ---------- the worktree ---------- */
-
-/* Claim the first free fork-N. `git worktree add` is the arbiter: it fails if
- * either the directory or the branch is taken, so a losing name just moves on
- * to the next. */
-static int add_worktree(const char *top, char *path, size_t path_size, char *branch,
-                        size_t branch_size)
-{
-    char dir[4096];
-    snprintf(dir, sizeof dir, "%s/.claude", top);
-    mkdir(dir, 0700);
-    snprintf(dir, sizeof dir, "%s/.claude/worktrees", top);
-    mkdir(dir, 0700);
-
-    for (int n = 1; n <= MAX_FORKS; n++) {
-        snprintf(branch, branch_size, "fork-%d", n);
-        snprintf(path, path_size, "%s/fork-%d", dir, n);
-
-        struct stat st;
-        if (stat(path, &st) == 0)
-            continue;
-
-        char *argv[] = {"git",    "-C",   (char *)top, "worktree", "add",
-                        "-b",     branch, path,        "HEAD",     NULL};
-        if (run(argv, NULL) == 0)
-            return 1;
-    }
-    return 0;
-}
-
-/* Uncommitted tracked changes, replayed into the new worktree so the fork starts
- * from what is on screen rather than from HEAD. Untracked files do not travel. */
-static void carry_changes(const char *top, const char *path)
-{
-    char patch[] = "/tmp/simple-agent-fork-XXXXXX";
-    int fd = mkstemp(patch);
-    if (fd < 0)
-        return;
-    close(fd);
-
-    char *diff[] = {"git", "-C", (char *)top, "diff", "HEAD", NULL};
-    struct stat st;
-    if (run(diff, patch) == 0 && stat(patch, &st) == 0 && st.st_size > 0) {
-        char *apply[] = {"git", "-C", (char *)path, "apply", patch, NULL};
-        if (run(apply, NULL) != 0)
-            ui_note("uncommitted changes did not apply; the fork starts at HEAD");
-    }
-    remove(patch);
-}
-
 /* ---------- interface ---------- */
 
 int sessionfork(const struct session *s, enum fork_where where)
@@ -159,22 +83,6 @@ int sessionfork(const struct session *s, enum fork_where where)
         return 0;
     }
 
-    char top[4096];
-    char *rev[] = {"git", "-C", (char *)session_cwd(s), "rev-parse", "--show-toplevel", NULL};
-    if (!capture_line(rev, top, sizeof top)) {
-        ui_error("not a git repository — nothing to make a worktree from");
-        ui_put("\n");
-        return 0;
-    }
-
-    char path[4096], branch[64];
-    if (!add_worktree(top, path, sizeof path, branch, sizeof branch)) {
-        ui_error("could not create a worktree");
-        ui_put("\n");
-        return 0;
-    }
-    carry_changes(top, path);
-
     char *tmux[20];
     int n = 0;
     tmux[n++] = "tmux";
@@ -185,7 +93,7 @@ int sessionfork(const struct session *s, enum fork_where where)
         tmux[n++] = where == FORK_SPLIT_H ? "-h" : "-v";
     }
     tmux[n++] = "-c";
-    tmux[n++] = path;
+    tmux[n++] = (char *)session_cwd(s);
     tmux[n++] = program;
     tmux[n++] = "-b";
     tmux[n++] = (char *)session_backend(s);
@@ -211,7 +119,7 @@ int sessionfork(const struct session *s, enum fork_where where)
         return 0;
     }
 
-    ui_bar(ui_style(UI_DIM), "forked \xc2\xb7 %s", branch);
+    ui_bar(ui_style(UI_DIM), "forked");
     ui_put("\n");
     ui_flush();
     return 1;

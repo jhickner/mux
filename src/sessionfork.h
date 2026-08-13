@@ -1,5 +1,5 @@
-/* Forking the conversation: a second agent, resumed on the same context, in its
- * own git worktree and its own tmux pane. */
+/* Forking the conversation: a second agent, resumed on the same context, in a
+ * new tmux pane or window. */
 #ifndef SESSIONFORK_H
 #define SESSIONFORK_H
 
@@ -17,9 +17,9 @@ enum fork_where {
     FORK_WINDOW,
 };
 
-/* Branch a worktree off HEAD, carry over uncommitted tracked changes, and open
- * a tmux pane there running this program resumed on the current conversation.
- * Returns 1 on success; reports its own errors. */
+/* Open a tmux pane in the current working directory running this program
+ * resumed on the current conversation. Returns 1 on success; reports its own
+ * errors. */
 int sessionfork(const struct session *s, enum fork_where where);
 
 /* Print the command that reopens this conversation. Call on the way out, while

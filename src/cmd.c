@@ -523,8 +523,8 @@ static int fork_target(const char *name, enum fork_where *where)
     return 0;
 }
 
-/* Forking only reads the session id and the git tree, so it is safe with a turn
- * in flight. Anything that restarts the CLI is not. */
+/* Forking only reads session state, so it is safe with a turn in flight.
+ * Anything that restarts the CLI is not. */
 int cmd_is_live(const char *line)
 {
     char name[32];
