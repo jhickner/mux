@@ -36,7 +36,9 @@ typedef struct {
     const char *model;         /* --model value; NULL -> pi default            */
     const char *effort;        /* --thinking value; NULL -> pi default         */
     const char *append_system; /* prepended to each prompt; NULL -> none       */
-    int no_session;            /* nonzero -> pass --no-session (default: on)   */
+    const char *resume_session;/* --session id; NULL -> a fresh conversation   */
+    int no_session;            /* nonzero -> pass --no-session. Also the
+                                  default when opts is NULL.                   */
 } pi_opts;
 
 /* Start a persistent `pi --mode rpc` process. Returns NULL only on a local
@@ -61,6 +63,10 @@ char *pi_send_ex(pi_client *c, const char *user_text, pi_result *meta);
 /* Start a fresh in-memory pi session, discarding conversation context. Returns
  * nonzero on success. This does not restart the subprocess. */
 int pi_reset(pi_client *c);
+
+/* The session id pi reports via get_state, or NULL until known. Needed to
+ * resume later with --session. Absent when the process was started ephemeral. */
+const char *pi_session_id(pi_client *c);
 
 /* When on, pi_send writes a compact event trace to stderr. */
 void pi_set_verbose(pi_client *c, int on);
@@ -139,6 +145,7 @@ struct pi_client {
     char *sys, *default_effort;
     char *buf;
     size_t len, cap;
+    char session_id[128];
 };
 
 void pi_set_verbose(pi_client *c, int on) { if (c) c->verbose = on; }
@@ -332,6 +339,31 @@ static int pi_wait_response_string(pi_client *c, int id, const char *key,
     }
 }
 
+/* Pull sessionId out of a get_state response. The object is the full event. */
+static void pi_take_id(pi_client *c, cJSON *ev) {
+    cJSON *data = cJSON_GetObjectItemCaseSensitive(ev, "data");
+    const char *id = data ? cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(data, "sessionId")) : NULL;
+    if (id && *id)
+        snprintf(c->session_id, sizeof c->session_id, "%s", id);
+}
+
+/* Ask for the current session id. Safe between turns; not while a prompt is
+ * in flight, because pi_read would steal that turn's events. */
+static void pi_refresh_id(pi_client *c) {
+    int id = pi_command(c, "get_state", NULL);
+    if (!id) return;
+    for (;;) {
+        cJSON *ev;
+        int r = pi_read(c, &ev, 0);
+        if (r != 1) return;
+        int response = pi_response(ev, id);
+        if (response == 1) pi_take_id(c, ev);
+        cJSON_Delete(ev);
+        if (response >= 0) return;
+    }
+}
+
 pi_client *pi_start(const pi_opts *opts) {
     pi_opts o = opts ? *opts : (pi_opts){0};
     const char *cli = (o.cli_path && *o.cli_path) ? o.cli_path : "pi";
@@ -348,7 +380,11 @@ pi_client *pi_start(const pi_opts *opts) {
         if (o.cwd && *o.cwd && chdir(o.cwd)) _exit(126);
         const char *argv[22]; int n = 0;
         argv[n++] = cli; argv[n++] = "--mode"; argv[n++] = "rpc";
-        if (o.no_session || !opts) argv[n++] = "--no-session";
+        if (o.resume_session && *o.resume_session) {
+            argv[n++] = "--session"; argv[n++] = o.resume_session;
+        } else if (o.no_session || !opts) {
+            argv[n++] = "--no-session";
+        }
         argv[n++] = "--no-extensions";
         argv[n++] = "--no-skills";
         argv[n++] = "--no-prompt-templates";
@@ -365,8 +401,23 @@ pi_client *pi_start(const pi_opts *opts) {
     if (!c) { close(in[1]); close(out[0]); kill(pid, SIGKILL); waitpid(pid, NULL, 0); return NULL; }
     c->pid = pid; c->in_fd = in[1]; c->out_fd = out[0]; c->next_id = 1;
     c->sys = (o.append_system && *o.append_system) ? strdup(o.append_system) : NULL;
+    if (o.resume_session && *o.resume_session)
+        snprintf(c->session_id, sizeof c->session_id, "%s", o.resume_session);
     fcntl(c->in_fd, F_SETFD, FD_CLOEXEC); fcntl(c->out_fd, F_SETFD, FD_CLOEXEC);
+    /* Don't block on get_state: pi is still booting, and the UI comes up as
+     * soon as this returns. The id is known already on --session; a fresh one
+     * is asked for after the first turn (and after reset). A child that died
+     * during exec is the only failure we can see this early. */
+    if (waitpid(c->pid, NULL, WNOHANG) == c->pid) {
+        close(c->in_fd); close(c->out_fd);
+        free(c->sys); free(c->buf); free(c);
+        return NULL;
+    }
     return c;
+}
+
+const char *pi_session_id(pi_client *c) {
+    return (c && c->session_id[0]) ? c->session_id : NULL;
 }
 
 int pi_abort(pi_client *c) { return c ? pi_command(c, "abort", NULL) != 0 : 0; }
@@ -421,6 +472,7 @@ char *pi_send_ex(pi_client *c, const char *user_text, pi_result *meta) {
         cJSON_Delete(ev);
     }
     if (!accepted) { free(answer); return NULL; }
+    if (!c->session_id[0]) pi_refresh_id(c);
     return answer ? answer : strdup("");
 }
 
@@ -431,7 +483,10 @@ char *pi_send(pi_client *c, const char *user_text) {
 int pi_reset(pi_client *c) {
     if (!c) return 0;
     int id = pi_command(c, "new_session", NULL);
-    return id && pi_wait_response(c, id);
+    if (!id || !pi_wait_response(c, id)) return 0;
+    c->session_id[0] = '\0';
+    pi_refresh_id(c);
+    return 1;
 }
 
 /* Poll for the child's exit for up to `ms`. Returns nonzero once reaped. */
@@ -502,29 +557,29 @@ static void pi_backend_event(void *ud, const pi_event *pev) {
     }
 }
 
-/* pi has no resumable session id, so `resume` is ignored. */
 static int pi_backend_start(Backend *b, const char *resume) {
     pi_backend_ctx *cx = b->ctx;
-    (void)resume;
     pi_opts o = {0};
     o.cwd = cx->st.cwd;
     o.model = cx->st.model;
     o.effort = cx->st.effort;
     o.append_system = cx->st.system;
-    o.no_session = 1;
+    o.resume_session = resume;
+    o.no_session = 0;
     pi_client *c = pi_start(&o);
     if (!c) return 0;
     pi_set_event_cb(c, pi_backend_event, b);
     pi_set_abort_check(c, cx->st.abort);
     if (cx->c) pi_stop(cx->c);
     cx->c = c;
+    backend_set(&cx->st.resume, resume);
     return 1;
 }
 
 static char *pi_backend_ask_ex(Backend *b, const char *user, backend_result *meta) {
     pi_backend_ctx *cx = b->ctx;
     if (meta) memset(meta, 0, sizeof *meta);
-    if (!cx->c && !pi_backend_start(b, NULL)) return NULL;
+    if (!cx->c && !pi_backend_start(b, cx->st.resume)) return NULL;
     pi_result pr = {0};
     char *reply = pi_send_ex(cx->c, user, &pr);
     backend_flush(&cx->st);
@@ -559,6 +614,10 @@ static int pi_backend_set_effort(Backend *b, const char *effort) {
     backend_set(&cx->st.effort, effort);
     return 1;
 }
+static const char *pi_backend_session_id(Backend *b) {
+    pi_backend_ctx *cx = b->ctx;
+    return cx->c ? pi_session_id(cx->c) : NULL;
+}
 static void pi_backend_close(Backend *b) {
     pi_backend_ctx *cx = b->ctx;
     if (cx->c) pi_stop(cx->c);
@@ -571,7 +630,8 @@ Backend *pi_backend_open(const backend_opts *opts) {
     if (!cx || !b) { free(cx); free(b); return NULL; }
     backend_state_init(&cx->st, opts);
     b->ctx = cx;
-    b->caps = BACKEND_CAP_EFFORT | BACKEND_CAP_LIVE_EFFORT;
+    b->caps = BACKEND_CAP_RESUME | BACKEND_CAP_EFFORT |
+              BACKEND_CAP_LIVE_EFFORT;
     b->ask = pi_backend_ask;
     b->reset = pi_backend_reset;
     b->close = pi_backend_close;
@@ -582,7 +642,7 @@ Backend *pi_backend_open(const backend_opts *opts) {
     b->set_permission = backend_set_permission_none;
     b->set_event_cb = pi_backend_set_event_cb;
     b->set_abort_check = pi_backend_set_abort;
-    b->session_id = backend_none;
+    b->session_id = pi_backend_session_id;
     b->model = backend_none;
     b->auth_source = backend_none;
     b->last_error = backend_none;

@@ -388,9 +388,186 @@ static int load_grok(const char *cwd, const char *skip_id, struct past_session *
     return finish_list(list, count, out);
 }
 
+/* Pi names the project directory --<cwd>-- with the leading slash stripped and
+ * every / \\ : turned into a dash. */
+static void encode_cwd_pi(const char *cwd, char *out, size_t size)
+{
+    if (size < 5) {
+        if (size)
+            out[0] = '\0';
+        return;
+    }
+    const char *p = cwd ? cwd : "";
+    if (*p == '/' || *p == '\\')
+        p++;
+    size_t o = 0;
+    out[o++] = '-';
+    out[o++] = '-';
+    for (; *p && o + 3 < size; p++) {
+        char c = *p;
+        out[o++] = (c == '/' || c == '\\' || c == ':') ? '-' : c;
+    }
+    out[o++] = '-';
+    out[o++] = '-';
+    out[o] = '\0';
+}
+
+static int pi_agent_dir(char *out, size_t size)
+{
+    const char *env = getenv("PI_CODING_AGENT_DIR");
+    if (env && *env) {
+        snprintf(out, size, "%s", env);
+        return 1;
+    }
+    const char *home = getenv("HOME");
+    if (!home)
+        return 0;
+    snprintf(out, size, "%s/.pi/agent", home);
+    return 1;
+}
+
+/* Custom --session-dir / PI_CODING_AGENT_SESSION_DIR is a flat folder of every
+ * project's files, so the caller must filter by the header cwd. */
+static int pi_session_dir(const char *cwd, char *out, size_t size, int *filter_cwd)
+{
+    const char *custom = getenv("PI_CODING_AGENT_SESSION_DIR");
+    if (custom && *custom) {
+        snprintf(out, size, "%s", custom);
+        *filter_cwd = 1;
+        return 1;
+    }
+    char agent[1024], encoded[2048];
+    if (!pi_agent_dir(agent, sizeof agent) || !cwd)
+        return 0;
+    encode_cwd_pi(cwd, encoded, sizeof encoded);
+    snprintf(out, size, "%s/sessions/%s", agent, encoded);
+    *filter_cwd = 0;
+    return 1;
+}
+
+static int pi_transcript(const char *path, const char *cwd, int filter_cwd,
+                         char *id, size_t id_size, char *label, size_t label_size)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return 0;
+
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t n;
+    int scanned = 0, titled = 0, spoke = 0, header = 0;
+    id[0] = '\0';
+    label[0] = '\0';
+
+    while (scanned++ < SCAN_LINES && (n = getline(&line, &cap, f)) > 0) {
+        cJSON *ev = cJSON_ParseWithLength(line, (size_t)n);
+        if (!ev)
+            continue;
+        const char *type = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "type"));
+        if (!header && type && strcmp(type, "session") == 0) {
+            const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "id"));
+            const char *scwd = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "cwd"));
+            if (filter_cwd && (!scwd || !cwd || strcmp(scwd, cwd) != 0)) {
+                cJSON_Delete(ev);
+                free(line);
+                fclose(f);
+                return 0;
+            }
+            if (sid && *sid)
+                snprintf(id, id_size, "%s", sid);
+            header = 1;
+        } else if (type && strcmp(type, "session_info") == 0) {
+            const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "name"));
+            if (name && *name) {
+                flatten(name, label, label_size);
+                titled = label[0] != '\0';
+            }
+        } else if (!spoke && type && strcmp(type, "message") == 0) {
+            cJSON *message = cJSON_GetObjectItem(ev, "message");
+            const char *role = message
+                ? cJSON_GetStringValue(cJSON_GetObjectItem(message, "role"))
+                : NULL;
+            if (role && strcmp(role, "user") == 0) {
+                cJSON *content = cJSON_GetObjectItem(message, "content");
+                const char *text = NULL;
+                if (cJSON_IsString(content)) {
+                    text = content->valuestring;
+                } else if (cJSON_IsArray(content)) {
+                    cJSON *block;
+                    cJSON_ArrayForEach(block, content) {
+                        const char *t =
+                            cJSON_GetStringValue(cJSON_GetObjectItem(block, "text"));
+                        if (t) {
+                            text = t;
+                            break;
+                        }
+                    }
+                }
+                if (usable_label(text)) {
+                    flatten(text, label, label_size);
+                    spoke = 1;
+                }
+            }
+        }
+        cJSON_Delete(ev);
+        if (titled)
+            break;
+    }
+    free(line);
+    fclose(f);
+    return id[0] && (titled || spoke);
+}
+
+static int load_pi(const char *cwd, const char *skip_id, struct past_session **out)
+{
+    char dir[2048];
+    int filter_cwd = 0;
+    if (!pi_session_dir(cwd, dir, sizeof dir, &filter_cwd))
+        return 0;
+    DIR *d = opendir(dir);
+    if (!d)
+        return 0;
+
+    struct past_session *list = calloc(MAX_SESSIONS, sizeof *list);
+    if (!list) {
+        closedir(d);
+        return 0;
+    }
+
+    int count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(d))) {
+        size_t len = strlen(entry->d_name);
+        if (len < 7 || strcmp(entry->d_name + len - 6, ".jsonl") != 0)
+            continue;
+
+        char path[3072];
+        snprintf(path, sizeof path, "%s/%s", dir, entry->d_name);
+        struct stat st;
+        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size == 0)
+            continue;
+
+        struct past_session candidate = {0};
+        if (!pi_transcript(path, cwd, filter_cwd, candidate.id, sizeof candidate.id,
+                           candidate.label, sizeof candidate.label))
+            continue;
+        if (skip_id && strcmp(candidate.id, skip_id) == 0)
+            continue;
+        if (!title_lookup(candidate.id, candidate.label, sizeof candidate.label) &&
+            !candidate.label[0])
+            continue;
+        candidate.modified = st.st_mtime;
+        relative_time(candidate.modified, candidate.when, sizeof candidate.when);
+        keep_recent(list, &count, &candidate);
+    }
+    closedir(d);
+    return finish_list(list, count, out);
+}
+
 int sessionlist_available(const char *backend)
 {
-    return backend && (!strcmp(backend, "claude") || !strcmp(backend, "grok"));
+    return backend && (!strcmp(backend, "claude") || !strcmp(backend, "grok") ||
+                       !strcmp(backend, "pi"));
 }
 
 int sessionlist_load(const char *backend, const char *cwd, const char *skip_id,
@@ -401,5 +578,7 @@ int sessionlist_load(const char *backend, const char *cwd, const char *skip_id,
         return load_claude(cwd, skip_id, out);
     if (!strcmp(backend, "grok"))
         return load_grok(cwd, skip_id, out);
+    if (!strcmp(backend, "pi"))
+        return load_pi(cwd, skip_id, out);
     return 0;
 }

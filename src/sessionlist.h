@@ -1,6 +1,7 @@
 /* Past conversations for this directory, read out of the backend's own
- * transcript store: ~/.claude/projects/<encoded cwd>/<id>.jsonl, or
- * ~/.grok/sessions/<encoded cwd>/<id>/summary.json. */
+ * transcript store: ~/.claude/projects/<encoded cwd>/<id>.jsonl,
+ * ~/.grok/sessions/<encoded cwd>/<id>/summary.json, or
+ * ~/.pi/agent/sessions/--<cwd>--/<timestamp>_<id>.jsonl. */
 #ifndef SESSIONLIST_H
 #define SESSIONLIST_H
 

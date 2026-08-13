@@ -106,16 +106,16 @@ invoked (`/todo buy milk`, `/w what do I know about X`).
 | Streamed text and reasoning | ✓ | ✓ | ✓ | ✓ |
 | Tool calls and their output | ✓ | shell commands | ✓ | tool names |
 | Tokens, context window, cost | ✓ | — | — | — |
-| Resume a past conversation | ✓ | ✓ | ✓ | — |
+| Resume a past conversation | ✓ | ✓ | ✓ | ✓ |
 | `/new` without restarting | ✓ | ✓ | restarts | ✓ |
 | `/model` picker | ✓ | pass a name | pass a name | pass a name |
 | `/effort` | ✓ | ✓ | ✓ | ✓ |
 
 `/resume` and `-r` list this directory's transcripts: Claude Code's under
-`~/.claude/projects`, Grok's under `~/.grok/sessions`. `--session` and the
-command printed on quit work wherever resume is. Forking needs a session id and
-is available wherever resume is. Pi has no default model configured by itself
-— pass one with `-m`.
+`~/.claude/projects`, Grok's under `~/.grok/sessions`, Pi's under
+`~/.pi/agent/sessions`. `--session` and the command printed on quit work
+wherever resume is. Forking needs a session id and is available wherever
+resume is. Pi has no default model configured by itself — pass one with `-m`.
 
 ## Keys
 
@@ -160,6 +160,8 @@ simple-agent [-b backend] [-m model] [-e effort] [-C dir] [-s] [-r] [prompt...]
   read by `/resume` on `-b claude`
 - `~/.grok/sessions/<encoded cwd>/<id>/` — Grok's sessions, read by `/resume`
   on `-b grok`
+- `~/.pi/agent/sessions/--<encoded cwd>--/<timestamp>_<id>.jsonl` — Pi's
+  transcripts, read by `/resume` on `-b pi`
 
 ## Build
 

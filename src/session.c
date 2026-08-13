@@ -716,6 +716,11 @@ static int restart(struct session *s, const char *resume_id)
         return 0;
     if (resume_id && resume_id != s->id)
         set_id(s, resume_id);
+    /* Adopt an id the backend already knows (a resume, or one reported without
+     * waiting on the child). A fresh pi id arrives after the first turn. */
+    const char *id = b->session_id(b);
+    if (id)
+        set_id(s, id);
     return 1;
 }
 

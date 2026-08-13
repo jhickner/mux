@@ -30,7 +30,7 @@ typedef struct {
     const char *effort;         /* reasoning/thinking effort; NULL -> its default     */
     const char *system;         /* applied to every turn; NULL -> none                */
     const char *cwd;            /* where the agent runs its tools; NULL -> inherit    */
-    const char *resume_session; /* continue a prior session (claude, codex, grok)     */
+    const char *resume_session; /* continue a prior session (claude, codex, grok, pi) */
     const char *permission_mode;/* claude: --permission-mode; NULL -> bypassPermissions*/
     int allow_customizations;   /* claude: load skills, CLAUDE.md, MCP servers, ...   */
 } backend_opts;
