@@ -348,8 +348,19 @@ static void on_event(void *ud, const claude_event *ev)
     ui_flush();
 }
 
-/* Polled by claude.h roughly every 80ms: tick the spinner, and report whether
- * the user asked to interrupt. */
+/* Where keys typed during a turn go. The abort predicate claude.h polls takes
+ * no argument, so the hook lives here rather than on the session. */
+static session_key_fn typeahead;
+static void          *typeahead_ud;
+
+void session_set_typeahead(session_key_fn fn, void *ud)
+{
+    typeahead = fn;
+    typeahead_ud = ud;
+}
+
+/* Polled by claude.h roughly every 80ms: drain whatever was typed, then tick
+ * the spinner, and report whether the user asked to interrupt. */
 static int abort_check(void)
 {
     /* Without a raw terminal there is no interrupt key to read, and reading a
@@ -357,11 +368,13 @@ static int abort_check(void)
     if (!tty_is_raw())
         return 0;
 
-    status_tick();
-
     int interrupt = 0;
     tty_event ev;
     while (tty_read(&ev, 0)) {
+        if (typeahead) {
+            interrupt |= typeahead(typeahead_ud, &ev);
+            continue;
+        }
         if (ev.key == TK_TEXT)
             free(ev.text);
         if (ev.key == TK_ESCAPE || (ev.key == TK_CHAR && ev.cp == 3))
@@ -369,6 +382,8 @@ static int abort_check(void)
         if (ev.key == TK_EOF)
             interrupt = 1;
     }
+
+    status_tick();
     return interrupt;
 }
 

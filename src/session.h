@@ -3,7 +3,15 @@
 #ifndef SESSION_H
 #define SESSION_H
 
+#include "tty.h"
+
 struct session;
+
+/* Handler for keys typed while a turn is in flight — it owns `ev` (including
+ * ev.text) and returns nonzero to interrupt the turn. Without one, Escape,
+ * Ctrl-C and EOF interrupt and everything else is discarded. */
+typedef int (*session_key_fn)(void *ud, tty_event *ev);
+void session_set_typeahead(session_key_fn fn, void *ud);
 
 /* `cwd` is where the CLI runs its tools; `model` may be NULL for the CLI
  * default. Neither pointer is retained. */

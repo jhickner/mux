@@ -67,13 +67,13 @@ static void show_help(void)
     }
     ui_put("\n");
     help_heading("shortcuts");
-    help_row("enter", "submit prompt");
+    help_row("enter", "submit prompt, or queue it while a turn is running");
     help_row("ctrl-j", "insert a newline");
     help_row("tab", "accept the completion or suggestion");
     help_row("up / down", "browse history");
     help_row("ctrl-r", "search history");
     help_row("esc", "interrupt the model or a running tool");
-    help_row("ctrl-c", "clear the current prompt line");
+    help_row("ctrl-c", "clear the prompt line, or interrupt a running turn");
     help_row("ctrl-d", "quit (on an empty prompt)");
     help_row("ctrl-l", "clear the screen");
     ui_put("\n");
