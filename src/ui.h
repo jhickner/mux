@@ -31,9 +31,10 @@ enum ui_role {
 void        ui_init(void);
 const char *ui_style(enum ui_role role);
 
-/* The caret is the terminal's own cursor, so it only follows the theme if we
- * recolor it (OSC 12) and hand it back (OSC 112) before exiting. */
-void ui_cursor_accent(void);
+/* The typing block is the terminal's own cursor: hold it at the theme's plain
+ * cursor color (OSC 12) and hand it back (OSC 112) before exiting. The accent
+ * belongs to the ❯ caret, not to this. */
+void ui_cursor_plain(void);
 void ui_cursor_restore(void);
 
 /* Newline-translating output. ui_raw(1) makes '\n' emit "\r\n". */

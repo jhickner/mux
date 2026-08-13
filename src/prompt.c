@@ -270,27 +270,30 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
     for (int y = 0; y < rows; y++) {
         fputs("\x1b[K", stdout);
         int extent = row_extent(&p->frame, y);
-        signed char open = REPL_STYLE_NONE;
+        const char *open = "";
         for (int x = 0; x < extent; x++) {
             struct cell *c = &p->frame.cells[y * p->frame.cols + x];
             uint32_t cp = c->cp;
+            const char *seq = c->style == REPL_STYLE_NONE
+                                  ? "" : style_open((ReplStyle)c->style);
             /* The line being edited wears a caret; it becomes the "▌" block only
              * once it is submitted into the history above. repl.h prefixes the
              * first row with "> " and continuation rows with two spaces. */
-            if (c->style == REPL_STYLE_PROMPT && x == 0 && cp == '>')
+            if (c->style == REPL_STYLE_PROMPT && x == 0 && cp == '>') {
                 cp = 0x276F; /* ❯ */
+                seq = ui_style(UI_ACCENT);
+            }
             if (c->style == REPL_STYLE_CURSOR && cp == '_' && synthetic &&
                 p->frame.cursor_x == x && p->frame.cursor_y == y)
                 cp = ' ';
-            if (c->style != open) {
+            if (seq != open) {
                 fputs(ui_style(UI_RESET), stdout);
-                if (c->style != REPL_STYLE_NONE)
-                    fputs(style_open((ReplStyle)c->style), stdout);
-                open = c->style;
+                fputs(seq, stdout);
+                open = seq;
             }
             put_codepoint(cp);
         }
-        if (open != REPL_STYLE_NONE)
+        if (*open)
             fputs(ui_style(UI_RESET), stdout);
         if (y + 1 < rows)
             fputs("\r\n", stdout);

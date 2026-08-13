@@ -67,11 +67,11 @@ const char *ui_style(enum ui_role role)
     return styles[role];
 }
 
-void ui_cursor_accent(void)
+void ui_cursor_plain(void)
 {
     if (!use_color)
         return;
-    Color c = color_get((ColorIndex)ROLES[UI_ACCENT].slot);
+    Color c = color_get(COLOR_UI_CURSOR_FG);
     printf("\x1b]12;#%02x%02x%02x\x07", c.r, c.g, c.b);
     fflush(stdout);
 }

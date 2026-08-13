@@ -152,7 +152,7 @@ int main(int argc, char **argv)
     }
     atexit(restore_terminal);
     ui_raw(1);
-    ui_cursor_accent();
+    ui_cursor_plain();
 
     struct prompt *prompt = prompt_new(CMD_TABLE, CMD_COUNT);
     if (!prompt) {

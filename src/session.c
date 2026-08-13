@@ -28,6 +28,7 @@ struct session {
     int            quiet;         /* suppress activity, spinner, and footer */
     int            customizations; /* load the user's skills, CLAUDE.md, MCP, ... */
     int            after_activity; /* last thing printed was a tool/thinking row */
+    int            after_tool;     /* ... and specifically a tool call block     */
 };
 
 /* ---------- small helpers ---------- */
@@ -302,6 +303,7 @@ static void on_event(void *ud, const claude_event *ev)
         status_resume();
         replace(&s->last_block, ev->text);
         s->after_activity = 0;
+        s->after_tool = 0;
         break;
 
     case CLAUDE_EV_THINKING:
@@ -311,6 +313,7 @@ static void on_event(void *ud, const claude_event *ev)
         print_activity("\xe2\x9c\xbb", ev->text, UI_DIM); /* ✻ */
         status_resume();
         s->after_activity = 1;
+        s->after_tool = 0;
         break;
 
     case CLAUDE_EV_TOOL: {
@@ -318,6 +321,8 @@ static void on_event(void *ud, const claude_event *ev)
         char arg[4096];
         tool_argument(s, ev->input_json, arg, sizeof arg);
         status_pause();
+        if (s->after_tool) /* one blank row between consecutive tool blocks */
+            ui_put("\n");
         print_tool_call(name, arg);
         status_resume();
 
@@ -331,6 +336,7 @@ static void on_event(void *ud, const claude_event *ev)
         snprintf(label, sizeof label, "%s %s", name, arg);
         status_activity(label);
         s->after_activity = 1;
+        s->after_tool = 1;
         break;
     }
 
@@ -343,6 +349,7 @@ static void on_event(void *ud, const claude_event *ev)
         status_resume();
         status_activity(NULL);
         s->after_activity = 1;
+        s->after_tool = 1;
         break;
     }
     ui_flush();
@@ -557,6 +564,7 @@ int session_turn(struct session *s, const char *text)
 
     replace(&s->last_block, NULL);
     s->after_activity = 0;
+    s->after_tool = 0;
     double started = now_seconds();
     if (!s->quiet)
         status_begin();
