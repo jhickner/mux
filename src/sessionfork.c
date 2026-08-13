@@ -143,8 +143,15 @@ int sessionfork(const struct session *s, enum fork_where where)
         return 0;
     }
 
-    /* The CLI only reports its session id once a turn has streamed, so there is
-     * nothing to resume from until the conversation has started. */
+    /* A fork is a second agent resumed on this conversation, so it needs both a
+     * backend that can resume and an id to resume from — which the CLI only
+     * reports once a turn has streamed. */
+    if (!session_can_resume(s)) {
+        ui_error("%s cannot resume a conversation, so there is nothing to fork",
+                 session_backend(s));
+        ui_put("\n");
+        return 0;
+    }
     const char *id = session_id(s);
     if (!id || !*id) {
         ui_error("nothing to fork yet — send a message first");
@@ -168,7 +175,7 @@ int sessionfork(const struct session *s, enum fork_where where)
     }
     carry_changes(top, path);
 
-    char *tmux[16];
+    char *tmux[20];
     int n = 0;
     tmux[n++] = "tmux";
     if (where == FORK_WINDOW) {
@@ -180,10 +187,17 @@ int sessionfork(const struct session *s, enum fork_where where)
     tmux[n++] = "-c";
     tmux[n++] = path;
     tmux[n++] = program;
+    tmux[n++] = "-b";
+    tmux[n++] = (char *)session_backend(s);
     tmux[n++] = "--session";
     tmux[n++] = (char *)id;
-    tmux[n++] = "-m";
-    tmux[n++] = (char *)session_model(s);
+    /* session_model() reports "default" when no model was asked for, which is a
+     * label rather than something to pass back on the command line. */
+    const char *model = session_model(s);
+    if (strcmp(model, "default") != 0) {
+        tmux[n++] = "-m";
+        tmux[n++] = (char *)model;
+    }
     tmux[n] = NULL;
 
     if (run(tmux, NULL) != 0) {

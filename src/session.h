@@ -1,5 +1,6 @@
-/* The conversation: one persistent claude CLI process, the running totals for
- * its turns, and the live rendering of a turn as it streams. */
+/* The conversation: one persistent agent CLI process behind backend.h, the
+ * running totals for its turns, and the live rendering of a turn as it
+ * streams. */
 #ifndef SESSION_H
 #define SESSION_H
 
@@ -13,21 +14,28 @@ struct session;
 typedef int (*session_key_fn)(void *ud, tty_event *ev);
 void session_set_typeahead(session_key_fn fn, void *ud);
 
-/* `cwd` is where the CLI runs its tools; `model` may be NULL for the CLI
- * default. Neither pointer is retained. */
-struct session *session_new(const char *cwd, const char *model);
+/* `backend` names the agent CLI to drive — "claude", "codex", "grok" or "pi",
+ * NULL for claude. `cwd` is where it runs its tools; `model` may be NULL for
+ * the CLI default. No pointer is retained. */
+struct session *session_new(const char *backend, const char *cwd, const char *model);
 void            session_free(struct session *s);
 
 /* Print only the reply text: no spinner, tool activity, or footer. For piped
  * output and one-shot runs. */
 void session_set_quiet(struct session *s, int quiet);
 
+/* Show the ✻ rows carrying the model's reasoning as it streams. On by default;
+ * only the backends that report reasoning at all are affected. */
+void session_set_thinking(struct session *s, int on);
+int  session_thinking(const struct session *s);
+
 /* Load the user's discovered customizations — skills, CLAUDE.md, plugins,
  * hooks, MCP servers, custom commands and agents. Must be set before
  * session_start(). */
 void session_set_customizations(struct session *s, int on);
 
-/* Spawn (or respawn) the CLI process. Returns 0 on failure. */
+/* Spawn (or respawn) the CLI process. Returns 0 on failure — an unknown
+ * backend name, or a CLI that is not installed. */
 int session_start(struct session *s);
 
 /* Run one turn, printing activity, the reply, and the stats footer. Returns 0
@@ -41,7 +49,8 @@ int session_clear(struct session *s);
  * carries over. Returns 0 on failure, leaving the old client in place. */
 int session_set_model(struct session *s, const char *model);
 
-/* Restart on a past session id, adopting its context. */
+/* Restart on a past session id, adopting its context. Only the backends that
+ * can resume a conversation (claude, codex) carry anything across. */
 int session_resume(struct session *s, const char *id);
 
 /* Adopt a session id before session_start(), so the CLI comes up already
@@ -50,7 +59,12 @@ void session_adopt_id(struct session *s, const char *id);
 
 const char *session_model(const struct session *s);
 const char *session_id(const struct session *s);
+
+/* Whether this backend can pick a conversation back up from its session id, as
+ * session_resume() and forking both need. */
+int session_can_resume(const struct session *s);
 const char *session_cwd(const struct session *s);
+const char *session_backend(const struct session *s);
 const char *session_last_reply(const struct session *s);
 
 /* Print the /session report: model, id, cwd, turns, tokens, cost. */

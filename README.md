@@ -1,8 +1,9 @@
 # simple-agent
 
-A REPL interface to the Claude Code CLI, driven through `claude.h`. Not a TUI:
-no alternate screen, no full-screen redraw. The conversation is ordinary
-terminal scrollback, and only the input block is repainted in place.
+A REPL interface to a headless coding-agent CLI, driven through `backend.h`:
+`claude` by default, or `codex`, `grok` and `pi` with `-b`. Not a TUI: no
+alternate screen, no full-screen redraw. The conversation is ordinary terminal
+scrollback, and only the input block is repainted in place.
 
 ```
 ▌ simple-agent › sonnet-5
@@ -33,13 +34,17 @@ block in the history above.
 ## Features
 
 - Full Claude Code harness: every built-in tool, subagents, context management
+- Four backends behind one interface: `-b claude` (default), `codex`, `grok`,
+  `pi`. Each keeps one process alive across turns; what a backend reports it
+  reports, and the display drops what it does not (see Backends)
 - Your skills, CLAUDE.md, plugins, hooks, MCP servers and custom agents load by
   default; any slash command it does not own is passed to the CLI, so `/w`,
   `/todo` and the rest work. `-s` runs without them
 - Authenticates with the claude.ai subscription (`ANTHROPIC_API_KEY` is unset in
   the child); `/session` reports which credential is in use
 - Live rendering: assistant text, tool calls, and tool results appear as they
-  stream, with a spinner and elapsed time
+  stream, with a spinner and elapsed time. Reasoning shows as dimmed ✻ rows,
+  which `/thinking` hides for good
 - Per-turn footer: elapsed time, context used against the model's window, and
   cumulative cost
 - Markdown rendering: headings, bullets, ordered lists, fenced code, quotes,
@@ -66,17 +71,33 @@ block in the history above.
 |---|---|
 | `/new`, `/clear` | Start a fresh conversation |
 | `/model [name]` | Switch model; no argument opens a picker |
+| `/thinking [on\|off]` | Show or hide the ✻ reasoning rows; no argument flips it |
 | `/resume` | Pick a past conversation for this directory |
 | `/fh`, `/fs` | Fork into a horizontal tmux split, in a new worktree |
 | `/fv` | Fork into a vertical tmux split, in a new worktree |
 | `/fw` | Fork into a tmux window, in a new worktree |
-| `/session` | Model, auth, session id, cwd, turns, context, cost |
+| `/session` | Backend, model, auth, session id, cwd, turns, context, cost |
 | `/copy` | Copy the last response to the clipboard |
 | `/help` | Command and key reference |
 | `/quit` | Leave |
 
-Any other `/command` is forwarded to the claude CLI, which is how skills are
+Any other `/command` is forwarded to the agent CLI, which is how skills are
 invoked (`/todo buy milk`, `/w what do I know about X`).
+
+## Backends
+
+| | claude | codex | grok | pi |
+|---|---|---|---|---|
+| Streamed text and reasoning | ✓ | ✓ | ✓ | ✓ |
+| Tool calls and their output | ✓ | shell commands | — | tool names |
+| Tokens, context window, cost | ✓ | — | — | — |
+| Resume a past conversation | ✓ | ✓ | — | — |
+| `/new` without restarting | ✓ | ✓ | restarts | ✓ |
+| `/model` picker | ✓ | pass a name | pass a name | pass a name |
+
+`/resume` and `-r` list Claude Code's own transcripts, so they are Claude-only.
+Forking needs a session id and is available wherever resume is. Pi has no
+default model configured by itself — pass one with `-m`.
 
 ## Keys
 
@@ -100,9 +121,10 @@ invoked (`/todo buy milk`, `/w what do I know about X`).
 ## Options
 
 ```
-simple-agent [-m model] [-C dir] [-s] [-r] [prompt...]
+simple-agent [-b backend] [-m model] [-C dir] [-s] [-r] [prompt...]
 
-  -m model   model to run (default: the claude CLI's own)
+  -b name    agent CLI to drive: claude, codex, grok, pi (default: claude)
+  -m model   model to run (default: the CLI's own)
   -C dir     working directory for the agent's tools
   -s         safe mode: skip skills, CLAUDE.md, MCP servers, hooks
   -r         --resume: pick a past conversation to continue
@@ -113,8 +135,9 @@ simple-agent [-m model] [-C dir] [-s] [-r] [prompt...]
 ## Files
 
 - `~/.config/simple-agent/history` — prompt history
-- `~/.claude/projects/<encoded cwd>/*.jsonl` — the CLI's own transcripts, read
-  by `/resume`
+- `~/.config/simple-agent/settings` — `key=value` per line; `/thinking` writes here
+- `~/.claude/projects/<encoded cwd>/*.jsonl` — Claude Code's own transcripts,
+  read by `/resume`
 
 ## Build
 
@@ -123,31 +146,19 @@ make            # -> ./simple-agent
 make install    # -> $PREFIX/bin (default ~/.local)
 ```
 
-Requires the `claude` CLI on `PATH`.
+Requires the CLI of whichever backend you run to be on `PATH`.
 
 ## Vendored libraries
 
 `src/vendor/` holds copies of the single-header libraries, per the convention in
-`~/working/libs/c`. `claude.h` diverges from its upstream copy:
-
-- `claude_send_ex()` and `claude_result` expose duration, aggregate token
-  usage, the latest primary-model request's context usage, context window,
-  cost, and subtype
-- the event callback takes a typed `claude_event` (tool name and input JSON are
-  separate fields) instead of two loose strings
-- `claude_interrupt()` sends the Agent SDK's interrupt control request; the
-  abort predicate now uses it and reads on to the result event, so an
-  interrupted session stays usable instead of leaving the stream misaligned
-- `claude_model()` and `claude_auth_source()` report what the CLI resolved at
-  startup
-- `allow_customizations` drops `--safe-mode`, so the CLI loads skills, CLAUDE.md,
-  plugins, hooks, MCP servers and custom agents (the `{0}` default stays safe)
-- the child's stderr is captured into a bounded buffer rather than inherited, so
-  a CLI warning cannot corrupt a caller painting its own display;
-  `claude_last_error()` reads it back
-- `claude_stop()` signals immediately instead of waiting out Node's ~300ms
-  unwind, which an interactive caller feels on quit
-- the read poll is 80ms so the abort predicate can double as a UI tick
+`~/working/libs/c`. `agents/` is a copy of `~/working/libs/c/agents` —
+`backend.h` and the four drivers behind it — sharing the one `cJSON.c` beside
+it. It diverges in one place: `context_tokens` on `claude_result` and
+`backend_result` carries the latest primary-model request's context usage,
+which `claude.h` captures from the assistant events. The result event's usage
+block is aggregate traffic across every model request in a turn and can exceed
+the context window many times over, so the footer reads the former where a
+driver reports it and the aggregate otherwise.
 
 `repl.h` diverges in three places:
 
