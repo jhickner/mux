@@ -20,6 +20,10 @@ static int     frame;
 static double  frame_at;
 static char   *label;
 
+static status_paint_fn below;
+static void           *below_ud;
+static int             caret_row; /* rows from the spinner row down to the caret */
+
 static double now_seconds(void)
 {
     struct timeval tv;
@@ -29,9 +33,29 @@ static double now_seconds(void)
 
 double status_elapsed(void) { return now_seconds() - started; }
 
-static void erase_line(void)
+void status_set_below(status_paint_fn paint_fn, void *ud)
 {
-    ui_esc("\r\x1b[K");
+    below = paint_fn;
+    below_ud = ud;
+}
+
+static void move(int count, char direction)
+{
+    if (count <= 0)
+        return;
+    char esc[16];
+    snprintf(esc, sizeof esc, "\x1b[%d%c", count, direction);
+    ui_esc(esc);
+}
+
+/* Wipe the spinner row and everything the block painted below it, leaving the
+ * cursor at the start of the spinner row. */
+static void erase_block(void)
+{
+    ui_esc("\x1b[?25l");
+    move(caret_row, 'A');
+    ui_esc("\r\x1b[J");
+    caret_row = 0;
     ui_flush();
 }
 
@@ -41,12 +65,12 @@ static void paint(void)
     char left[64];
     snprintf(left, sizeof left, "%s %.0fs", FRAMES[frame], elapsed);
 
-    erase_line();
+    erase_block();
     ui_esc(ui_style(UI_DIM));
     ui_put(left);
     if (label && *label) {
         ui_put(" · ");
-        /* Keep the line to one row so the next erase clears all of it. */
+        /* Keep the spinner to one row so the next erase clears all of it. */
         int budget = ui_columns() - (int)ui_cells(left) - 4;
         if (budget < 1)
             budget = 1;
@@ -57,6 +81,17 @@ static void paint(void)
             ui_put("…");
     }
     ui_esc(ui_style(UI_RESET));
+
+    if (below) {
+        int rows = 1, row = 0, col = 0;
+        ui_esc("\r\n");
+        below(below_ud, &rows, &row, &col);
+        move((rows - 1) - row, 'A');
+        ui_esc("\r");
+        move(col, 'C');
+        caret_row = 1 + row;
+        ui_esc("\x1b[?25h"); /* the caret marks where typing lands */
+    }
     ui_flush();
 }
 
@@ -68,7 +103,7 @@ void status_begin(void)
     visible = 1;
     free(label);
     label = NULL;
-    ui_esc("\x1b[?25l");
+    caret_row = 0;
     paint();
 }
 
@@ -88,7 +123,7 @@ void status_pause(void)
 {
     if (!visible)
         return;
-    erase_line();
+    erase_block();
     visible = 0;
 }
 
@@ -111,7 +146,7 @@ void status_activity(const char *text)
 void status_end(void)
 {
     if (visible)
-        erase_line();
+        erase_block();
     visible = 0;
     free(label);
     label = NULL;

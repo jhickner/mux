@@ -46,6 +46,8 @@ block in the history above.
   rules, inline code, bold, italic, links
 - Multi-line input, word-wrapped and reflowed on terminal resize
 - Command completion dropdown, history with reverse search, emacs editing keys
+- Type while a turn runs: the prompt stays live under the spinner, and each
+  message submitted there is queued and run, in order, once the turn ends
 - Interrupt an in-flight turn without losing the session
 - Model switching mid-conversation, carrying context across the restart
 - Resume any past conversation for the current directory
@@ -71,13 +73,13 @@ invoked (`/todo buy milk`, `/w what do I know about X`).
 
 | Key | Action |
 |---|---|
-| `enter` | Submit |
+| `enter` | Submit, or queue the message when a turn is running |
 | `ctrl-j` | Insert a newline |
 | `tab` | Accept the completion or inline suggestion |
 | `up` / `down` | Browse history |
 | `ctrl-r` | Reverse history search |
 | `esc` | Interrupt the model or a running tool |
-| `ctrl-c` | Clear the current line |
+| `ctrl-c` | Clear the current line, or interrupt while a turn runs |
 | `ctrl-d` | Quit on an empty line, else delete forward |
 | `ctrl-l` | Clear the screen |
 | `ctrl-a` / `ctrl-e` | Start / end of line |

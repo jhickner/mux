@@ -27,6 +27,9 @@ struct prompt {
     int          painted_rows; /* rows the last paint occupies, 0 when clean */
     int          cursor_row;   /* where the terminal cursor sits within them */
     char        *history_path;
+    char       **queued;       /* lines submitted while a turn was running */
+    int          queued_count;
+    int          queued_cap;
 };
 
 /* ---------- history ---------- */
@@ -183,7 +186,29 @@ static int caret_is_synthetic(const Repl *r)
     return r->cursor >= r->len || r->buf[r->cursor] == '\n';
 }
 
-static void repaint(struct prompt *p)
+/* Messages queued during a turn, shown above the input as dim bars so the user
+ * can see what is waiting to run. One row each. */
+static void paint_queued(const struct prompt *p, int cols)
+{
+    size_t budget = (size_t)(cols - 2 > 4 ? cols - 2 : 4);
+    for (int i = 0; i < p->queued_count; i++) {
+        const char *text = p->queued[i];
+        size_t skip = 0;
+        size_t row = ui_wrap_row(text, budget, &skip);
+        fputs("\x1b[K", stdout);
+        fputs(ui_style(UI_DIM), stdout);
+        fputs(UI_BAR " ", stdout);
+        fwrite(text, 1, row, stdout);
+        if (text[row])
+            fputs("…", stdout);
+        fputs(ui_style(UI_RESET), stdout);
+        fputs("\r\n", stdout);
+    }
+}
+
+/* Draw the block from the cursor's row down, leaving the cursor at the end of
+ * the last row. Reports the height and where the caret belongs within it. */
+static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *caret_col)
 {
     int cols = ui_columns();
     int input_rows = repl_input_rows(&p->repl, cols);
@@ -191,15 +216,24 @@ static void repaint(struct prompt *p)
     if (rows < 1)
         rows = 1;
 
+    *rows_out = rows + p->queued_count;
+    *caret_row = p->queued_count;
+    *caret_col = 0;
+
     frame_size(&p->frame, rows, cols);
-    if (!p->frame.cells)
+    if (!p->frame.cells) {
+        *rows_out = 1;
+        *caret_row = 0;
         return;
+    }
     repl_render(&p->repl, 0, 0, cols, true, draw_cell, &p->frame);
 
     int synthetic = caret_is_synthetic(&p->repl);
 
-    goto_origin(p);
-    fputs("\x1b[?25l", stdout); /* hide while the block redraws */
+    *caret_row += p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
+    *caret_col = p->frame.have_cursor ? p->frame.cursor_x : 0;
+
+    paint_queued(p, cols);
 
     for (int y = 0; y < rows; y++) {
         fputs("\x1b[K", stdout);
@@ -231,20 +265,27 @@ static void repaint(struct prompt *p)
     }
     /* Clear anything the previous, taller block left below. */
     fputs("\x1b[J", stdout);
+}
 
-    int target_row = p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
-    int target_col = p->frame.have_cursor ? p->frame.cursor_x : 0;
-    int up = (rows - 1) - target_row;
+static void repaint(struct prompt *p)
+{
+    int rows = 1, caret_row = 0, caret_col = 0;
+
+    goto_origin(p);
+    fputs("\x1b[?25l", stdout); /* hide while the block redraws */
+    paint_block(p, &rows, &caret_row, &caret_col);
+
+    int up = (rows - 1) - caret_row;
     if (up > 0)
         printf("\x1b[%dA", up);
     fputs("\r", stdout);
-    if (target_col > 0)
-        printf("\x1b[%dC", target_col);
+    if (caret_col > 0)
+        printf("\x1b[%dC", caret_col);
     fputs("\x1b[?25h", stdout);
     fflush(stdout);
 
     p->painted_rows = rows;
-    p->cursor_row = target_row;
+    p->cursor_row = caret_row;
 }
 
 /* ---------- the submitted block left in scrollback ---------- */
@@ -290,6 +331,9 @@ void prompt_free(struct prompt *p)
     repl_free(&p->repl);
     free(p->frame.cells);
     free(p->history_path);
+    for (int i = 0; i < p->queued_count; i++)
+        free(p->queued[i]);
+    free(p->queued);
     free(p);
 }
 
@@ -310,9 +354,116 @@ static void delete_forward(struct prompt *p)
     feed(p, REPL_KEY_BACKSPACE, 0, NULL);
 }
 
+enum key_result {
+    KEY_OK,      /* the editor consumed it; redraw   */
+    KEY_SUBMIT,  /* a complete line is ready to take */
+    KEY_EOF,     /* Ctrl-D on an empty line, or EOF  */
+    KEY_CANCEL,  /* Escape or Ctrl-C, live mode only */
+};
+
+/* Feed one terminal event to the editor. `live` marks the turn-time prompt,
+ * where the screen belongs to the running turn: Ctrl-L is ignored there, and
+ * Escape / Ctrl-C mean "interrupt the turn" rather than reaching the editor. */
+static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
+{
+    switch (ev->key) {
+    case TK_EOF:
+        return KEY_EOF;
+
+    case TK_RESIZE:
+        return KEY_OK;
+
+    case TK_TEXT:
+        if (ev->text) {
+            repl_insert_text(&p->repl, ev->text);
+            free(ev->text);
+            ev->text = NULL;
+        }
+        return KEY_OK;
+
+    case TK_CHAR:
+        if (ev->cp == 4) { /* Ctrl-D */
+            if (p->repl.len == 0)
+                return KEY_EOF;
+            delete_forward(p);
+            return KEY_OK;
+        }
+        if (ev->cp == 3 && live) /* Ctrl-C */
+            return KEY_CANCEL;
+        if (ev->cp == 12) { /* Ctrl-L */
+            if (live)
+                return KEY_OK;
+            p->painted_rows = 0;
+            p->cursor_row = 0;
+            fputs("\x1b[2J\x1b[H", stdout);
+            fflush(stdout);
+            return KEY_OK;
+        }
+        feed(p, REPL_KEY_CHAR, ev->cp, NULL);
+        return KEY_OK;
+
+    case TK_TAB:
+        /* repl.h accepts a candidate or an inline suggestion with Right. */
+        if (p->repl.dropdown_open || repl_suggestion(&p->repl))
+            feed(p, REPL_KEY_RIGHT, 0, NULL);
+        return KEY_OK;
+
+    case TK_DELETE:
+        delete_forward(p);
+        return KEY_OK;
+
+    case TK_ESCAPE:
+        /* Escape still closes the dropdown; only an idle editor gives it up to
+         * the turn. */
+        if (live && !p->repl.dropdown_open)
+            return KEY_CANCEL;
+        feed(p, REPL_KEY_ESCAPE, 0, NULL);
+        return KEY_OK;
+
+    case TK_ENTER: {
+        if (feed(p, REPL_KEY_ENTER, 0, NULL) != REPL_SUBMIT)
+            return KEY_OK;
+        const char *line = repl_line(&p->repl);
+        return line && *line ? KEY_SUBMIT : KEY_OK;
+    }
+
+    default: {
+        static const ReplKey MAP[] = {
+            [TK_NEWLINE] = REPL_KEY_NEWLINE,   [TK_BACKSPACE] = REPL_KEY_BACKSPACE,
+            [TK_LEFT] = REPL_KEY_LEFT,         [TK_RIGHT] = REPL_KEY_RIGHT,
+            [TK_UP] = REPL_KEY_UP,             [TK_DOWN] = REPL_KEY_DOWN,
+            [TK_WORD_LEFT] = REPL_KEY_WORD_LEFT,
+            [TK_WORD_RIGHT] = REPL_KEY_WORD_RIGHT,
+        };
+        if (ev->key == TK_HOME)
+            feed(p, REPL_KEY_CHAR, 1, NULL); /* ctrl-a */
+        else if (ev->key == TK_END)
+            feed(p, REPL_KEY_CHAR, 5, NULL); /* ctrl-e */
+        else if ((size_t)ev->key < sizeof MAP / sizeof *MAP)
+            feed(p, MAP[ev->key], 0, NULL);
+        return KEY_OK;
+    }
+    }
+}
+
+/* Lift the submitted line out of the editor, recording it in history. The
+ * editor is left empty and ready for the next one. */
+static char *take_line(struct prompt *p)
+{
+    const char *line = repl_line(&p->repl);
+    char *out = line && *line ? strdup(line) : NULL;
+    if (out) {
+        repl_history_add(&p->repl, out);
+        history_append(p, out);
+    }
+    repl_reset(&p->repl);
+    return out;
+}
+
 char *prompt_read(struct prompt *p)
 {
-    repl_reset(&p->repl);
+    /* Whatever was typed during the last turn but never submitted carries over,
+     * so the block is repainted rather than reset. */
     p->painted_rows = 0;
     p->cursor_row = 0;
     repaint(p);
@@ -322,94 +473,70 @@ char *prompt_read(struct prompt *p)
         if (!tty_read(&ev, -1))
             continue;
 
-        switch (ev.key) {
-        case TK_EOF:
+        switch (feed_key(p, &ev, 0)) {
+        case KEY_EOF:
             erase_block(p);
             return NULL;
 
-        case TK_RESIZE:
-            repaint(p);
-            continue;
-
-        case TK_TEXT:
-            if (ev.text) {
-                repl_insert_text(&p->repl, ev.text);
-                free(ev.text);
-            }
-            repaint(p);
-            continue;
-
-        case TK_CHAR:
-            if (ev.cp == 4) { /* Ctrl-D */
-                if (p->repl.len == 0) {
-                    erase_block(p);
-                    return NULL;
-                }
-                delete_forward(p);
-                repaint(p);
-                continue;
-            }
-            if (ev.cp == 12) { /* Ctrl-L */
-                p->painted_rows = 0;
-                p->cursor_row = 0;
-                fputs("\x1b[2J\x1b[H", stdout);
-                fflush(stdout);
-                repaint(p);
-                continue;
-            }
-            feed(p, REPL_KEY_CHAR, ev.cp, NULL);
-            repaint(p);
-            continue;
-
-        case TK_TAB:
-            /* repl.h accepts a candidate or an inline suggestion with Right. */
-            if (p->repl.dropdown_open || repl_suggestion(&p->repl))
-                feed(p, REPL_KEY_RIGHT, 0, NULL);
-            repaint(p);
-            continue;
-
-        case TK_DELETE:
-            delete_forward(p);
-            repaint(p);
-            continue;
-
-        case TK_ENTER: {
-            ReplResult r = feed(p, REPL_KEY_ENTER, 0, NULL);
-            if (r != REPL_SUBMIT) {
-                repaint(p);
-                continue;
-            }
-            const char *line = repl_line(&p->repl);
-            if (!line || !*line) {
-                repaint(p);
-                continue;
-            }
-            char *out = strdup(line);
-            repl_history_add(&p->repl, line);
-            history_append(p, line);
+        case KEY_SUBMIT: {
+            char *out = take_line(p);
             erase_block(p);
             if (out)
                 prompt_echo_message(out);
             return out;
         }
 
-        default: {
-            static const ReplKey MAP[] = {
-                [TK_NEWLINE] = REPL_KEY_NEWLINE,   [TK_BACKSPACE] = REPL_KEY_BACKSPACE,
-                [TK_ESCAPE] = REPL_KEY_ESCAPE,     [TK_LEFT] = REPL_KEY_LEFT,
-                [TK_RIGHT] = REPL_KEY_RIGHT,       [TK_UP] = REPL_KEY_UP,
-                [TK_DOWN] = REPL_KEY_DOWN,         [TK_WORD_LEFT] = REPL_KEY_WORD_LEFT,
-                [TK_WORD_RIGHT] = REPL_KEY_WORD_RIGHT,
-            };
-            if (ev.key == TK_HOME)
-                feed(p, REPL_KEY_CHAR, 1, NULL); /* ctrl-a */
-            else if (ev.key == TK_END)
-                feed(p, REPL_KEY_CHAR, 5, NULL); /* ctrl-e */
-            else if ((size_t)ev.key < sizeof MAP / sizeof *MAP)
-                feed(p, MAP[ev.key], 0, NULL);
+        default:
             repaint(p);
             continue;
         }
-        }
     }
+}
+
+/* ---------- the prompt while a turn runs ---------- */
+
+static void queue_push(struct prompt *p, char *line)
+{
+    if (!line)
+        return;
+    if (p->queued_count == p->queued_cap) {
+        int cap = p->queued_cap ? p->queued_cap * 2 : 4;
+        char **grown = realloc(p->queued, (size_t)cap * sizeof *grown);
+        if (!grown) {
+            free(line);
+            return;
+        }
+        p->queued = grown;
+        p->queued_cap = cap;
+    }
+    p->queued[p->queued_count++] = line;
+}
+
+char *prompt_take_queued(struct prompt *p)
+{
+    if (p->queued_count == 0)
+        return NULL;
+    char *line = p->queued[0];
+    memmove(p->queued, p->queued + 1, (size_t)(--p->queued_count) * sizeof *p->queued);
+    return line;
+}
+
+int prompt_live_key(void *ud, tty_event *ev)
+{
+    struct prompt *p = ud;
+    switch (feed_key(p, ev, 1)) {
+    case KEY_SUBMIT:
+        queue_push(p, take_line(p));
+        return 0;
+    case KEY_EOF:
+    case KEY_CANCEL:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+void prompt_live_paint(void *ud, int *rows, int *caret_row, int *caret_col)
+{
+    paint_block(ud, rows, caret_row, caret_col);
 }

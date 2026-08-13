@@ -9,6 +9,7 @@
 #include "cmd.h"
 #include "prompt.h"
 #include "session.h"
+#include "status.h"
 #include "tty.h"
 #include "ui.h"
 #include "vendor/claude.h"
@@ -141,6 +142,11 @@ int main(int argc, char **argv)
         prompt_history_open(prompt, history);
     }
 
+    /* Keep the prompt on screen and editable while a turn runs, so a message
+     * typed then is queued for the moment the turn ends. */
+    session_set_typeahead(prompt_live_key, prompt);
+    status_set_below(prompt_live_paint, prompt);
+
     /* cmd_resume() prints the identity row itself when it adopts a session. */
     if (resume && cmd_resume(session))
         banner_hints();
@@ -148,7 +154,12 @@ int main(int argc, char **argv)
         banner_print(session);
 
     for (;;) {
-        char *line = prompt_read(prompt);
+        /* Messages queued during the last turn run first, in the order typed. */
+        char *line = prompt_take_queued(prompt);
+        if (line)
+            prompt_echo_message(line);
+        else
+            line = prompt_read(prompt);
         if (!line)
             break;
 
@@ -164,6 +175,9 @@ int main(int argc, char **argv)
         free(line);
     }
 
+    /* Both hooks borrow the prompt, so they go first. */
+    session_set_typeahead(NULL, NULL);
+    status_set_below(NULL, NULL);
     prompt_free(prompt);
     session_free(session);
     ui_raw(0);
