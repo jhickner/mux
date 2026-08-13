@@ -12,6 +12,7 @@
 #include "status.h"
 #include "title.h"
 #include "toolstyle.h"
+#include "transcript.h"
 #include "tty.h"
 #include "ui.h"
 #include "vendor/agents/backend.h"
@@ -31,6 +32,8 @@ struct session {
     double   named_at;   /* when the cache was last read for it */
     char    *prompt;     /* the turn in flight, which is what it gets named for */
     char    *last_reply;
+    char    *failed_prompt; /* last prompt whose provider turn failed */
+    struct transcript transcript; /* completed turns for backend handoff */
     char    *last_block;  /* the final streamed text block of a turn  */
     char    *streamed;    /* every text block of a turn, in order     */
     int      turns;
@@ -765,11 +768,13 @@ void session_free(struct session *s)
     free(s->effort);
     free(s->resolved);
     free(s->last_reply);
+    free(s->failed_prompt);
     free(s->last_block);
     free(s->streamed);
     free(s->prompt);
     free(s->permission);
     free(s->cluster.line);
+    transcript_free(&s->transcript);
     if (live == s)
         live = NULL;
     free(s);
@@ -806,6 +811,59 @@ static Backend *agent(struct session *s)
         s->agent->set_abort_check(s->agent, abort_check);
     }
     return s->agent;
+}
+
+int session_switch_backend(struct session *s, const char *backend)
+{
+    if (!s || !backend || !*backend)
+        return 0;
+    if (strcmp(s->backend, backend) == 0)
+        return 1;
+
+    /* Keep enough recent verbatim dialogue for a faithful handoff without
+     * risking an enormous argv/developer-instructions field. */
+    char *handoff = transcript_handoff(&s->transcript, 128 * 1024);
+    backend_opts o = {0};
+    o.name = backend;
+    o.system = handoff;
+    o.cwd = s->cwd;
+    o.allow_customizations = s->customizations;
+    o.permission_mode = s->permission;
+    Backend *replacement = backend_open_ex(&o);
+    free(handoff);
+    if (!replacement)
+        return 0;
+
+    /* Starting is transactional: do not tear down a usable provider until its
+     * replacement has completed its own handshake. */
+    if (!replacement->start(replacement, NULL)) {
+        replacement->close(replacement);
+        return 0;
+    }
+    replacement->set_event_cb(replacement, on_event, s);
+    replacement->set_abort_check(replacement, abort_check);
+
+    Backend *previous = s->agent;
+    s->agent = replacement;
+    replace(&s->backend, backend);
+    replace(&s->model, NULL);       /* provider model names are not portable */
+    replace(&s->effort, NULL);      /* nor are its effort levels */
+    replace(&s->resolved, NULL);
+    s->id[0] = '\0';
+    const char *id = replacement->session_id(replacement);
+    if (id) {
+        /* This is a new provider leg of the same logical conversation. Keep
+         * its title instead of treating the provider's new id as a new topic. */
+        snprintf(s->id, sizeof s->id, "%s", id);
+        agenttabs_forget_hook(id);
+    }
+    s->turns = 0;
+    s->cost_usd = 0;
+    s->context_tokens = 0;
+    s->context_window = 0;
+    if (previous)
+        previous->close(previous);
+    return 1;
 }
 
 void session_set_quiet(struct session *s, int quiet) { s->quiet = quiet; }
@@ -967,6 +1025,8 @@ int session_resume(struct session *s, const char *id)
     s->cost_usd = 0;
     s->context_tokens = 0;
     replace(&s->last_reply, NULL);
+    replace(&s->failed_prompt, NULL);
+    transcript_clear(&s->transcript);
     return 1;
 }
 
@@ -978,7 +1038,9 @@ int session_clear(struct session *s)
     s->cost_usd = 0;
     s->context_tokens = 0;
     replace(&s->last_reply, NULL);
+    replace(&s->failed_prompt, NULL);
     replace(&s->last_block, NULL);
+    transcript_clear(&s->transcript);
     /* Whatever it is about now, it is not what it was named for. Set before
      * set_id, which otherwise reads the old name back out of the cache. */
     s->title[0] = '\0';
@@ -1095,6 +1157,7 @@ int session_turn(struct session *s, const char *text)
         set_id(s, id);
 
     if (!reply) {
+        replace(&s->failed_prompt, text);
         agenttabs_errored();
         const char *detail = s->agent->last_error(s->agent);
         if (detail)
@@ -1128,6 +1191,12 @@ int session_turn(struct session *s, const char *text)
 
     if (*reply)
         replace(&s->last_reply, reply);
+    if (meta.is_error) {
+        replace(&s->failed_prompt, text);
+    } else {
+        transcript_add(&s->transcript, s->backend, text, reply, meta.interrupted);
+        replace(&s->failed_prompt, NULL);
+    }
     free(reply);
 
     s->turns++;
@@ -1187,6 +1256,10 @@ int session_can_resume(const struct session *s)
 const char *session_cwd(const struct session *s) { return s->cwd; }
 const char *session_backend(const struct session *s) { return s->backend; }
 const char *session_last_reply(const struct session *s) { return s->last_reply; }
+const char *session_failed_prompt(const struct session *s)
+{
+    return s ? s->failed_prompt : NULL;
+}
 
 int session_context_percent(const struct session *s)
 {

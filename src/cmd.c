@@ -13,12 +13,14 @@
 #include "settings.h"
 #include "status.h"
 #include "ui.h"
+#include "vendor/agents/backend.h"
 
 const ReplCommand CMD_TABLE[] = {
     {"/new", "start a fresh conversation", NULL},
     {"/clear", "alias for /new", NULL},
     {"/model", "switch model", "[name]"},
     {"/effort", "set reasoning/thinking effort", "[level]"},
+    {"/backend", "continue with another backend", "<name>"},
     {"/thinking", "show or hide the model's reasoning", "[on|off]"},
     {"/tools", "how much of each tool call to show", "[compact|full]"},
     {"/sticky", "float the prompt above the spinner", "[on|off]"},
@@ -120,6 +122,14 @@ static const struct pick_item *effort_choices(const struct session *s, int *coun
     }
     *count = 0;
     return NULL;
+}
+
+static int known_backend(const char *name)
+{
+    for (const char *const *p = backend_names(); name && *p; p++)
+        if (strcmp(name, *p) == 0)
+            return 1;
+    return 0;
 }
 
 /* ---------- helpers ---------- */
@@ -259,6 +269,64 @@ static void do_effort(struct session *s, const char *arg)
     ui_note("effort: %s", session_effort(s));
     ui_put("\n");
     ui_flush();
+}
+
+static void do_backend(struct session *s, const char *arg)
+{
+    if (!arg || !*arg) {
+        ui_note("/backend <claude|codex|grok|pi>");
+        ui_put("\n");
+        ui_flush();
+        return;
+    }
+    if (!known_backend(arg)) {
+        ui_error("unknown backend '%s'", arg);
+        ui_put("\n");
+        ui_flush();
+        return;
+    }
+    if (strcmp(arg, session_backend(s)) == 0) {
+        ui_note("already using %s", arg);
+        ui_put("\n");
+        ui_flush();
+        return;
+    }
+
+    char *from = strdup(session_backend(s));
+    const char *failed = session_failed_prompt(s);
+    char *retry = failed ? strdup(failed) : NULL;
+    if (!from || (failed && !retry)) {
+        free(from);
+        free(retry);
+        ui_error("could not prepare the backend handoff");
+        ui_put("\n");
+        return;
+    }
+    if (!session_switch_backend(s, arg)) {
+        ui_error("could not start %s; still using %s", arg, from);
+        ui_put("\n");
+        ui_flush();
+        free(from);
+        free(retry);
+        return;
+    }
+
+    banner_identity(s);
+    ui_bar(ui_style(UI_DIM), "continued \xc2\xb7 %s to %s", from, arg);
+    ui_put("\n");
+    ui_flush();
+    free(from);
+
+    /* A provider limit commonly rejects the whole preceding prompt. Once the
+     * user explicitly chooses a replacement, finish the handoff by retrying
+     * that prompt rather than making them type it again. */
+    if (retry) {
+        ui_note("retrying the failed turn with %s", arg);
+        ui_put("\n\n");
+        ui_flush();
+        session_turn(s, retry);
+        free(retry);
+    }
 }
 
 /* No argument opens the picker. Restarts the CLI on the current session id, so
@@ -563,6 +631,8 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line)
         do_model(s, arg);
     } else if (!strcmp(name, "/effort")) {
         do_effort(s, arg);
+    } else if (!strcmp(name, "/backend")) {
+        do_backend(s, arg);
     } else if (!strcmp(name, "/thinking")) {
         do_thinking(s, arg);
     } else if (!strcmp(name, "/image")) {

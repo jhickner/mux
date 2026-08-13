@@ -277,10 +277,7 @@ int main(int argc, char **argv)
         }
         if (r == CMD_NOT_A_COMMAND) {
             status_sticky_prompt(line);
-            if (!session_turn(session, line)) {
-                free(line);
-                break;
-            }
+            session_turn(session, line);
         }
         free(line);
     }

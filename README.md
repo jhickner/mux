@@ -77,6 +77,8 @@ block in the history above.
   after the turn ends it sits above the input. A long one is clipped to 3 lines
 - Interrupt an in-flight turn without losing the session
 - Model switching mid-conversation, carrying context across the restart
+- Backend switching with `/backend <name>`: completed turns are handed to a
+  fresh provider session, and a provider-failed turn is retried automatically
 - Resume any past conversation for the current directory
 - Fork a conversation into a second agent in the current working directory,
   opened in a tmux split or window and resumed on the same context. The fork
@@ -100,6 +102,7 @@ block in the history above.
 | `/new`, `/clear` | Start a fresh conversation |
 | `/model [name]` | Switch model; no argument opens a picker |
 | `/effort [level]` | Set reasoning/thinking effort; no argument opens a backend-specific picker |
+| `/backend <name>` | Continue the conversation with claude, codex, grok, or pi |
 | `/thinking [on\|off]` | Show or hide the ✻ reasoning rows; no argument flips it |
 | `/tools [compact\|full]` | One row per tool call, or full blocks; no argument flips it |
 | `/sticky [on\|off]` | Float the prompt above the spinner; no argument flips it |

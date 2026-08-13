@@ -45,7 +45,7 @@ void session_set_customizations(struct session *s, int on);
 int session_start(struct session *s);
 
 /* Run one turn, printing activity, the reply, and the stats footer. Returns 0
- * when the process has died and the caller should stop. */
+ * when the turn failed; an interactive caller may still switch backends. */
 int session_turn(struct session *s, const char *text);
 
 /* The agent can take a turn with nobody having asked — a background task it
@@ -56,6 +56,15 @@ int session_turn(struct session *s, const char *text);
  * display out of the way. */
 int  session_idle_fd(const struct session *s);
 void session_idle_pump(struct session *s);
+
+/* Start a fresh provider session carrying the completed turns observed by this
+ * process as developer/system context. The old backend remains live if the new
+ * one cannot start. The target uses its default model. */
+int session_switch_backend(struct session *s, const char *backend);
+
+/* The prompt from the last failed provider turn, if any. It remains owned by
+ * the session and is useful for retrying immediately after a backend switch. */
+const char *session_failed_prompt(const struct session *s);
 
 /* Drop the conversation context, keeping the process alive. */
 int session_clear(struct session *s);

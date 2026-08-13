@@ -69,7 +69,10 @@ imagetest: tools/imagetest.c src/image.o src/md.o src/ui.o src/tty.o src/vendor/
 pastetest: tools/pastetest.c src/paste.o
 	$(CC) $(CFLAGS) -Isrc -o $@ $^
 
-check: reflowtest toolstyletest sessionlisttest claudetest codextest groktest filedifftest pitest agenttabstest statustest
+transcripttest: tools/transcripttest.c src/transcript.c
+	$(CC) $(CFLAGS) -Isrc -o $@ $^
+
+check: reflowtest toolstyletest sessionlisttest claudetest codextest groktest filedifftest pitest agenttabstest statustest transcripttest
 	./reflowtest
 	./toolstyletest
 	./sessionlisttest
@@ -80,6 +83,7 @@ check: reflowtest toolstyletest sessionlisttest claudetest codextest groktest fi
 	./pitest
 	./agenttabstest
 	./statustest
+	./transcripttest
 
 install: $(BIN)
 	install -d $(PREFIX)/bin
