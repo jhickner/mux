@@ -393,6 +393,13 @@ static void backend_claude_set_abort(Backend *b, int (*cb)(void)) {
     if (x->client) claude_set_abort_check(x->client, cb);
 }
 
+static int backend_claude_set_effort(Backend *b, const char *effort) {
+    backend_claude *x = b->ctx;
+    if (x->client && !claude_set_effort(x->client, effort)) return 0;
+    backend_set(&x->st.effort, effort);
+    return 1;
+}
+
 static const char *backend_claude_session_id(Backend *b) {
     backend_claude *x = b->ctx;
     return x->client ? claude_session_id(x->client) : NULL;
@@ -423,7 +430,7 @@ static Backend *backend_claude_open(const backend_opts *o) {
     if (!x || !b) { free(x); free(b); return NULL; }
     backend_state_init(&x->st, o);
     b->ctx = x;
-    b->caps = BACKEND_CAP_RESUME | BACKEND_CAP_EFFORT;
+    b->caps = BACKEND_CAP_RESUME | BACKEND_CAP_EFFORT | BACKEND_CAP_LIVE_EFFORT;
     b->ask = backend_claude_ask;
     b->reset = backend_claude_reset;
     b->close = backend_claude_close;
@@ -431,7 +438,7 @@ static Backend *backend_claude_open(const backend_opts *o) {
     b->ask_ex = backend_claude_ask_ex;
     b->usage = backend_claude_usage;
     b->set_model = backend_set_model_generic;
-    b->set_effort = backend_set_effort_generic;
+    b->set_effort = backend_claude_set_effort;
     b->set_permission = backend_set_permission_generic;
     b->set_event_cb = backend_claude_set_event_cb;
     b->set_abort_check = backend_claude_set_abort;

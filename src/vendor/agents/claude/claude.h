@@ -79,6 +79,10 @@ typedef struct {
  * `meta` may be NULL. */
 char *claude_send_ex(claude_client *c, const char *user_text, claude_result *meta);
 
+/* Change the live session's effort with Claude Code's /effort command. NULL
+ * selects "auto", Claude's model-default mode. */
+int claude_set_effort(claude_client *c, const char *effort);
+
 /* The model the CLI resolved at startup (from its `system`/`init` event), or
  * NULL until the first turn has been sent. */
 const char *claude_model(claude_client *c);
@@ -626,6 +630,20 @@ char *claude_send_ex(claude_client *c, const char *user_text, claude_result *met
     char *r = cl_send(c, user_text, 0);
     c->meta = NULL;
     return r;
+}
+
+int claude_set_effort(claude_client *c, const char *effort) {
+    if (!c) return 0;
+    const char *level = effort && *effort ? effort : "auto";
+    size_t n = strlen(level) + sizeof "/effort ";
+    char *command = malloc(n);
+    if (!command) return 0;
+    snprintf(command, n, "/effort %s", level);
+    char *result = cl_send(c, command, 1);
+    free(command);
+    int ok = result && strncmp(result, "Invalid argument:", 17) != 0;
+    free(result);
+    return ok;
 }
 
 int claude_reset(claude_client *c) {

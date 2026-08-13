@@ -44,12 +44,13 @@ static const struct pick_item MODELS[] = {
 #define MODEL_COUNT ((int)(sizeof MODELS / sizeof *MODELS))
 
 static const struct pick_item CLAUDE_EFFORTS[] = {
-    {"default", "whatever the claude CLI is configured to use"},
+    {"default", "auto: use the model's default effort"},
     {"low", "faster, lighter reasoning"},
     {"medium", "balanced reasoning"},
     {"high", "more thorough reasoning"},
     {"xhigh", "extra-high reasoning"},
     {"max", "maximum reasoning"},
+    {"ultracode", "xhigh effort with dynamic workflow orchestration"},
 };
 static const struct pick_item CODEX_EFFORTS[] = {
     {"default", "whatever Codex is configured to use"},
