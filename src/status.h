@@ -30,9 +30,6 @@ void   status_tick(void);
 void   status_pause(void);
 void   status_resume(void);
 
-/* Replace the trailing activity label (e.g. "Bash(git status)"). NULL clears. */
-void   status_activity(const char *label);
-
 /* Seconds since status_begin(). */
 double status_elapsed(void);
 

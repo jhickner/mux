@@ -87,6 +87,13 @@ struct Backend {
     /* As ask(), also filling *meta, which is zeroed first. `meta` may be NULL. */
     char *(*ask_ex)(Backend *b, const char *user, backend_result *meta);
 
+    /* Context occupancy as the driver knows it right now: during a turn this
+     * tracks the latest model request rather than waiting for the turn to end,
+     * so a caller painting a live display can follow it. Either output is 0
+     * when unknown, and the whole hook is NULL for a driver that never reports
+     * usage mid-turn. */
+    void (*usage)(Backend *b, long *context_tokens, long *context_window);
+
     /* Takes effect at the next start(). */
     void (*set_model)(Backend *b, const char *model);
 
@@ -275,7 +282,11 @@ static const char *backend_none(Backend *b) { (void)b; return NULL; }
 
 /* ---------- claude ---------- */
 
-typedef struct { backend_state st; claude_client *client; } backend_claude;
+/* `live` is the turn's result block, written in place as events arrive, so it
+ * doubles as the running usage report. The window only lands with the turn's
+ * final event, so mid-turn it reads 0 and the caller falls back to whatever it
+ * last saw. */
+typedef struct { backend_state st; claude_client *client; claude_result live; } backend_claude;
 
 static void backend_claude_event(void *ud, const claude_event *e) {
     backend_claude *x = ((Backend *)ud)->ctx;
@@ -320,20 +331,26 @@ static char *backend_claude_ask_ex(Backend *b, const char *user, backend_result 
     backend_claude *x = b->ctx;
     if (meta) memset(meta, 0, sizeof *meta);
     if (!backend_claude_ready(b)) return NULL;
-    claude_result cr = {0};
-    char *reply = claude_send_ex(x->client, user, &cr);
+    claude_result *cr = &x->live;
+    char *reply = claude_send_ex(x->client, user, cr);
     if (meta) {
-        meta->cost_usd = cr.cost_usd;
-        meta->input_tokens = cr.input_tokens;
-        meta->output_tokens = cr.output_tokens;
-        meta->cache_read_tokens = cr.cache_read_tokens;
-        meta->cache_creation_tokens = cr.cache_creation_tokens;
-        meta->context_tokens = cr.context_tokens;
-        meta->context_window = cr.context_window;
-        meta->is_error = cr.is_error;
-        meta->interrupted = cr.interrupted;
+        meta->cost_usd = cr->cost_usd;
+        meta->input_tokens = cr->input_tokens;
+        meta->output_tokens = cr->output_tokens;
+        meta->cache_read_tokens = cr->cache_read_tokens;
+        meta->cache_creation_tokens = cr->cache_creation_tokens;
+        meta->context_tokens = cr->context_tokens;
+        meta->context_window = cr->context_window;
+        meta->is_error = cr->is_error;
+        meta->interrupted = cr->interrupted;
     }
     return reply;
+}
+
+static void backend_claude_usage(Backend *b, long *tokens, long *window) {
+    backend_claude *x = b->ctx;
+    *tokens = x->live.context_tokens;
+    *window = x->live.context_window;
 }
 
 static char *backend_claude_ask(Backend *b, const char *user) {
@@ -399,6 +416,7 @@ static Backend *backend_claude_open(const backend_opts *o) {
     b->close = backend_claude_close;
     b->start = backend_claude_start;
     b->ask_ex = backend_claude_ask_ex;
+    b->usage = backend_claude_usage;
     b->set_model = backend_set_model_generic;
     b->set_permission = backend_set_permission_generic;
     b->set_event_cb = backend_claude_set_event_cb;

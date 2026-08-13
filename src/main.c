@@ -74,6 +74,18 @@ static void usage(void)
             choices);
 }
 
+/* The context gauge in front of the caret. Fixed width so the caret does not
+ * step sideways as the reading climbs into two and three digits. */
+static const char *context_gauge(void *ud)
+{
+    static char text[8];
+    int percent = session_context_percent(ud);
+    if (percent < 0)
+        return NULL;
+    snprintf(text, sizeof text, "%3d%%", percent);
+    return text;
+}
+
 /* A command submitted while a turn is streaming. The spinner and the live
  * prompt block are lifted out of the way so the command's own output lands in
  * scrollback rather than being overwritten. */
@@ -216,6 +228,7 @@ int main(int argc, char **argv)
     session_set_typeahead(prompt_live_key, prompt);
     status_set_below(prompt_live_paint, prompt_live_offset, prompt);
     prompt_set_live_command(prompt, live_command, session);
+    prompt_set_status(prompt, context_gauge, session);
 
     /* cmd_resume() prints the identity row itself when it adopts a session. */
     if (resume && cmd_resume(session))

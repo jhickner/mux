@@ -80,6 +80,11 @@ const char *session_cwd(const struct session *s);
 const char *session_backend(const struct session *s);
 const char *session_last_reply(const struct session *s);
 
+/* How much of the context window is occupied, 0-100, or -1 before the backend
+ * has reported enough to say. Tracks the running turn where the driver reports
+ * usage as it goes, so it is safe to call from a repaint. */
+int session_context_percent(const struct session *s);
+
 /* Print the /session report: model, id, cwd, turns, tokens, cost. */
 void session_report(const struct session *s);
 

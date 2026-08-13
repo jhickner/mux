@@ -1,8 +1,6 @@
 #include "status.h"
 
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <sys/time.h>
 
 #include "tty.h"
@@ -15,11 +13,14 @@ static const char *const FRAMES[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "
  * often the caller happens to tick. */
 #define FRAME_MS 90
 
+/* What the turn is doing, in one word. Naming the tool and its argument here
+ * put whole shell pipelines on the row; the row is a heartbeat, not a log. */
+#define SPIN_WORD " · thinking"
+
 static double  started;
 static int     visible;
 static int     frame;
 static double  frame_at;
-static char   *label;
 
 static status_paint_fn  below;
 static status_offset_fn below_offset;
@@ -107,33 +108,40 @@ static void erase_block(void)
     painted = 0;
 }
 
+/* "12s" up to a minute, then "1m 3s", then "1h 4m": a bare second count stops
+ * being readable as a duration once a turn runs long. */
+static void humanize(double seconds, char *out, size_t n)
+{
+    long total = (long)seconds;
+    if (total < 0)
+        total = 0;
+    if (total < 60)
+        snprintf(out, n, "%lds", total);
+    else if (total < 3600)
+        snprintf(out, n, "%ldm %lds", total / 60, total % 60);
+    else
+        snprintf(out, n, "%ldh %ldm", total / 3600, (total % 3600) / 60);
+}
+
 static void paint(void)
 {
-    double elapsed = status_elapsed();
-    char left[64];
-    snprintf(left, sizeof left, "%s %.0fs", FRAMES[frame], elapsed);
+    char clock[32], left[64];
+    humanize(status_elapsed(), clock, sizeof clock);
+    snprintf(left, sizeof left, "%s %s", FRAMES[frame], clock);
 
     ui_sync_begin();
     erase_block();
-    ui_esc(ui_style(UI_DIM));
+    ui_esc(ui_style(UI_ACCENT));
     ui_put(left);
     spin_width = (int)ui_cells(left);
-    if (label && *label) {
-        ui_put(" · ");
-        /* Budget out the separator, the ellipsis, and one column at the margin:
-         * a row filled to the edge leaves the terminal holding a deferred wrap,
-         * which resolves into a second row that the next resize then rewraps. */
-        int budget = ui_columns() - spin_width - 3 - 1 - 1;
-        if (budget < 1)
-            budget = 1;
-        size_t skip = 0;
-        size_t fit = ui_wrap_row(label, (size_t)budget, &skip);
-        ui_putn(label, fit);
-        spin_width += 3 + (int)ui_cells_n(label, fit);
-        if (label[fit]) {
-            ui_put("…");
-            spin_width += 1;
-        }
+    /* Keep a column clear at the margin: a row filled to the edge leaves the
+     * terminal holding a deferred wrap, which resolves into a second row that
+     * the next resize then rewraps. */
+    int word = (int)ui_cells(SPIN_WORD);
+    if (spin_width + word <= ui_columns() - 1) {
+        ui_esc(ui_style(UI_DIM));
+        ui_put(SPIN_WORD);
+        spin_width += word;
     }
     ui_esc(ui_style(UI_RESET));
 
@@ -158,8 +166,6 @@ void status_begin(void)
     frame = 0;
     frame_at = started;
     visible = 1;
-    free(label);
-    label = NULL;
     caret_row = 0;
     spin_width = 0;
     painted = 0;
@@ -198,14 +204,6 @@ void status_resume(void)
         paint();
 }
 
-void status_activity(const char *text)
-{
-    free(label);
-    label = text ? strdup(text) : NULL;
-    if (visible && !size_changing())
-        paint();
-}
-
 void status_end(void)
 {
     if (visible) {
@@ -214,8 +212,6 @@ void status_end(void)
         ui_sync_end();
     }
     visible = 0;
-    free(label);
-    label = NULL;
     ui_esc("\x1b[?25h");
     ui_flush();
 }

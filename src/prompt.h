@@ -36,6 +36,14 @@ void prompt_live_paint(void *ud, int *rows, int *caret_row, int *caret_col);
  * now, which a resize can grow past what the last paint reported. */
 int  prompt_live_offset(void *ud);
 
+/* Asked, on every repaint, for the short text that sits in front of the ❯ —
+ * the context gauge. Return NULL or "" for none. Consulting a callback rather
+ * than holding a string is what keeps the reading current while a turn runs,
+ * since the block repaints on every spinner tick. The text is drawn a byte per
+ * column, so it must be ASCII. */
+typedef const char *(*prompt_status_fn)(void *ud);
+void prompt_set_status(struct prompt *p, prompt_status_fn fn, void *ud);
+
 /* Consulted for each line submitted while a turn runs, before it is queued.
  * Return 1 to claim the line and have it dropped from the queue — for the few
  * commands that make sense mid-turn. The callee owns echoing and display. */

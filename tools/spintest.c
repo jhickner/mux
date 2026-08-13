@@ -40,9 +40,6 @@ int main(void)
     ui_flush();
 
     status_begin();
-    if (getenv("LABEL"))
-        status_activity("Edit(src/some/very/long/path/that/fills/the/row/and/then/some/"
-                        "more/so/it/reaches/the/right/margin/file.c)");
     for (int i = 0; i < 400; i++) {
         tty_event ev;
         while (tty_read(&ev, 0)) {

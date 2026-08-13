@@ -37,6 +37,8 @@ struct prompt {
     int          queued_count;
     int          queued_cap;
     char        *file_root;    /* project root for @-completion, or NULL */
+    prompt_status_fn status;   /* the gauge in front of the caret, or NULL */
+    void            *status_ud;
 };
 
 /* ---------- history ---------- */
@@ -276,12 +278,31 @@ static void paint_queued(const struct prompt *p, int cols)
     }
 }
 
+/* Cells the gauge reserves in front of the caret, including the space after it.
+ * The editor is rendered inset by this much so its wrapped rows and its
+ * dropdown line up under the caret rather than under the gauge. Yields the
+ * whole width back rather than squeeze the editor into a narrow terminal. */
+static int status_indent(const struct prompt *p, const char **text, int cols)
+{
+    *text = p->status ? p->status(p->status_ud) : NULL;
+    if (!*text || !**text)
+        return 0;
+    int width = (int)strlen(*text) + 1;
+    if (cols < 20 || width > cols / 4) {
+        *text = NULL;
+        return 0;
+    }
+    return width;
+}
+
 /* Draw the block from the cursor's row down, leaving the cursor at the end of
  * the last row. Reports the height and where the caret belongs within it. */
 static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *caret_col)
 {
     int cols = ui_columns();
-    int input_rows = repl_input_rows(&p->repl, cols);
+    const char *status = NULL;
+    int indent = status_indent(p, &status, cols);
+    int input_rows = repl_input_rows(&p->repl, cols - indent);
     int rows = input_rows + repl_dropdown_rows(&p->repl);
     if (rows < 1)
         rows = 1;
@@ -299,7 +320,9 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
         p->caret_row = p->caret_col = p->caret_frame_row = 0;
         return;
     }
-    repl_render(&p->repl, 0, 0, cols, true, draw_cell, &p->frame);
+    repl_render(&p->repl, indent, 0, cols - indent, true, draw_cell, &p->frame);
+    for (int x = 0; status && status[x]; x++)
+        draw_cell(&p->frame, x, 0, (unsigned char)status[x], REPL_STYLE_DIM);
 
     int synthetic = caret_is_synthetic(&p->repl);
 
@@ -327,7 +350,7 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
             /* The line being edited wears a caret; it becomes the "▌" block only
              * once it is submitted into the history above. repl.h prefixes the
              * first row with "> " and continuation rows with two spaces. */
-            if (c->style == REPL_STYLE_PROMPT && x == 0 && cp == '>') {
+            if (c->style == REPL_STYLE_PROMPT && x == indent && cp == '>') {
                 cp = 0x276F; /* ❯ */
                 seq = ui_style(UI_ACCENT);
             }
@@ -649,6 +672,12 @@ static int recall_queued(struct prompt *p)
     repl_insert_text(&p->repl, line);
     free(line);
     return 1;
+}
+
+void prompt_set_status(struct prompt *p, prompt_status_fn fn, void *ud)
+{
+    p->status = fn;
+    p->status_ud = ud;
 }
 
 void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud)

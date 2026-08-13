@@ -469,9 +469,6 @@ static void on_event(void *ud, const backend_event *ev)
         else
             filediff_clear();
 
-        char label[256];
-        snprintf(label, sizeof label, "%s %s", name, arg);
-        status_activity(label);
         s->after_activity = 1;
         s->after_tool = 1;
         s->after_collapse = collapsed;
@@ -489,7 +486,6 @@ static void on_event(void *ud, const backend_event *ev)
                 print_tool_output(ev->text);
             status_resume();
         }
-        status_activity(NULL);
         s->after_activity = 1;
         s->after_tool = 1;
         break;
@@ -807,7 +803,7 @@ int session_turn(struct session *s, const char *text)
         ui_put("\n");
     }
     if (meta.interrupted) {
-        ui_note("  interrupted");
+        ui_error("  interrupted");
         ui_put("\n");
     }
 
@@ -859,6 +855,25 @@ int session_can_resume(const struct session *s)
 const char *session_cwd(const struct session *s) { return s->cwd; }
 const char *session_backend(const struct session *s) { return s->backend; }
 const char *session_last_reply(const struct session *s) { return s->last_reply; }
+
+int session_context_percent(const struct session *s)
+{
+    long used = s->context_tokens, window = s->context_window;
+    /* Mid-turn the driver has a newer count than the last footer; the window
+     * only arrives with the turn's final event, so keep the one we have. */
+    if (s->agent && s->agent->usage) {
+        long live_used = 0, live_window = 0;
+        s->agent->usage(s->agent, &live_used, &live_window);
+        if (live_used > 0)
+            used = live_used;
+        if (live_window > 0)
+            window = live_window;
+    }
+    if (used <= 0 || window <= 0)
+        return -1;
+    int percent = (int)(used * 100 / window);
+    return percent > 100 ? 100 : percent;
+}
 
 /* How the CLI authenticated, or NULL when the backend never says. A CLI that
  * reports "none" had no key env var in play, which is exactly the case where it
