@@ -482,10 +482,10 @@ static void delete_forward(struct prompt *p)
     feed(p, REPL_KEY_BACKSPACE, 0, NULL);
 }
 
-/* Ctrl-V pastes the clipboard's *image*: it is saved to a file and the editor
- * gets the path, which is what the agent needs to open it. Text arrives by the
- * terminal's own paste, as a bracketed-paste TK_TEXT event. */
-static void paste_clipboard_image(struct prompt *p, int live)
+/* Ctrl-V pastes the clipboard. An image is saved to a file and the editor gets
+ * its path, which is what the agent needs to open it; anything else inserts as
+ * text, the same way the terminal's own bracketed paste arrives. */
+static void paste_clipboard(struct prompt *p, int live)
 {
     char path[1024];
     if (paste_image(path, sizeof path - 1)) {
@@ -495,10 +495,18 @@ static void paste_clipboard_image(struct prompt *p, int live)
         repl_insert_text(&p->repl, path);
         return;
     }
+
+    char *text = paste_text();
+    if (text) {
+        repl_insert_text(&p->repl, text);
+        free(text);
+        return;
+    }
+
     if (live) /* the turn owns the screen; a note would land inside its output */
         return;
     erase_block(p);
-    ui_note("no image on the clipboard");
+    ui_note("clipboard is empty");
     repaint(p);
 }
 
@@ -539,7 +547,7 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         if (ev->cp == 3 && live) /* Ctrl-C */
             return KEY_CANCEL;
         if (ev->cp == 22) { /* Ctrl-V */
-            paste_clipboard_image(p, live);
+            paste_clipboard(p, live);
             return KEY_OK;
         }
         if (ev->cp == 12) { /* Ctrl-L */
