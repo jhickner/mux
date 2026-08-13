@@ -5,6 +5,7 @@
 
 #define SETTING_THINKING   "thinking"
 #define SETTING_PERMISSION "permission"
+#define SETTING_COMPACT    "compact"
 
 /* Read `path`, if it is there. Without this every get returns its fallback and
  * nothing is written back. */

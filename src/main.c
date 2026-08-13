@@ -175,6 +175,7 @@ int main(int argc, char **argv)
     if (session) {
         session_set_customizations(session, !safe_mode);
         session_set_thinking(session, settings_get_int(SETTING_THINKING, 1));
+        session_set_compact(session, settings_get_int(SETTING_COMPACT, 0));
         session_set_permission(session,
             session_permission_name(settings_get_int(SETTING_PERMISSION, 0)));
         /* Set before start: the CLI then comes up already resumed. */

@@ -31,6 +31,7 @@ struct session {
     long     context_window;
     int      quiet;          /* suppress activity, spinner, and footer      */
     int      thinking;       /* show the model's reasoning rows             */
+    int      compact;        /* one dim row per tool call, whatever it does */
     int      customizations; /* load the user's skills, CLAUDE.md, MCP, ... */
     char    *permission;     /* --permission-mode; NULL means the default   */
     int      after_activity; /* last thing printed was a tool/thinking row  */
@@ -179,6 +180,17 @@ static int tool_path(const struct session *s, const char *input_json, char *out,
 
 /* ---------- live turn rendering ---------- */
 
+/* Everything the agent does is indented; only what it says starts at column 0.
+ * That is the whole difference between a tool block and a reply, so it has to
+ * hold for every activity row — full, collapsed, and the ✻ reasoning rows. */
+#define TOOL_INDENT 2
+
+static void pad(int cells)
+{
+    for (int i = 0; i < cells; i++)
+        ui_put(" ");
+}
+
 static void print_activity(const char *marker, const char *text, enum ui_role role)
 {
     int columns = ui_columns();
@@ -192,7 +204,7 @@ static void print_activity(const char *marker, const char *text, enum ui_role ro
     size_t skip = 0;
     size_t fit = ui_wrap_row(clipped, (size_t)budget, &skip);
 
-    ui_put("  ");
+    pad(TOOL_INDENT);
     ui_esc(ui_style(UI_CHROME));
     ui_put(marker);
     ui_esc(ui_style(UI_RESET));
@@ -222,9 +234,10 @@ static void print_tool_call(const char *name, const char *arg)
     char tag[64];
     tool_tag(name, tag, sizeof tag);
 
-    int indent = (int)ui_cells(tag) + 1;
+    int indent = TOOL_INDENT + (int)ui_cells(tag) + 1;
     int columns = ui_columns();
 
+    pad(TOOL_INDENT);
     ui_esc(ui_style(UI_TOOL));
     ui_put(tag);
     ui_esc(ui_style(UI_RESET));
@@ -243,8 +256,7 @@ static void print_tool_call(const char *name, const char *arg)
         size_t skip = 0;
         size_t row = ui_wrap_row(p, (size_t)budget, &skip);
         if (!first)
-            for (int i = 0; i < indent; i++)
-                ui_put(" ");
+            pad(indent);
         ui_putn(p, row);
         ui_put("\n");
         p += row + skip;
@@ -256,7 +268,8 @@ static void print_tool_call(const char *name, const char *arg)
 
 /* A call that only looks at the workspace is worth a row, not a block: the tag
  * and its argument dimmed, no output preview, and a run of calls to the same
- * tool listed together on one row.
+ * tool listed together on one row. Compact mode puts every call here, whatever
+ * it does.
  *
  * The row grows by being written again over itself. That works because every
  * print here happens with the status block lifted, which leaves the cursor at
@@ -275,7 +288,7 @@ static void cluster_forget(struct session *s)
  * holding a deferred wrap, and one more in hand for the ellipsis. */
 static int cluster_budget(void)
 {
-    int budget = ui_columns() - 2;
+    int budget = ui_columns() - TOOL_INDENT - 2;
     return budget < 8 ? 8 : budget;
 }
 
@@ -329,6 +342,7 @@ static void cluster_paint(struct session *s)
 
     if (s->cluster.onscreen)
         ui_esc("\x1b[1A\r\x1b[K");
+    pad(TOOL_INDENT);
     ui_esc(ui_style(UI_TOOLDIM));
     ui_putn(s->cluster.line, tag);
     ui_esc(ui_style(UI_DIM));
@@ -446,7 +460,7 @@ static void on_event(void *ud, const backend_event *ev)
         const char *name = ev->name ? ev->name : "?";
         char arg[4096];
         tool_argument(s, ev, arg, sizeof arg);
-        int collapsed = toolstyle_collapses(name, ev->input_json, ev->arg);
+        int collapsed = s->compact || toolstyle_collapses(name, ev->input_json, ev->arg);
 
         status_pause();
         if (collapsed) {
@@ -594,6 +608,10 @@ void session_set_quiet(struct session *s, int quiet) { s->quiet = quiet; }
 void session_set_thinking(struct session *s, int on) { s->thinking = on; }
 
 int session_thinking(const struct session *s) { return s->thinking; }
+
+void session_set_compact(struct session *s, int on) { s->compact = on; }
+
+int session_compact(const struct session *s) { return s->compact; }
 
 void session_set_customizations(struct session *s, int on) { s->customizations = on; }
 
@@ -921,6 +939,7 @@ void session_report(const struct session *s)
                                                    : "safe mode (customizations off)");
         ui_note("  tools    %s", session_permission(s));
     }
+    ui_note("  calls    %s", s->compact ? "compact (one row each)" : "full blocks");
     if (s->id[0])
         ui_note("  session  %s", s->id);
     /* Keep the report to one row per field even in a narrow terminal.

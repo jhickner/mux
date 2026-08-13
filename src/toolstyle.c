@@ -48,6 +48,14 @@ static const char *const READERS[] = {
     "true", "false",
 };
 
+/* git subcommands that only report, in every form they take. The ones that read
+ * in one spelling and write in another — branch, tag, remote, reflog — stay off
+ * the list, because a collapsed row says nothing happened. */
+static const char *const GIT_READERS[] = {
+    "status",   "log",      "diff",     "show",     "blame",    "shortlog",  "describe",
+    "rev-parse", "ls-files", "ls-tree", "cat-file", "grep",     "whatchanged", "diff-tree",
+};
+
 /* Shaping commands, which read stdin. They qualify only downstream of a reader
  * in the same pipeline, or — where `operands` says they take a file — when
  * handed one of their own. `values` lists the short options that consume the
@@ -274,13 +282,23 @@ static enum segment_class classify_segment(const char *segment, const char *end)
         return SEGMENT_STAGE; /* an empty segment neither reads nor acts */
 
     /* Only the read-only halves of git are worth collapsing; the rest of its
-     * subcommands write. */
+     * subcommands write. The global options that can precede the subcommand are
+     * skipped, so `git -C dir status` is judged on `status`. */
     if (same_word(word, "git")) {
         char sub[512];
-        if (!take_word(&cursor, end, sub, sizeof sub))
-            return SEGMENT_UNKNOWN;
-        return (same_word(sub, "grep") || same_word(sub, "ls-files")) ? SEGMENT_READER
-                                                                     : SEGMENT_UNKNOWN;
+        for (;;) {
+            if (!take_word(&cursor, end, sub, sizeof sub))
+                return SEGMENT_UNKNOWN;
+            if (sub[0] != '-')
+                break;
+            /* -C, -c, --git-dir and --work-tree take the next word; the rest
+             * (--no-pager, --paginate, ...) stand alone. */
+            if (!strcmp(sub, "-C") || !strcmp(sub, "-c") || !strcmp(sub, "--git-dir") ||
+                !strcmp(sub, "--work-tree") || !strcmp(sub, "--namespace"))
+                if (!take_word(&cursor, end, sub, sizeof sub))
+                    return SEGMENT_UNKNOWN;
+        }
+        return in_list(GIT_READERS, COUNT(GIT_READERS), sub) ? SEGMENT_READER : SEGMENT_UNKNOWN;
     }
 
     if (command_writes(word, cursor, end))

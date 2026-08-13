@@ -46,9 +46,12 @@ block in the history above.
   stream, with a spinner and elapsed time. Reasoning shows as dimmed ✻ rows,
   which `/thinking` hides for good
 - A call that only reads — a file read, or a shell command built entirely of
-  read-only parts — collapses to one dimmed row with no output preview, and a
-  run of them to the same tool is listed on a single row. Anything that acts
-  keeps its full block
+  read-only parts, including the reporting halves of `git` — collapses to one
+  dimmed row with no output preview, and a run of them to the same tool is
+  listed on a single row. Anything that acts keeps its full block
+- `/tools compact` gives every call that one-row treatment, whatever it does
+- What the agent says starts at column 0; everything it does is indented, so a
+  reply is never mistaken for a tool block
 - Per-turn footer: elapsed time, context used against the model's window, and
   cumulative cost
 - Markdown rendering: headings, bullets, ordered lists, fenced code, quotes,
@@ -82,6 +85,7 @@ block in the history above.
 | `/new`, `/clear` | Start a fresh conversation |
 | `/model [name]` | Switch model; no argument opens a picker |
 | `/thinking [on\|off]` | Show or hide the ✻ reasoning rows; no argument flips it |
+| `/tools [compact\|full]` | One row per tool call, or full blocks; no argument flips it |
 | `/resume` | Pick a past conversation for this directory |
 | `/fh`, `/fs` | Fork into a horizontal tmux split, in a new worktree |
 | `/fv` | Fork into a vertical tmux split, in a new worktree |
@@ -145,7 +149,8 @@ simple-agent [-b backend] [-m model] [-C dir] [-s] [-r] [prompt...]
 ## Files
 
 - `~/.config/simple-agent/history` — prompt history
-- `~/.config/simple-agent/settings` — `key=value` per line; `/thinking` writes here
+- `~/.config/simple-agent/settings` — `key=value` per line; `/thinking`,
+  `/tools` and `/permission` write here
 - `~/.claude/projects/<encoded cwd>/*.jsonl` — Claude Code's own transcripts,
   read by `/resume`
 

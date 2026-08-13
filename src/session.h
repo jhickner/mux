@@ -29,6 +29,11 @@ void session_set_quiet(struct session *s, int quiet);
 void session_set_thinking(struct session *s, int on);
 int  session_thinking(const struct session *s);
 
+/* Give every tool call the one-row collapsed layout — no output preview and no
+ * diff — instead of only the calls that just read. Off by default. */
+void session_set_compact(struct session *s, int on);
+int  session_compact(const struct session *s);
+
 /* Load the user's discovered customizations — skills, CLAUDE.md, plugins,
  * hooks, MCP servers, custom commands and agents. Must be set before
  * session_start(). */

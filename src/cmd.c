@@ -17,6 +17,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/clear", "alias for /new", NULL},
     {"/model", "switch model", "[name]"},
     {"/thinking", "show or hide the model's reasoning", "[on|off]"},
+    {"/tools", "how much of each tool call to show", "[compact|full]"},
     {"/permission", "how the CLI gates tool calls", "[mode]"},
     {"/resume", "resume a past conversation", NULL},
     {"/fh", "fork into a horizontal tmux split", NULL},
@@ -226,6 +227,31 @@ static void do_thinking(struct session *s, const char *arg)
     ui_flush();
 }
 
+/* No argument flips it; "compact"/"full" set it outright. The choice is
+ * remembered across runs. */
+static void do_tools(struct session *s, const char *arg)
+{
+    int compact;
+    if (!arg || !*arg)
+        compact = !session_compact(s);
+    else if (!strcmp(arg, "compact"))
+        compact = 1;
+    else if (!strcmp(arg, "full"))
+        compact = 0;
+    else {
+        ui_error("/tools takes compact, full, or nothing to flip it");
+        ui_put("\n");
+        ui_flush();
+        return;
+    }
+
+    session_set_compact(s, compact);
+    settings_set_int(SETTING_COMPACT, compact);
+    ui_note("tool calls: %s", compact ? "one row each" : "full blocks with output");
+    ui_put("\n");
+    ui_flush();
+}
+
 int cmd_resume(struct session *s)
 {
     /* The picker reads Claude Code's own transcript store; no other backend
@@ -382,6 +408,8 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line)
         do_model(s, arg);
     } else if (!strcmp(name, "/thinking")) {
         do_thinking(s, arg);
+    } else if (!strcmp(name, "/tools")) {
+        do_tools(s, arg);
     } else if (!strcmp(name, "/permission")) {
         do_permission(s, arg);
     } else if (!strcmp(name, "/resume")) {

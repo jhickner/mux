@@ -34,6 +34,18 @@ int main(void)
     reads("git grep TODO");
     reads("git ls-files");
 
+    /* The git subcommands that only report, including behind global options. */
+    reads("git status");
+    reads("git status --short");
+    reads("git log --oneline -5");
+    reads("git diff --stat");
+    reads("git show HEAD");
+    reads("git blame src/ui.c");
+    reads("git rev-parse HEAD");
+    reads("git -C /tmp/repo status");
+    reads("git --no-pager log -3");
+    reads("git show HEAD | head -20");
+
     /* Pipelines: a stage rides on the reader that feeds it. */
     reads("ls -la | wc -l");
     reads("grep -rn tool src | head -5");
@@ -45,8 +57,12 @@ int main(void)
     /* Anything that acts, or that cannot be vouched for. */
     acts("rm -rf build");
     acts("make");
-    acts("git status");
     acts("git commit -m wip");
+    acts("git checkout main");
+    acts("git branch -D old");   /* branch reads in one spelling and writes in another */
+    acts("git tag v1");
+    acts("git");                 /* no subcommand to judge */
+    acts("git -c user.name=x commit");
     acts("./simple-agent --help");
     acts("sudo ls");
     acts("ls | xargs rm");
