@@ -147,6 +147,7 @@ diff.
 | `ctrl-c` | Clear the current line, or interrupt while a turn runs |
 | `ctrl-d` | Quit on an empty line, else delete forward |
 | `ctrl-l` | Clear the screen |
+| `ctrl-v` | Paste the clipboard image as a file, inserting its path (macOS) |
 | `ctrl-a` / `ctrl-e` | Start / end of line |
 | `ctrl-w` / `ctrl-u` / `ctrl-k` | Kill word / to start / to end |
 | `ctrl-y` | Yank |
@@ -172,6 +173,8 @@ simple-agent [-b backend] [-m model] [-e effort] [-C dir] [-s] [-r] [prompt...]
 - `~/.config/simple-agent/history` — prompt history
 - `~/.config/simple-agent/settings` — `key=value` per line; `/thinking`,
   `/tools`, `/sticky`, `/image` and `/permission` write here
+- `~/.config/simple-agent/pastes/paste-<timestamp>.png` — images taken off the
+  clipboard by `ctrl-v`
 - `~/.claude/projects/<encoded cwd>/*.jsonl` — Claude Code's transcripts,
   read by `/resume` on `-b claude`
 - `~/.grok/sessions/<encoded cwd>/<id>/` — Grok's sessions, read by `/resume`
