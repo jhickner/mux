@@ -79,6 +79,12 @@ void codex_stop(codex_client *c);
 #include <unistd.h>
 #include "cJSON.h"
 
+/* How long a read waits on the app-server before running the abort predicate
+ * again. Also the worst-case delay before a key the caller reads from that
+ * predicate reaches the screen, so it sits below the ~30ms an echo can take
+ * without being felt as lag. */
+#define CX_TICK_MS 20
+
 struct codex_client {
     pid_t pid;
     int in_fd, out_fd, next_id, verbose;
@@ -154,7 +160,7 @@ static int cx_read(codex_client *c, cJSON **out, int honor_abort) {
         }
         if (honor_abort && c->abort && c->abort()) return 0;
         struct pollfd p = { c->out_fd, POLLIN, 0 };
-        int pr = poll(&p, 1, 200);
+        int pr = poll(&p, 1, CX_TICK_MS);
         if (pr < 0) { if (errno == EINTR) continue; return -1; }
         if (!pr) continue;
         char tmp[8192]; ssize_t nr = read(c->out_fd, tmp, sizeof tmp);

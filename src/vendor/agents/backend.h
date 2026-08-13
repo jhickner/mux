@@ -107,8 +107,9 @@ struct Backend {
                          void *ud);
 
     /* Predicate polled while a turn is in flight; when it returns nonzero the
-     * turn is abandoned. It is called every ~80-200ms, so it doubles as a tick
-     * for a caller painting its own display. */
+     * turn is abandoned. It is called every ~20ms, so it doubles as both a tick
+     * for a caller painting its own display and the point at which a caller
+     * that keeps its input live can pick up a keystroke. */
     void (*set_abort_check)(Backend *b, int (*cb)(void));
 
     /* NULL until known, or when the driver never reports it. */

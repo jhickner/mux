@@ -161,6 +161,12 @@ void claude_stop(claude_client *c);
 
 #define CLAUDE_ERR_MAX 4096
 
+/* How long the turn loop waits on the child before running the abort predicate
+ * again. Also the worst-case delay before a key the caller reads from that
+ * predicate reaches the screen, so it sits below the ~30ms an echo can take
+ * without being felt as lag. */
+#define CL_TICK_MS 20
+
 struct claude_client {
     pid_t pid;
     int   in_fd;              /* write user turns here (child stdin)   */
@@ -572,9 +578,11 @@ static char *cl_send(claude_client *c, const char *user_text, int content_block)
             claude_interrupt(c);
             if (c->meta) c->meta->interrupted = 1;
         }
-        /* Short enough that the abort predicate doubles as a UI tick. */
+        /* The abort predicate doubles as a UI tick, and a caller that echoes
+         * typing from it cannot answer a keystroke sooner than this timeout, so
+         * it is set by what feels immediate rather than by the spinner. */
         struct pollfd pfds[2] = { { c->out_fd, POLLIN, 0 }, { c->err_fd, POLLIN, 0 } };
-        int pr = poll(pfds, 2, 80);
+        int pr = poll(pfds, 2, CL_TICK_MS);
         if (pr < 0) { if (errno == EINTR) continue; c->len = 0; break; }
         if (pfds[1].revents) cl_drain_stderr(c);     /* keep the pipe from filling */
         if (!(pfds[0].revents & (POLLIN | POLLHUP))) continue;

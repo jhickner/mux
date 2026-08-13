@@ -579,8 +579,10 @@ static void name_poll(struct session *s)
         status_set_note(s->title);
 }
 
-/* Polled by the backend a few times a second: drain whatever was typed, then
- * tick the spinner, and report whether the user asked to interrupt. */
+/* Polled by the backend many times a second: drain whatever was typed, then
+ * tick the spinner, and report whether the user asked to interrupt. This is the
+ * only place keys are read during a turn, so its cadence is what echo latency
+ * costs — hence the short poll timeouts in the drivers. */
 static int abort_check(void)
 {
     name_poll(live);
@@ -593,6 +595,9 @@ static int abort_check(void)
     int interrupt = 0;
     tty_event ev;
     while (tty_read(&ev, 0)) {
+        /* Typing edits the live prompt, and a resize rewraps it: either way the
+         * block on screen is stale until the tick below repaints it. */
+        status_touch();
         if (typeahead) {
             interrupt |= typeahead(typeahead_ud, &ev);
             continue;

@@ -1,6 +1,7 @@
 #include "status.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <sys/time.h>
 
 #include "tty.h"
@@ -31,6 +32,7 @@ static int              painted;    /* a block is on screen */
 static int              spin_width; /* cells the spinner row occupies */
 static int              gap;        /* asked for a blank row above the spinner */
 static int              painted_gap;/* ... and whether the block on screen has one */
+static int              dirty;      /* the block on screen is out of date */
 
 /* Set when a resize arrives, cleared once the size has been quiet again. */
 static unsigned resize_epoch;
@@ -45,9 +47,16 @@ static double now_seconds(void)
 
 double status_elapsed(void) { return now_seconds() - started; }
 
+void status_touch(void) { dirty = 1; }
+
 void status_set_note(const char *text)
 {
-    snprintf(note, sizeof note, "%s", text ? text : "");
+    char next[sizeof note];
+    snprintf(next, sizeof next, "%s", text ? text : "");
+    if (strcmp(next, note) == 0)
+        return;
+    memcpy(note, next, sizeof note);
+    dirty = 1;
 }
 
 void status_set_below(status_paint_fn paint_fn, status_offset_fn offset_fn, void *ud)
@@ -184,6 +193,7 @@ static void paint(void)
         ui_esc("\x1b[?25h"); /* the caret marks where typing lands */
     }
     painted = 1;
+    dirty = 0;
     ui_sync_end();
     ui_flush();
 }
@@ -202,6 +212,11 @@ void status_begin(void)
     paint();
 }
 
+/* Called as often as the driver polls its abort predicate — which is far more
+ * often than the animation moves, now that a keystroke has to reach the screen
+ * within a tick. Painting each time would push a full erase-and-redraw of the
+ * block at the terminal dozens of times a second, so a tick that has nothing
+ * new to show does nothing. */
 void status_tick(void)
 {
     if (!visible || size_changing())
@@ -210,8 +225,10 @@ void status_tick(void)
     if ((t - frame_at) * 1000.0 >= FRAME_MS) {
         frame = (frame + 1) % FRAME_COUNT;
         frame_at = t;
+        dirty = 1;
     }
-    paint();
+    if (dirty)
+        paint();
 }
 
 void status_pause(void)

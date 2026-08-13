@@ -27,8 +27,13 @@ void   status_set_below(status_paint_fn paint, status_offset_fn offset, void *ud
  * the row is wide enough for all of it. NULL or "" removes it. */
 void   status_set_note(const char *text);
 
-/* Redraw the spinner and elapsed time; cheap enough to call on every poll. */
+/* Redraw the spinner and elapsed time when something has changed, so a driver
+ * polling its abort predicate tens of times a second costs nothing extra. */
 void   status_tick(void);
+
+/* Something the block draws has changed — typing edited the live prompt, say —
+ * so the next tick has to repaint even if the spinner frame has not moved on. */
+void   status_touch(void);
 
 /* Erase the block before printing scrollback content, then bring it back. */
 void   status_pause(void);

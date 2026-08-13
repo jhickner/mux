@@ -40,9 +40,10 @@ int main(void)
     ui_flush();
 
     status_begin();
-    for (int i = 0; i < 400; i++) {
+    for (int i = 0; i < 1600; i++) { /* the drivers poll about every 20ms */
         tty_event ev;
         while (tty_read(&ev, 0)) {
+            status_touch();
             if (ev.key == TK_TEXT)
                 free(ev.text);
             if (ev.key == TK_EOF || (ev.key == TK_CHAR && ev.cp == 3))
@@ -56,7 +57,7 @@ int main(void)
             status_resume();
         }
         status_tick();
-        usleep(80000);
+        usleep(20000);
     }
 done:
     status_end();

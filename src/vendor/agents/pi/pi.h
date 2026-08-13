@@ -103,6 +103,12 @@ Backend *pi_backend_open(const backend_opts *opts);
 #include <sys/wait.h>
 #include "cJSON.h"
 
+/* How long a read waits on the child before running the abort predicate again.
+ * Also the worst-case delay before a key the caller reads from that predicate
+ * reaches the screen, so it sits below the ~30ms an echo can take without being
+ * felt as lag. */
+#define PI_TICK_MS 20
+
 struct pi_client {
     pid_t pid;
     int in_fd, out_fd;
@@ -182,7 +188,7 @@ static int pi_read(pi_client *c, cJSON **out, int honor_abort) {
         }
         if (honor_abort && c->abort && c->abort()) return 0;
         struct pollfd pfd = { c->out_fd, POLLIN, 0 };
-        int pr = poll(&pfd, 1, 200);
+        int pr = poll(&pfd, 1, PI_TICK_MS);
         if (pr < 0) { if (errno == EINTR) continue; return -1; }
         if (!pr) continue;
         ssize_t r = read(c->out_fd, tmp, sizeof tmp);

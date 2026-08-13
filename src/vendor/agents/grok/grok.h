@@ -127,6 +127,12 @@ void grok_stop(grok_client *c);
 #define GK_TOOL_CAP 64
 #define GK_TOOL_ID  80
 
+/* How long the turn loop waits on the child before running the abort predicate
+ * again. Also the worst-case delay before a key the caller reads from that
+ * predicate reaches the screen, so it sits below the ~30ms an echo can take
+ * without being felt as lag. */
+#define GK_TICK_MS 20
+
 struct grok_client {
     pid_t pid;
     int   in_fd;
@@ -477,7 +483,7 @@ static int gk_await(grok_client *c, int want_id, char **acc,
             grok_interrupt(c);
         }
         struct pollfd pfd = { c->out_fd, POLLIN, 0 };
-        int pr = poll(&pfd, 1, 200);
+        int pr = poll(&pfd, 1, GK_TICK_MS);
         if (pr < 0) { if (errno == EINTR) continue; c->len = 0; return 0; }
         if (pr == 0) continue;
         ssize_t r = read(c->out_fd, tmp, sizeof tmp);
