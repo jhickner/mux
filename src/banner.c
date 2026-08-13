@@ -20,16 +20,13 @@ static const char *short_model(const char *model)
 void banner_identity(const struct session *s)
 {
     const char *backend = session_backend(s);
-    char label[128];
-    /* The backend is worth naming only when it is not the default one. */
+    const char *model = session_model(s);
     if (strcmp(backend, "claude") == 0)
-        snprintf(label, sizeof label, "%s", short_model(session_model(s)));
-    else
-        snprintf(label, sizeof label, "%s \xc2\xb7 %s", backend, session_model(s));
+        model = short_model(model);
 
     char line[256];
-    snprintf(line, sizeof line, "%s%s%s %s\xe2\x80\xba %s%s", ui_style(UI_BOLD), APP_NAME,
-             ui_style(UI_RESET), ui_style(UI_DIM), label, ui_style(UI_RESET));
+    snprintf(line, sizeof line, "%s%s%s %s\xe2\x80\xba %s \xe2\x80\xba %s%s", ui_style(UI_BOLD),
+             APP_NAME, ui_style(UI_RESET), ui_style(UI_DIM), backend, model, ui_style(UI_RESET));
     ui_bar("", "%s", line);
 }
 

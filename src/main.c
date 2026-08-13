@@ -74,15 +74,14 @@ static void usage(void)
             choices);
 }
 
-/* The context gauge in front of the caret. Fixed width so the caret does not
- * step sideways as the reading climbs into two and three digits. */
+/* The context gauge in front of the caret. */
 static const char *context_gauge(void *ud)
 {
     static char text[8];
     int percent = session_context_percent(ud);
     if (percent < 0)
         return NULL;
-    snprintf(text, sizeof text, "%3d%%", percent);
+    snprintf(text, sizeof text, "%d%%", percent);
     return text;
 }
 
