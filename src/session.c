@@ -21,6 +21,7 @@ struct session {
     char    *backend;  /* driver name: claude, codex, grok, pi     */
     char    *cwd;
     char    *model;    /* requested; NULL means the CLI's default  */
+    char    *effort;   /* requested; NULL means the CLI's default  */
     char    *resolved; /* what the CLI reported at init            */
     char     id[128];
     char     title[128]; /* the short name, once the helper has written one */
@@ -616,7 +617,8 @@ static int abort_check(void)
 
 /* ---------- lifecycle ---------- */
 
-struct session *session_new(const char *backend, const char *cwd, const char *model)
+struct session *session_new(const char *backend, const char *cwd, const char *model,
+                            const char *effort)
 {
     struct session *s = calloc(1, sizeof *s);
     if (!s)
@@ -624,6 +626,7 @@ struct session *session_new(const char *backend, const char *cwd, const char *mo
     s->backend = strdup(backend && *backend ? backend : "claude");
     s->cwd = cwd ? strdup(cwd) : NULL;
     s->model = model ? strdup(model) : NULL;
+    s->effort = effort ? strdup(effort) : NULL;
     s->thinking = 1;
     return s;
 }
@@ -637,6 +640,7 @@ void session_free(struct session *s)
     free(s->backend);
     free(s->cwd);
     free(s->model);
+    free(s->effort);
     free(s->resolved);
     free(s->last_reply);
     free(s->last_block);
@@ -660,6 +664,7 @@ static Backend *agent(struct session *s)
     o.name = s->backend;
     o.cwd = s->cwd;
     o.model = s->model;
+    o.effort = s->effort;
     o.allow_customizations = s->customizations;
     o.permission_mode = s->permission;
     s->agent = backend_open_ex(&o);
@@ -733,6 +738,33 @@ int session_set_model(struct session *s, const char *model)
     free(s->model);
     s->model = previous;
     b->set_model(b, s->model);
+    return 0;
+}
+
+int session_set_effort(struct session *s, const char *effort)
+{
+    Backend *b = agent(s);
+    if (!b || !(b->caps & BACKEND_CAP_EFFORT) || !b->set_effort)
+        return 0;
+
+    char *next = effort ? strdup(effort) : NULL;
+    if (effort && !next)
+        return 0;
+    char *previous = s->effort;
+    s->effort = next;
+    if (!b->set_effort(b, s->effort)) {
+        free(s->effort);
+        s->effort = previous;
+        return 0;
+    }
+    if ((b->caps & BACKEND_CAP_LIVE_EFFORT) ||
+        restart(s, s->id[0] ? s->id : NULL)) {
+        free(previous);
+        return 1;
+    }
+    free(s->effort);
+    s->effort = previous;
+    b->set_effort(b, s->effort);
     return 0;
 }
 
@@ -994,6 +1026,16 @@ const char *session_model(const struct session *s)
     return "default";
 }
 
+const char *session_effort(const struct session *s)
+{
+    return s->effort && *s->effort ? s->effort : "default";
+}
+
+int session_can_set_effort(const struct session *s)
+{
+    return s->agent && (s->agent->caps & BACKEND_CAP_EFFORT);
+}
+
 const char *session_id(const struct session *s) { return s->id[0] ? s->id : NULL; }
 
 int session_can_resume(const struct session *s)
@@ -1046,6 +1088,8 @@ void session_report(const struct session *s)
     const char *auth = auth_description(s);
     ui_note("  backend  %s", s->backend);
     ui_note("  model    %s", session_model(s));
+    if (session_can_set_effort(s))
+        ui_note("  effort   %s", session_effort(s));
     if (auth)
         ui_note("  auth     %s", auth);
     /* Only Claude Code is told whether to load the user's own configuration. */

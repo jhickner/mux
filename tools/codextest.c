@@ -40,9 +40,20 @@ static int mock_server(void)
             respond(id, "{\"thread\":{\"id\":\"thread-1\"}}");
         } else if (method && !strcmp(method, "turn/start")) {
             turns++;
-            respond(id, turns == 1
-                ? "{\"turn\":{\"id\":\"turn-1\"}}"
-                : "{\"turn\":{\"id\":\"turn-2\"}}");
+            cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
+            cJSON *effort = params ? cJSON_GetObjectItemCaseSensitive(params, "effort") : NULL;
+            int valid_effort =
+                (turns == 1 && cJSON_IsString(effort) && !strcmp(effort->valuestring, "high")) ||
+                (turns == 2 && cJSON_IsString(effort) && !strcmp(effort->valuestring, "low")) ||
+                (turns == 3 && cJSON_IsNull(effort));
+            if (!valid_effort) {
+                respond(id, "{}");
+                cJSON_Delete(msg);
+                continue;
+            }
+            char started[64];
+            snprintf(started, sizeof started, "{\"turn\":{\"id\":\"turn-%d\"}}", turns);
+            respond(id, started);
             printf("{\"method\":\"thread/tokenUsage/updated\",\"params\":{"
                    "\"threadId\":\"thread-1\",\"turnId\":\"turn-%d\","
                    "\"tokenUsage\":{\"last\":{\"totalTokens\":%d},"
@@ -51,7 +62,7 @@ static int mock_server(void)
                    turns, turns == 1 ? 120 : 240);
             printf("{\"method\":\"item/agentMessage/delta\","
                    "\"params\":{\"delta\":\"%s\"}}\n",
-                   turns == 1 ? "partial" : "done");
+                   turns == 1 ? "partial" : turns == 2 ? "done" : "reset");
             if (turns > 1) {
                 printf("{\"method\":\"turn/completed\",\"params\":{"
                        "\"turn\":{\"status\":\"completed\"}}}\n");
@@ -74,7 +85,7 @@ int main(int argc, char **argv)
     if (argc > 1 && !strcmp(argv[1], "app-server"))
         return mock_server();
 
-    codex_opts opts = { .cli_path = argv[0] };
+    codex_opts opts = { .cli_path = argv[0], .effort = "high" };
     codex_client *client = codex_start(&opts);
     if (!client) {
         fprintf(stderr, "codextest: could not start mock app-server\n");
@@ -97,6 +108,11 @@ int main(int argc, char **argv)
     free(reply);
 
     abort_turn = 0;
+    if (!codex_set_effort(client, "low")) {
+        fprintf(stderr, "codextest: could not change effort\n");
+        codex_stop(client);
+        return 1;
+    }
     reply = codex_send(client, "continue");
     if (!reply || strcmp(reply, "done")) {
         fprintf(stderr, "codextest: process was not reusable after interrupt\n");
@@ -112,6 +128,20 @@ int main(int argc, char **argv)
         codex_stop(client);
         return 1;
     }
+
+    if (!codex_set_effort(client, NULL)) {
+        fprintf(stderr, "codextest: could not reset effort\n");
+        codex_stop(client);
+        return 1;
+    }
+    reply = codex_send(client, "use the default");
+    if (!reply || strcmp(reply, "reset")) {
+        fprintf(stderr, "codextest: default effort was not sent as null\n");
+        free(reply);
+        codex_stop(client);
+        return 1;
+    }
+    free(reply);
 
     codex_reset(client);
     codex_usage(client, &live_tokens, &live_window);

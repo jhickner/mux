@@ -31,6 +31,7 @@ typedef struct {
     const char *cli_path;        /* claude binary; NULL/"" -> "claude" (via PATH) */
     const char *cwd;             /* child working directory; NULL -> inherit      */
     const char *model;           /* --model value; NULL -> CLI default            */
+    const char *effort;          /* --effort value; NULL -> CLI default           */
     const char *permission_mode; /* --permission-mode (e.g. "bypassPermissions")  */
     const char *resume_session;  /* --resume <id> to continue a prior session     */
     const char *append_system;   /* --append-system-prompt text; NULL -> none     */
@@ -77,6 +78,10 @@ typedef struct {
 /* As claude_send, but also fills *meta (zeroed first) from the result event.
  * `meta` may be NULL. */
 char *claude_send_ex(claude_client *c, const char *user_text, claude_result *meta);
+
+/* Change the live session's effort with Claude Code's /effort command. NULL
+ * selects "auto", Claude's model-default mode. */
+int claude_set_effort(claude_client *c, const char *effort);
 
 /* The model the CLI resolved at startup (from its `system`/`init` event), or
  * NULL until the first turn has been sent. */
@@ -282,7 +287,7 @@ claude_client *claude_start(const claude_opts *opts) {
         if (o.use_subscription) unsetenv("ANTHROPIC_API_KEY");
 
         /* Build argv: headless, streaming both directions. */
-        const char *argv[32];
+        const char *argv[34];
         int n = 0;
         argv[n++] = cli;
         argv[n++] = "--print";
@@ -291,6 +296,7 @@ claude_client *claude_start(const claude_opts *opts) {
         argv[n++] = "--verbose";
         if (!o.allow_customizations) argv[n++] = "--safe-mode";
         if (o.model && *o.model)           { argv[n++] = "--model";           argv[n++] = o.model; }
+        if (o.effort && *o.effort)         { argv[n++] = "--effort";          argv[n++] = o.effort; }
         if (o.permission_mode && *o.permission_mode) { argv[n++] = "--permission-mode"; argv[n++] = o.permission_mode; }
         if (o.resume_session && *o.resume_session)   { argv[n++] = "--resume"; argv[n++] = o.resume_session; }
         if (o.append_system && *o.append_system)     { argv[n++] = "--append-system-prompt"; argv[n++] = o.append_system; }
@@ -632,6 +638,20 @@ char *claude_send_ex(claude_client *c, const char *user_text, claude_result *met
     char *r = cl_send(c, user_text, 0);
     c->meta = NULL;
     return r;
+}
+
+int claude_set_effort(claude_client *c, const char *effort) {
+    if (!c) return 0;
+    const char *level = effort && *effort ? effort : "auto";
+    size_t n = strlen(level) + sizeof "/effort ";
+    char *command = malloc(n);
+    if (!command) return 0;
+    snprintf(command, n, "/effort %s", level);
+    char *result = cl_send(c, command, 1);
+    free(command);
+    int ok = result && strncmp(result, "Invalid argument:", 17) != 0;
+    free(result);
+    return ok;
 }
 
 int claude_reset(claude_client *c) {

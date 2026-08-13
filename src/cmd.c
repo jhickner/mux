@@ -16,6 +16,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/new", "start a fresh conversation", NULL},
     {"/clear", "alias for /new", NULL},
     {"/model", "switch model", "[name]"},
+    {"/effort", "set reasoning/thinking effort", "[level]"},
     {"/thinking", "show or hide the model's reasoning", "[on|off]"},
     {"/tools", "how much of each tool call to show", "[compact|full]"},
     {"/permission", "how the CLI gates tool calls", "[mode]"},
@@ -42,6 +43,41 @@ static const struct pick_item MODELS[] = {
 };
 #define MODEL_COUNT ((int)(sizeof MODELS / sizeof *MODELS))
 
+static const struct pick_item CLAUDE_EFFORTS[] = {
+    {"default", "auto: use the model's default effort"},
+    {"low", "faster, lighter reasoning"},
+    {"medium", "balanced reasoning"},
+    {"high", "more thorough reasoning"},
+    {"xhigh", "extra-high reasoning"},
+    {"max", "maximum reasoning"},
+    {"ultracode", "xhigh effort with dynamic workflow orchestration"},
+};
+static const struct pick_item CODEX_EFFORTS[] = {
+    {"default", "whatever Codex is configured to use"},
+    {"none", "no reasoning"},
+    {"low", "faster, lighter reasoning"},
+    {"medium", "balanced reasoning"},
+    {"high", "more thorough reasoning"},
+    {"xhigh", "extra-high reasoning"},
+    {"max", "maximum reasoning"},
+};
+static const struct pick_item GROK_EFFORTS[] = {
+    {"default", "GROK_EFFORT or the CLI default"},
+    {"low", "faster, lighter reasoning"},
+    {"medium", "balanced reasoning"},
+    {"high", "more thorough reasoning"},
+};
+static const struct pick_item PI_EFFORTS[] = {
+    {"default", "the thinking level active when pi started"},
+    {"off", "no thinking"},
+    {"minimal", "minimal thinking"},
+    {"low", "faster, lighter thinking"},
+    {"medium", "balanced thinking"},
+    {"high", "more thorough thinking"},
+    {"xhigh", "extra-high thinking, when the model supports it"},
+    {"max", "maximum thinking, when the model supports it"},
+};
+
 /* Parallel to session_permission_name's table — same order, so the picker's
  * index is the stored setting. */
 static const struct pick_item PERMISSIONS[] = {
@@ -57,6 +93,29 @@ static const struct pick_item PERMISSIONS[] = {
 static int is_claude(const struct session *s)
 {
     return strcmp(session_backend(s), "claude") == 0;
+}
+
+static const struct pick_item *effort_choices(const struct session *s, int *count)
+{
+    const char *backend = session_backend(s);
+    if (!strcmp(backend, "claude")) {
+        *count = (int)(sizeof CLAUDE_EFFORTS / sizeof *CLAUDE_EFFORTS);
+        return CLAUDE_EFFORTS;
+    }
+    if (!strcmp(backend, "codex")) {
+        *count = (int)(sizeof CODEX_EFFORTS / sizeof *CODEX_EFFORTS);
+        return CODEX_EFFORTS;
+    }
+    if (!strcmp(backend, "grok")) {
+        *count = (int)(sizeof GROK_EFFORTS / sizeof *GROK_EFFORTS);
+        return GROK_EFFORTS;
+    }
+    if (!strcmp(backend, "pi")) {
+        *count = (int)(sizeof PI_EFFORTS / sizeof *PI_EFFORTS);
+        return PI_EFFORTS;
+    }
+    *count = 0;
+    return NULL;
 }
 
 /* ---------- helpers ---------- */
@@ -158,6 +217,41 @@ static void do_model(struct session *s, const char *arg)
         return;
     }
     banner_identity(s);
+    ui_put("\n");
+    ui_flush();
+}
+
+static void do_effort(struct session *s, const char *arg)
+{
+    if (!session_can_set_effort(s)) {
+        ui_note("%s does not support changing effort", session_backend(s));
+        ui_put("\n");
+        ui_flush();
+        return;
+    }
+
+    const char *chosen = arg;
+    if (!chosen || !*chosen) {
+        int count = 0, initial = 0;
+        const struct pick_item *choices = effort_choices(s, &count);
+        const char *current = session_effort(s);
+        for (int i = 0; i < count; i++)
+            if (!strcmp(choices[i].label, current))
+                initial = i;
+        int index = pick("set effort", choices, count, initial);
+        if (index < 0)
+            return;
+        chosen = choices[index].label;
+    }
+
+    const char *effort = !strcmp(chosen, "default") ? NULL : chosen;
+    if (!session_set_effort(s, effort)) {
+        ui_error("could not set effort to %s", chosen);
+        ui_put("\n");
+        ui_flush();
+        return;
+    }
+    ui_note("effort: %s", session_effort(s));
     ui_put("\n");
     ui_flush();
 }
@@ -406,6 +500,8 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line)
         do_new(s);
     } else if (!strcmp(name, "/model")) {
         do_model(s, arg);
+    } else if (!strcmp(name, "/effort")) {
+        do_effort(s, arg);
     } else if (!strcmp(name, "/thinking")) {
         do_thinking(s, arg);
     } else if (!strcmp(name, "/tools")) {

@@ -84,6 +84,7 @@ block in the history above.
 |---|---|
 | `/new`, `/clear` | Start a fresh conversation |
 | `/model [name]` | Switch model; no argument opens a picker |
+| `/effort [level]` | Set reasoning/thinking effort; no argument opens a backend-specific picker |
 | `/thinking [on\|off]` | Show or hide the ✻ reasoning rows; no argument flips it |
 | `/tools [compact\|full]` | One row per tool call, or full blocks; no argument flips it |
 | `/resume` | Pick a past conversation for this directory |
@@ -108,6 +109,7 @@ invoked (`/todo buy milk`, `/w what do I know about X`).
 | Resume a past conversation | ✓ | ✓ | ✓ | — |
 | `/new` without restarting | ✓ | ✓ | restarts | ✓ |
 | `/model` picker | ✓ | pass a name | pass a name | pass a name |
+| `/effort` | ✓ | ✓ | ✓ | ✓ |
 
 `/resume` and `-r` list this directory's transcripts: Claude Code's under
 `~/.claude/projects`, Grok's under `~/.grok/sessions`. `--session` and the
@@ -137,10 +139,11 @@ is available wherever resume is. Pi has no default model configured by itself
 ## Options
 
 ```
-simple-agent [-b backend] [-m model] [-C dir] [-s] [-r] [prompt...]
+simple-agent [-b backend] [-m model] [-e effort] [-C dir] [-s] [-r] [prompt...]
 
   -b name    agent CLI to drive: claude, codex, grok, pi (default: claude)
   -m model   model to run (default: the CLI's own)
+  -e effort  reasoning/thinking effort (default: the CLI's own)
   -C dir     working directory for the agent's tools
   -s         safe mode: skip skills, CLAUDE.md, MCP servers, hooks
   -r         --resume: pick a past conversation to continue

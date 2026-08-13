@@ -15,9 +15,10 @@ typedef int (*session_key_fn)(void *ud, tty_event *ev);
 void session_set_typeahead(session_key_fn fn, void *ud);
 
 /* `backend` names the agent CLI to drive — "claude", "codex", "grok" or "pi",
- * NULL for claude. `cwd` is where it runs its tools; `model` may be NULL for
- * the CLI default. No pointer is retained. */
-struct session *session_new(const char *backend, const char *cwd, const char *model);
+ * NULL for claude. `cwd` is where it runs its tools; `model` and `effort` may
+ * be NULL for the CLI defaults. No pointer is retained. */
+struct session *session_new(const char *backend, const char *cwd, const char *model,
+                            const char *effort);
 void            session_free(struct session *s);
 
 /* Print only the reply text: no spinner, tool activity, or footer. For piped
@@ -53,6 +54,12 @@ int session_clear(struct session *s);
 /* Switch models by restarting the CLI on the current session id, so context
  * carries over. Returns 0 on failure, leaving the old client in place. */
 int session_set_model(struct session *s, const char *model);
+
+/* Switch reasoning/thinking effort. Live-capable backends preserve their
+ * process; the others restart and resume like session_set_model(). */
+int session_set_effort(struct session *s, const char *effort);
+const char *session_effort(const struct session *s);
+int session_can_set_effort(const struct session *s);
 
 /* How the CLI gates tool calls, claude only. Headless has no way to answer an
  * approval prompt, so a mode that would ask instead refuses the call and tells

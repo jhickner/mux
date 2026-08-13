@@ -198,6 +198,11 @@ int sessionfork(const struct session *s, enum fork_where where)
         tmux[n++] = "-m";
         tmux[n++] = (char *)model;
     }
+    const char *effort = session_effort(s);
+    if (strcmp(effort, "default") != 0) {
+        tmux[n++] = "-e";
+        tmux[n++] = (char *)effort;
+    }
     tmux[n] = NULL;
 
     if (run(tmux, NULL) != 0) {
@@ -236,7 +241,10 @@ void sessionfork_exit_note(const struct session *s)
         n += (size_t)snprintf(flags + n, sizeof flags - n, " -b %s", backend);
     const char *model = session_model(s);
     if (n < sizeof flags && strcmp(model, "default") != 0)
-        snprintf(flags + n, sizeof flags - n, " -m %s", model);
+        n += (size_t)snprintf(flags + n, sizeof flags - n, " -m %s", model);
+    const char *effort = session_effort(s);
+    if (n < sizeof flags && strcmp(effort, "default") != 0)
+        snprintf(flags + n, sizeof flags - n, " -e %s", effort);
 
     char cmd[9000];
     snprintf(cmd, sizeof cmd, "%ssimple-agent%s --session %s", lead, flags, id);

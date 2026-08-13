@@ -34,6 +34,7 @@ typedef struct {
     const char *cwd;           /* child working directory; NULL -> inherit     */
     const char *provider;      /* --provider value; NULL -> pi default         */
     const char *model;         /* --model value; NULL -> pi default            */
+    const char *effort;        /* --thinking value; NULL -> pi default         */
     const char *append_system; /* prepended to each prompt; NULL -> none       */
     int no_session;            /* nonzero -> pass --no-session (default: on)   */
 } pi_opts;
@@ -77,6 +78,10 @@ void pi_set_abort_check(pi_client *c, int (*cb)(void));
 /* Send an asynchronous abort command. Normally callers use abort_check. */
 int pi_abort(pi_client *c);
 
+/* Change the live session's thinking level without losing context. NULL
+ * restores the level that was active before the first change. */
+int pi_set_effort(pi_client *c, const char *effort);
+
 /* Close stdin, terminate/reap the child if needed, and free the client. */
 void pi_stop(pi_client *c);
 
@@ -116,7 +121,7 @@ struct pi_client {
     int (*abort)(void);
     void (*on_event)(void *ud, const char *kind, const char *text);
     void *on_event_ud;
-    char *sys;
+    char *sys, *default_effort;
     char *buf;
     size_t len, cap;
 };
@@ -274,6 +279,26 @@ static int pi_wait_response(pi_client *c, int id) {
     }
 }
 
+/* As pi_wait_response, copying one string from the response's data object. */
+static int pi_wait_response_string(pi_client *c, int id, const char *key,
+                                   char **value) {
+    for (;;) {
+        cJSON *ev;
+        int r = pi_read(c, &ev, 0);
+        if (r != 1) return 0;
+        int response = pi_response(ev, id);
+        if (response >= 0) {
+            const cJSON *data = cJSON_GetObjectItemCaseSensitive(ev, "data");
+            const char *s = data ? cJSON_GetStringValue(
+                cJSON_GetObjectItemCaseSensitive(data, key)) : NULL;
+            if (response && s) *value = strdup(s);
+            cJSON_Delete(ev);
+            return response && s != NULL && *value != NULL;
+        }
+        cJSON_Delete(ev);
+    }
+}
+
 pi_client *pi_start(const pi_opts *opts) {
     pi_opts o = opts ? *opts : (pi_opts){0};
     const char *cli = (o.cli_path && *o.cli_path) ? o.cli_path : "pi";
@@ -288,7 +313,7 @@ pi_client *pi_start(const pi_opts *opts) {
         if (in[0] != STDIN_FILENO) close(in[0]); if (in[1] != STDIN_FILENO) close(in[1]);
         if (out[0] != STDOUT_FILENO) close(out[0]); if (out[1] != STDOUT_FILENO) close(out[1]);
         if (o.cwd && *o.cwd && chdir(o.cwd)) _exit(126);
-        const char *argv[20]; int n = 0;
+        const char *argv[22]; int n = 0;
         argv[n++] = cli; argv[n++] = "--mode"; argv[n++] = "rpc";
         if (o.no_session || !opts) argv[n++] = "--no-session";
         argv[n++] = "--no-extensions";
@@ -298,6 +323,7 @@ pi_client *pi_start(const pi_opts *opts) {
         argv[n++] = "--no-context-files";
         if (o.provider && *o.provider) { argv[n++] = "--provider"; argv[n++] = o.provider; }
         if (o.model && *o.model) { argv[n++] = "--model"; argv[n++] = o.model; }
+        if (o.effort && *o.effort) { argv[n++] = "--thinking"; argv[n++] = o.effort; }
         argv[n] = NULL;
         execvp(cli, (char *const *)argv); _exit(127);
     }
@@ -311,6 +337,21 @@ pi_client *pi_start(const pi_opts *opts) {
 }
 
 int pi_abort(pi_client *c) { return c ? pi_command(c, "abort", NULL) != 0 : 0; }
+
+int pi_set_effort(pi_client *c, const char *effort) {
+    if (!c) return 0;
+    if (!c->default_effort) {
+        int state_id = pi_command(c, "get_state", NULL);
+        if (!state_id || !pi_wait_response_string(c, state_id, "thinkingLevel",
+                                                   &c->default_effort))
+            return 0;
+    }
+    const char *level = effort && *effort ? effort : c->default_effort;
+    cJSON *params = cJSON_CreateObject();
+    cJSON_AddStringToObject(params, "level", level);
+    int id = pi_command(c, "set_thinking_level", params);
+    return id && pi_wait_response(c, id);
+}
 
 char *pi_send_ex(pi_client *c, const char *user_text, pi_result *meta) {
     if (meta) memset(meta, 0, sizeof *meta);
@@ -384,7 +425,7 @@ void pi_stop(pi_client *c) {
         }
     }
     if (c->out_fd >= 0) close(c->out_fd);
-    free(c->sys); free(c->buf); free(c);
+    free(c->sys); free(c->default_effort); free(c->buf); free(c);
 }
 
 #endif /* PI_IMPLEMENTATION */
@@ -417,6 +458,7 @@ static int pi_backend_start(Backend *b, const char *resume) {
     pi_opts o = {0};
     o.cwd = cx->st.cwd;
     o.model = cx->st.model;
+    o.effort = cx->st.effort;
     o.append_system = cx->st.system;
     o.no_session = 1;
     pi_client *c = pi_start(&o);
@@ -460,6 +502,12 @@ static void pi_backend_set_abort(Backend *b, int (*cb)(void)) {
     cx->st.abort = cb;
     if (cx->c) pi_set_abort_check(cx->c, cb);
 }
+static int pi_backend_set_effort(Backend *b, const char *effort) {
+    pi_backend_ctx *cx = b->ctx;
+    if (cx->c && !pi_set_effort(cx->c, effort)) return 0;
+    backend_set(&cx->st.effort, effort);
+    return 1;
+}
 static void pi_backend_close(Backend *b) {
     pi_backend_ctx *cx = b->ctx;
     if (cx->c) pi_stop(cx->c);
@@ -472,12 +520,14 @@ Backend *pi_backend_open(const backend_opts *opts) {
     if (!cx || !b) { free(cx); free(b); return NULL; }
     backend_state_init(&cx->st, opts);
     b->ctx = cx;
+    b->caps = BACKEND_CAP_EFFORT | BACKEND_CAP_LIVE_EFFORT;
     b->ask = pi_backend_ask;
     b->reset = pi_backend_reset;
     b->close = pi_backend_close;
     b->start = pi_backend_start;
     b->ask_ex = pi_backend_ask_ex;
     b->set_model = backend_set_model_generic;
+    b->set_effort = pi_backend_set_effort;
     b->set_permission = backend_set_permission_none;
     b->set_event_cb = pi_backend_set_event_cb;
     b->set_abort_check = pi_backend_set_abort;
