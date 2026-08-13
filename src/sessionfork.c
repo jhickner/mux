@@ -214,45 +214,35 @@ int sessionfork(const struct session *s, enum fork_where where)
 
 /* ---------- the note on the way out ---------- */
 
-/* A linked worktree keeps its .git as a file pointing back at the main
- * repository, where an ordinary checkout has a directory there. */
-static int worktree_root(const char *cwd, char *out, size_t size)
-{
-    char *rev[] = {"git", "-C", (char *)cwd, "rev-parse", "--show-toplevel", NULL};
-    if (!capture_line(rev, out, size))
-        return 0;
-
-    char dotgit[4200];
-    snprintf(dotgit, sizeof dotgit, "%s/.git", out);
-    struct stat st;
-    return stat(dotgit, &st) == 0 && S_ISREG(st.st_mode);
-}
-
 void sessionfork_exit_note(const struct session *s)
 {
     const char *id = session_id(s);
     if (!id || !*id || !session_can_resume(s))
         return;
 
-    char top[4096];
-    if (!worktree_root(session_cwd(s), top, sizeof top))
-        return;
+    /* Transcripts are per-directory, so the command carries its own cd unless
+     * it would land where the shell already is. */
+    char here[4096];
+    const char *dir = session_cwd(s);
+    char lead[4200] = "";
+    if (dir && *dir && !(getcwd(here, sizeof here) && !strcmp(here, dir)))
+        snprintf(lead, sizeof lead, "cd %s && ", dir);
+
+    /* Only the flags that would not be the defaults on a fresh start. */
+    char flags[4200] = "";
+    size_t n = 0;
+    const char *backend = session_backend(s);
+    if (strcmp(backend, "claude") != 0)
+        n += (size_t)snprintf(flags + n, sizeof flags - n, " -b %s", backend);
+    const char *model = session_model(s);
+    if (n < sizeof flags && strcmp(model, "default") != 0)
+        snprintf(flags + n, sizeof flags - n, " -m %s", model);
 
     char cmd[9000];
-    int n = snprintf(cmd, sizeof cmd, "cd %s && %s -b %s --session %s", top, program,
-                     session_backend(s), id);
-    const char *model = session_model(s);
-    if (n > 0 && (size_t)n < sizeof cmd && strcmp(model, "default") != 0)
-        snprintf(cmd + n, sizeof cmd - (size_t)n, " -m %s", model);
+    snprintf(cmd, sizeof cmd, "%ssimple-agent%s --session %s", lead, flags, id);
 
-    char branch[128];
-    char *rev[] = {"git", "-C", top, "rev-parse", "--abbrev-ref", "HEAD", NULL};
-    if (capture_line(rev, branch, sizeof branch))
-        ui_bar(ui_style(UI_DIM), "worktree \xc2\xb7 %s", branch);
-    else
-        ui_bar(ui_style(UI_DIM), "worktree");
-    ui_bar(ui_style(UI_DIM), "resume this conversation here:");
+    ui_bar(ui_style(UI_DIM), "resume this conversation:");
     /* No gutter bar on the command itself: it has to survive a copy-paste. */
-    ui_printf("%s%s%s\n", ui_style(UI_CODE), cmd, ui_style(UI_RESET));
+    ui_printf("%s%s%s\n", ui_style(UI_DIM), cmd, ui_style(UI_RESET));
     ui_flush();
 }
