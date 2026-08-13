@@ -65,10 +65,25 @@ int pi_reset(pi_client *c);
 /* When on, pi_send writes a compact event trace to stderr. */
 void pi_set_verbose(pi_client *c, int on);
 
-/* Per-event callback while pi_send is running. kind is "assistant",
- * "thinking", "tool", or "tool-result"; text is borrowed for the call. */
+/* One interesting event from the stream. All strings are borrowed for the
+ * callback. Tool arguments are the compact JSON object sent by pi. */
+typedef enum {
+    PI_EV_ASSISTANT,
+    PI_EV_THINKING,
+    PI_EV_TOOL,
+    PI_EV_TOOL_RESULT,
+} pi_event_kind;
+
+typedef struct {
+    pi_event_kind kind;
+    const char *text;       /* assistant/thinking text, or tool result */
+    const char *name;       /* tool name, for PI_EV_TOOL              */
+    const char *input_json; /* tool arguments, for PI_EV_TOOL         */
+} pi_event;
+
+/* Per-event callback while pi_send is running. */
 void pi_set_event_cb(pi_client *c,
-                     void (*cb)(void *ud, const char *kind, const char *text),
+                     void (*cb)(void *ud, const pi_event *ev),
                      void *ud);
 
 /* Predicate polled while awaiting pi output. A nonzero result aborts the
@@ -119,7 +134,7 @@ struct pi_client {
     int in_fd, out_fd;
     int next_id, verbose;
     int (*abort)(void);
-    void (*on_event)(void *ud, const char *kind, const char *text);
+    void (*on_event)(void *ud, const pi_event *ev);
     void *on_event_ud;
     char *sys, *default_effort;
     char *buf;
@@ -129,17 +144,23 @@ struct pi_client {
 void pi_set_verbose(pi_client *c, int on) { if (c) c->verbose = on; }
 void pi_set_abort_check(pi_client *c, int (*cb)(void)) { if (c) c->abort = cb; }
 void pi_set_event_cb(pi_client *c,
-                     void (*cb)(void *ud, const char *kind, const char *text),
+                     void (*cb)(void *ud, const pi_event *ev),
                      void *ud) {
     if (c) { c->on_event = cb; c->on_event_ud = ud; }
 }
 
-static void pi_sink(pi_client *c, const char *kind, const char *text) {
-    if (!text) return;
-    if (c->verbose)
-        fprintf(stderr, "  [%s] %.400s%s\n", kind, text,
-                strlen(text) > 400 ? " ..." : "");
-    if (c->on_event) c->on_event(c->on_event_ud, kind, text);
+static void pi_emit(pi_client *c, const pi_event *ev) {
+    static const char *const names[] = {
+        "assistant", "thinking", "tool", "tool-result"
+    };
+    const char *preview = ev->kind == PI_EV_TOOL ? ev->name : ev->text;
+    if (!preview) preview = "";
+    if (c->verbose) {
+        const char *kind = names[ev->kind];
+        fprintf(stderr, "  [%s] %.400s%s\n", kind, preview,
+                strlen(preview) > 400 ? " ..." : "");
+    }
+    if (c->on_event) c->on_event(c->on_event_ud, ev);
 }
 
 static int pi_write(pi_client *c, cJSON *obj) {
@@ -233,7 +254,7 @@ static const char *pi_text(cJSON *result) {
 }
 
 /* Consume display-worthy RPC events. settled is set for agent_settled. */
-static void pi_event(pi_client *c, cJSON *ev, char **acc, int *settled) {
+static void pi_consume_event(pi_client *c, cJSON *ev, char **acc, int *settled) {
     cJSON *type = cJSON_GetObjectItemCaseSensitive(ev, "type");
     if (!cJSON_IsString(type)) return;
     if (!strcmp(type->valuestring, "agent_settled")) { *settled = 1; return; }
@@ -243,17 +264,29 @@ static void pi_event(pi_client *c, cJSON *ev, char **acc, int *settled) {
         const char *d = delta ? cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(delta, "delta")) : NULL;
         if (cJSON_IsString(dt) && d) {
             if (!strcmp(dt->valuestring, "text_delta")) {
-                pi_append(acc, d); pi_sink(c, "assistant", d);
+                pi_event out = { .kind = PI_EV_ASSISTANT, .text = d };
+                pi_append(acc, d); pi_emit(c, &out);
             } else if (!strcmp(dt->valuestring, "thinking_delta")) {
-                pi_sink(c, "thinking", d);
+                pi_event out = { .kind = PI_EV_THINKING, .text = d };
+                pi_emit(c, &out);
             }
         }
     } else if (!strcmp(type->valuestring, "tool_execution_start")) {
         const char *name = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(ev, "toolName"));
-        pi_sink(c, "tool", name ? name : "tool");
+        cJSON *args = cJSON_GetObjectItemCaseSensitive(ev, "args");
+        char *input = args ? cJSON_PrintUnformatted(args) : NULL;
+        pi_event out = {
+            .kind = PI_EV_TOOL,
+            .name = name ? name : "tool",
+            .input_json = input,
+        };
+        pi_emit(c, &out);
+        free(input);
     } else if (!strcmp(type->valuestring, "tool_execution_end")) {
         const char *text = pi_text(cJSON_GetObjectItemCaseSensitive(ev, "result"));
-        pi_sink(c, "tool-result", text ? text : "(result)");
+        pi_event out = { .kind = PI_EV_TOOL_RESULT,
+                         .text = text ? text : "(result)" };
+        pi_emit(c, &out);
     }
 }
 
@@ -384,7 +417,7 @@ char *pi_send_ex(pi_client *c, const char *user_text, pi_result *meta) {
         int response = pi_response(ev, id);
         if (response == 0) { cJSON_Delete(ev); free(answer); return NULL; }
         if (response == 1) accepted = 1;
-        pi_event(c, ev, &answer, &settled);
+        pi_consume_event(c, ev, &answer, &settled);
         cJSON_Delete(ev);
     }
     if (!accepted) { free(answer); return NULL; }
@@ -443,12 +476,30 @@ void pi_stop(pi_client *c) {
 
 typedef struct { backend_state st; pi_client *c; } pi_backend_ctx;
 
-/* pi streams both text and reasoning as deltas, and names the tool it is
- * starting rather than passing a separate argument. */
-static void pi_backend_event(void *ud, const char *kind, const char *text) {
+/* Pi streams text and reasoning as deltas. Tool starts already contain the
+ * complete argument object, which the shared renderer uses to find paths. */
+static void pi_backend_event(void *ud, const pi_event *pev) {
     pi_backend_ctx *cx = ((Backend *)ud)->ctx;
-    backend_emit_str(&cx->st, kind, text, NULL,
-                     BACKEND_DELTA_ASSISTANT | BACKEND_DELTA_THINKING);
+    if (!cx->st.on_event) return;
+    if (pev->kind == PI_EV_ASSISTANT) {
+        backend_delta(&cx->st, BACKEND_EV_ASSISTANT, pev->text);
+    } else if (pev->kind == PI_EV_THINKING) {
+        backend_delta(&cx->st, BACKEND_EV_THINKING, pev->text);
+    } else {
+        backend_flush(&cx->st);
+        backend_event ev = {0};
+        if (pev->kind == PI_EV_TOOL) {
+            ev.kind = BACKEND_EV_TOOL;
+            ev.name = pev->name;
+            ev.input_json = pev->input_json;
+        } else if (pev->kind == PI_EV_TOOL_RESULT) {
+            ev.kind = BACKEND_EV_TOOL_RESULT;
+            ev.text = pev->text;
+        } else {
+            return;
+        }
+        backend_emit(&cx->st, &ev);
+    }
 }
 
 /* pi has no resumable session id, so `resume` is ignored. */

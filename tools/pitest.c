@@ -6,10 +6,26 @@
 #include "vendor/cJSON.h"
 
 static int abort_turn;
+static int tool_starts, tool_ends;
+static char tool_name[64], tool_input[256], tool_output[256];
 
 static int should_abort(void)
 {
     return abort_turn;
+}
+
+static void capture_event(void *ud, const pi_event *ev)
+{
+    (void)ud;
+    if (ev->kind == PI_EV_TOOL) {
+        tool_starts++;
+        snprintf(tool_name, sizeof tool_name, "%s", ev->name ? ev->name : "");
+        snprintf(tool_input, sizeof tool_input, "%s",
+                 ev->input_json ? ev->input_json : "");
+    } else if (ev->kind == PI_EV_TOOL_RESULT) {
+        tool_ends++;
+        snprintf(tool_output, sizeof tool_output, "%s", ev->text ? ev->text : "");
+    }
 }
 
 static void respond(const char *id, const char *command)
@@ -62,8 +78,18 @@ static int mock_server(int argc, char **argv)
                    "\"assistantMessageEvent\":{\"type\":\"text_delta\","
                    "\"delta\":\"%s\"}}\n",
                    turns == 1 ? "partial" : "done");
-            if (turns > 1)
+            if (turns > 1) {
+                printf("{\"type\":\"tool_execution_start\","
+                       "\"toolCallId\":\"tool-1\",\"toolName\":\"edit\","
+                       "\"args\":{\"path\":\"src/session.c\","
+                       "\"oldText\":\"old\",\"newText\":\"new\"}}\n");
+                printf("{\"type\":\"tool_execution_end\","
+                       "\"toolCallId\":\"tool-1\",\"toolName\":\"edit\","
+                       "\"result\":{\"content\":[{\"type\":\"text\","
+                       "\"text\":\"Successfully replaced 1 block(s)\"}]},"
+                       "\"isError\":false}\n");
                 printf("{\"type\":\"agent_settled\"}\n");
+            }
             fflush(stdout);
         } else if (id && type && !strcmp(type, "abort")) {
             respond(id, "abort");
@@ -88,6 +114,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    pi_set_event_cb(client, capture_event, NULL);
     if (!pi_set_effort(client, "low")) {
         fprintf(stderr, "pitest: could not change live thinking effort\n");
         pi_stop(client);
@@ -114,6 +141,14 @@ int main(int argc, char **argv)
         return 1;
     }
     free(reply);
+    if (tool_starts != 1 || tool_ends != 1 || strcmp(tool_name, "edit") ||
+        strcmp(tool_input,
+               "{\"path\":\"src/session.c\",\"oldText\":\"old\",\"newText\":\"new\"}") ||
+        strcmp(tool_output, "Successfully replaced 1 block(s)")) {
+        fprintf(stderr, "pitest: structured tool event was not preserved\n");
+        pi_stop(client);
+        return 1;
+    }
     if (!pi_set_effort(client, NULL)) {
         fprintf(stderr, "pitest: could not restore default thinking effort\n");
         pi_stop(client);
