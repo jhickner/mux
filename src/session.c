@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/time.h>
 
+#include "agenttabs.h"
 #include "filediff.h"
 #include "md.h"
 #include "status.h"
@@ -596,6 +597,14 @@ int session_thinking(const struct session *s) { return s->thinking; }
 
 void session_set_customizations(struct session *s, int on) { s->customizations = on; }
 
+/* Adopting a session id also disowns whatever the plugin's hook recorded for
+ * that same conversation in an earlier run. */
+static void set_id(struct session *s, const char *id)
+{
+    snprintf(s->id, sizeof s->id, "%s", id);
+    agenttabs_forget_hook(id);
+}
+
 /* (Re)start the child process, carrying the conversation across on the backends
  * that can resume one. */
 static int restart(struct session *s, const char *resume_id)
@@ -604,7 +613,7 @@ static int restart(struct session *s, const char *resume_id)
     if (!b || !b->start(b, resume_id))
         return 0;
     if (resume_id && resume_id != s->id)
-        snprintf(s->id, sizeof s->id, "%s", resume_id);
+        set_id(s, resume_id);
     return 1;
 }
 
@@ -680,7 +689,7 @@ int session_set_permission(struct session *s, const char *mode)
 void session_adopt_id(struct session *s, const char *id)
 {
     if (s && id && *id)
-        snprintf(s->id, sizeof s->id, "%s", id);
+        set_id(s, id);
 }
 
 int session_resume(struct session *s, const char *id)
@@ -706,7 +715,7 @@ int session_clear(struct session *s)
     /* A cleared conversation gets a new session id from the CLI. */
     const char *id = s->agent->session_id(s->agent);
     if (id)
-        snprintf(s->id, sizeof s->id, "%s", id);
+        set_id(s, id);
     return 1;
 }
 
@@ -766,6 +775,7 @@ int session_turn(struct session *s, const char *text)
     s->after_collapse = 0;
     cluster_forget(s);
     double started = now_seconds();
+    agenttabs_working();
     if (!s->quiet)
         status_begin();
 
@@ -777,9 +787,10 @@ int session_turn(struct session *s, const char *text)
 
     const char *id = s->agent->session_id(s->agent);
     if (id)
-        snprintf(s->id, sizeof s->id, "%s", id);
+        set_id(s, id);
 
     if (!reply) {
+        agenttabs_errored();
         const char *detail = s->agent->last_error(s->agent);
         if (detail)
             ui_error("%s: %s", s->backend, detail);
@@ -829,6 +840,10 @@ int session_turn(struct session *s, const char *text)
         s->context_window = meta.context_window;
     if (meta.context_tokens > 0)
         s->context_tokens = meta.context_tokens;
+
+    /* Interrupting is a turn that ended, not one that failed — and it is the
+     * case the CLI's own hook never reports. */
+    agenttabs_finished();
 
     if (!s->quiet)
         print_footer(s, elapsed);

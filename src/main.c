@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "agenttabs.h"
 #include "banner.h"
 #include "cmd.h"
 #include "prompt.h"
@@ -167,6 +168,9 @@ int main(int argc, char **argv)
     }
 
     ui_init();
+    /* Before session_start(): the CLI it spawns inherits the marker that keeps
+     * the plugin's own hook from reporting this pane too. */
+    agenttabs_begin();
     struct session *session = session_new(backend, cwd, model);
     if (session) {
         session_set_customizations(session, !safe_mode);
