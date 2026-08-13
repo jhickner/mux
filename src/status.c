@@ -15,12 +15,13 @@ static const char *const FRAMES[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "
 
 /* What the turn is doing, in one word. Naming the tool and its argument here
  * put whole shell pipelines on the row; the row is a heartbeat, not a log. */
-#define SPIN_WORD " · thinking"
+#define SPIN_WORD " · working"
 
 static double  started;
 static int     visible;
 static int     frame;
 static double  frame_at;
+static char    note[128]; /* the conversation's name, when it has one */
 
 static status_paint_fn  below;
 static status_offset_fn below_offset;
@@ -43,6 +44,11 @@ static double now_seconds(void)
 }
 
 double status_elapsed(void) { return now_seconds() - started; }
+
+void status_set_note(const char *text)
+{
+    snprintf(note, sizeof note, "%s", text ? text : "");
+}
 
 void status_set_below(status_paint_fn paint_fn, status_offset_fn offset_fn, void *ud)
 {
@@ -152,6 +158,18 @@ static void paint(void)
         ui_esc(ui_style(UI_DIM));
         ui_put(SPIN_WORD);
         spin_width += word;
+    }
+    /* The name is the least important thing on the row: it goes last, and only
+     * when the row has room for all of it. */
+    if (note[0]) {
+        char tail[160];
+        snprintf(tail, sizeof tail, " · %s", note);
+        int width = (int)ui_cells(tail);
+        if (spin_width + width <= ui_columns() - 1) {
+            ui_esc(ui_style(UI_DIM));
+            ui_put(tail);
+            spin_width += width;
+        }
     }
     ui_esc(ui_style(UI_RESET));
 

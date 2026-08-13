@@ -9,6 +9,7 @@
 #include "filediff.h"
 #include "md.h"
 #include "status.h"
+#include "title.h"
 #include "toolstyle.h"
 #include "tty.h"
 #include "ui.h"
@@ -22,6 +23,11 @@ struct session {
     char    *model;    /* requested; NULL means the CLI's default  */
     char    *resolved; /* what the CLI reported at init            */
     char     id[128];
+    char     title[128]; /* the short name, once the helper has written one */
+    int      retitle;    /* name the conversation again, ignoring the cached one */
+    int      named;      /* the helper has been asked for this conversation's name */
+    double   named_at;   /* when the cache was last read for it */
+    char    *prompt;     /* the turn in flight, which is what it gets named for */
     char    *last_reply;
     char    *last_block;  /* the final streamed text block of a turn  */
     char    *streamed;    /* every text block of a turn, in order     */
@@ -65,6 +71,13 @@ static void append(char **slot, const char *value)
         return;
     memcpy(grown + have, value, add + 1);
     *slot = grown;
+}
+
+static double now_seconds(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (double)tv.tv_sec + (double)tv.tv_usec / 1e6;
 }
 
 static void humanize(long n, char *out, size_t size)
@@ -522,10 +535,53 @@ void session_set_typeahead(session_key_fn fn, void *ud)
     typeahead_ud = ud;
 }
 
+/* The session with a turn in flight, for the hooks the backend polls without a
+ * user-data argument. */
+static struct session *live;
+
+static void set_id(struct session *s, const char *id);
+
+/* A conversation is worth naming while its first turn is still running, so the
+ * helper is started as soon as the CLI reports the session id and the answer is
+ * picked up off the cache a second or so later — both from here, since a turn
+ * can run for minutes without an event of its own. */
+static void name_poll(struct session *s)
+{
+    if (!s || s->title[0] || !s->agent)
+        return;
+
+    if (!s->id[0]) {
+        const char *id = s->agent->session_id(s->agent);
+        if (!id)
+            return;
+        set_id(s, id);
+        if (s->title[0] || !s->id[0])
+            return;
+    }
+    if (!s->named) {
+        if (!s->prompt)
+            return;
+        title_request(s->id, s->cwd, s->prompt, s->last_reply);
+        s->named = 1;
+        s->retitle = 0;
+        s->named_at = now_seconds();
+        return;
+    }
+
+    double now = now_seconds();
+    if (now - s->named_at < 1.0)
+        return;
+    s->named_at = now;
+    if (title_lookup(s->id, s->title, sizeof s->title))
+        status_set_note(s->title);
+}
+
 /* Polled by the backend a few times a second: drain whatever was typed, then
  * tick the spinner, and report whether the user asked to interrupt. */
 static int abort_check(void)
 {
+    name_poll(live);
+
     /* Without a raw terminal there is no interrupt key to read, and reading a
      * redirected stdin would see EOF and cancel the turn immediately. */
     if (!tty_is_raw())
@@ -577,8 +633,11 @@ void session_free(struct session *s)
     free(s->last_reply);
     free(s->last_block);
     free(s->streamed);
+    free(s->prompt);
     free(s->permission);
     free(s->cluster.line);
+    if (live == s)
+        live = NULL;
     free(s);
 }
 
@@ -619,7 +678,19 @@ void session_set_customizations(struct session *s, int on) { s->customizations =
  * that same conversation in an earlier run. */
 static void set_id(struct session *s, const char *id)
 {
+    /* Re-adopting the same id is routine — it arrives again at the end of every
+     * turn — and must not restart the naming that is already under way. */
+    int changed = strcmp(s->id, id) != 0;
     snprintf(s->id, sizeof s->id, "%s", id);
+    if (changed) {
+        /* A resumed conversation carries its name in from the start; one waiting
+         * to be renamed keeps none until the helper has written the new one. */
+        s->title[0] = '\0';
+        s->named = 0;
+        if (!s->retitle)
+            title_lookup(s->id, s->title, sizeof s->title);
+        status_set_note(s->title);
+    }
     agenttabs_forget_hook(id);
 }
 
@@ -730,6 +801,12 @@ int session_clear(struct session *s)
     s->context_tokens = 0;
     replace(&s->last_reply, NULL);
     replace(&s->last_block, NULL);
+    /* Whatever it is about now, it is not what it was named for. Set before
+     * set_id, which otherwise reads the old name back out of the cache. */
+    s->title[0] = '\0';
+    s->retitle = 1;
+    s->named = 0;
+    status_set_note(NULL);
     /* A cleared conversation gets a new session id from the CLI. */
     const char *id = s->agent->session_id(s->agent);
     if (id)
@@ -737,14 +814,22 @@ int session_clear(struct session *s)
     return 1;
 }
 
-static double now_seconds(void)
-{
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double)tv.tv_sec + (double)tv.tv_usec / 1e6;
-}
-
 /* ---------- one turn ---------- */
+
+/* What name_poll could not finish while the turn ran: the id only turns up at
+ * the end on a backend that reports it late, and a helper that answered in the
+ * last second of the turn was never polled for. */
+static void update_title(struct session *s)
+{
+    if (!s->id[0] || s->title[0])
+        return;
+    if (!s->named) {
+        name_poll(s);
+        return;
+    }
+    if (title_lookup(s->id, s->title, sizeof s->title))
+        status_set_note(s->title);
+}
 
 static void print_footer(const struct session *s, double elapsed)
 {
@@ -754,7 +839,7 @@ static void print_footer(const struct session *s, double elapsed)
 
     /* snprintf reports what it *would* have written, so advancing by its return
      * value unchecked can walk past the buffer. */
-    char line[256];
+    char line[384];
     size_t n = 0;
     #define APPEND(...)                                                                        \
         do {                                                                                   \
@@ -772,12 +857,28 @@ static void print_footer(const struct session *s, double elapsed)
     }
     if (s->cost_usd > 0)
         APPEND(" · $%.4f", s->cost_usd);
+
+    /* The name trails the figures, and drops to a row of its own rather than let
+     * the terminal wrap it mid-word. The spare column keeps a full row from
+     * leaving a deferred wrap behind. */
+    int wrapped = 0;
+    if (s->title[0]) {
+        int room = ui_columns() - 1;
+        size_t want = ui_cells(line) + ui_cells(" · ") + ui_cells(s->title);
+        if (room > 0 && want <= (size_t)room)
+            APPEND(" · %s", s->title);
+        else
+            wrapped = 1;
+    }
     #undef APPEND
 
     ui_esc(ui_style(UI_DIM));
     ui_put(line);
     ui_esc(ui_style(UI_RESET));
-    ui_put("\n\n");
+    ui_put("\n");
+    if (wrapped)
+        ui_wrapped(s->title, 0, ui_style(UI_DIM)); /* ends its own row */
+    ui_put("\n");
     ui_flush();
 }
 
@@ -788,10 +889,12 @@ int session_turn(struct session *s, const char *text)
 
     replace(&s->last_block, NULL);
     replace(&s->streamed, NULL);
+    replace(&s->prompt, text);
     s->after_activity = 0;
     s->after_tool = 0;
     s->after_collapse = 0;
     cluster_forget(s);
+    live = s;
     double started = now_seconds();
     agenttabs_working();
     if (!s->quiet)
@@ -800,6 +903,7 @@ int session_turn(struct session *s, const char *text)
     backend_result meta = {0};
     char *reply = s->agent->ask_ex(s->agent, text, &meta);
     double elapsed = now_seconds() - started;
+    live = NULL;
     if (!s->quiet)
         status_end();
 
@@ -863,6 +967,7 @@ int session_turn(struct session *s, const char *text)
      * case the CLI's own hook never reports. */
     agenttabs_finished();
 
+    update_title(s);
     if (!s->quiet)
         print_footer(s, elapsed);
     return 1;

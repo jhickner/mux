@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "title.h"
 #include "vendor/cJSON.h"
 
 #define MAX_SESSIONS 40
@@ -70,8 +71,9 @@ static int usable_label(const char *text)
     return strncmp(text, "Caveat:", 7) != 0;
 }
 
-/* Pull the first genuine user message out of a transcript. */
-static int first_user_message(const char *path, char *out, size_t size)
+/* Pull a label out of a transcript: the name Claude Code gave the conversation
+ * if it wrote one, otherwise the first genuine user message. */
+static int transcript_label(const char *path, char *out, size_t size)
 {
     FILE *f = fopen(path, "r");
     if (!f)
@@ -80,15 +82,23 @@ static int first_user_message(const char *path, char *out, size_t size)
     char *line = NULL;
     size_t cap = 0;
     ssize_t n;
-    int scanned = 0, found = 0;
+    int scanned = 0, titled = 0, spoke = 0;
 
-    while (!found && scanned++ < SCAN_LINES && (n = getline(&line, &cap, f)) > 0) {
+    while (!titled && scanned++ < SCAN_LINES && (n = getline(&line, &cap, f)) > 0) {
         cJSON *ev = cJSON_ParseWithLength(line, (size_t)n);
         if (!ev)
             continue;
         const char *type = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "type"));
         cJSON *meta = cJSON_GetObjectItem(ev, "isMeta");
-        if (type && strcmp(type, "user") == 0 && !cJSON_IsTrue(meta)) {
+        /* The CLI names the conversation just after its first turn, so the title
+         * lands a few records below the message that would stand in for it. */
+        if (type && strcmp(type, "ai-title") == 0) {
+            const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "aiTitle"));
+            if (title && *title) {
+                flatten(title, out, size);
+                titled = 1;
+            }
+        } else if (!spoke && type && strcmp(type, "user") == 0 && !cJSON_IsTrue(meta)) {
             cJSON *message = cJSON_GetObjectItem(ev, "message");
             cJSON *content = message ? cJSON_GetObjectItem(message, "content") : NULL;
             const char *text = NULL;
@@ -106,14 +116,14 @@ static int first_user_message(const char *path, char *out, size_t size)
             }
             if (usable_label(text)) {
                 flatten(text, out, size);
-                found = 1;
+                spoke = 1;
             }
         }
         cJSON_Delete(ev);
     }
     free(line);
     fclose(f);
-    return found;
+    return titled || spoke;
 }
 
 static int by_recency(const void *a, const void *b)
@@ -169,7 +179,9 @@ int sessionlist_load(const char *cwd, const char *skip_id, struct past_session *
             continue;
 
         struct past_session *s = &list[count];
-        if (!first_user_message(path, s->label, sizeof s->label))
+        /* Our own title first: the CLI only names the sessions it drives itself. */
+        if (!title_lookup(id, s->label, sizeof s->label) &&
+            !transcript_label(path, s->label, sizeof s->label))
             continue;
         snprintf(s->id, sizeof s->id, "%s", id);
         s->modified = st.st_mtime;

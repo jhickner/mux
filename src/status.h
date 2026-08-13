@@ -23,6 +23,10 @@ typedef int  (*status_offset_fn)(void *ud);
 
 void   status_set_below(status_paint_fn paint, status_offset_fn offset, void *ud);
 
+/* Trailing text for the spinner row — the conversation's name. Shown only when
+ * the row is wide enough for all of it. NULL or "" removes it. */
+void   status_set_note(const char *text);
+
 /* Redraw the spinner and elapsed time; cheap enough to call on every poll. */
 void   status_tick(void);
 
