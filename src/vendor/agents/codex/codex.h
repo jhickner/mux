@@ -44,6 +44,8 @@ char *codex_send(codex_client *c, const char *user_text);
 
 typedef struct {
     int interrupted;   /* the abort predicate ended the turn */
+    long context_tokens; /* latest model request, including output */
+    long context_window;
 } codex_result;
 
 /* As codex_send, but also fills *meta (zeroed first). `meta` may be NULL. */
@@ -59,6 +61,8 @@ void codex_set_event_cb(codex_client *c,
                         void (*cb)(void *ud, const char *kind, const char *text),
                         void *ud);
 void codex_set_abort_check(codex_client *c, int (*cb)(void));
+/* Latest context occupancy reported by thread/tokenUsage/updated. */
+void codex_usage(codex_client *c, long *context_tokens, long *context_window);
 void codex_stop(codex_client *c);
 
 #endif /* CODEX_H */
@@ -83,6 +87,7 @@ struct codex_client {
     void *on_event_ud;
     char *model, *sandbox, *sys;
     char session_id[128];
+    long context_tokens, context_window;
     char *buf;
     size_t len, cap;
 };
@@ -277,6 +282,10 @@ codex_client *codex_start(const codex_opts *opts) {
 
 void codex_set_verbose(codex_client *c, int on) { if (c) c->verbose = on; }
 void codex_set_abort_check(codex_client *c, int (*cb)(void)) { if (c) c->abort = cb; }
+void codex_usage(codex_client *c, long *tokens, long *window) {
+    if (tokens) *tokens = c ? c->context_tokens : 0;
+    if (window) *window = c ? c->context_window : 0;
+}
 void codex_set_event_cb(codex_client *c,
                         void (*cb)(void *ud, const char *kind, const char *text),
                         void *ud) {
@@ -285,7 +294,25 @@ void codex_set_event_cb(codex_client *c,
 const char *codex_session_id(codex_client *c) {
     return c && c->session_id[0] ? c->session_id : NULL;
 }
-void codex_reset(codex_client *c) { if (c) c->session_id[0] = '\0'; }
+void codex_reset(codex_client *c) {
+    if (c) {
+        c->session_id[0] = '\0';
+        c->context_tokens = c->context_window = 0;
+    }
+}
+
+/* `total` accumulates every request in the thread. `last` is the most recent
+ * model request and therefore the amount occupying the context window. */
+static void cx_note_usage(codex_client *c, cJSON *params) {
+    cJSON *usage = params ? cJSON_GetObjectItemCaseSensitive(params, "tokenUsage") : NULL;
+    cJSON *last = usage ? cJSON_GetObjectItemCaseSensitive(usage, "last") : NULL;
+    cJSON *used = last ? cJSON_GetObjectItemCaseSensitive(last, "totalTokens") : NULL;
+    cJSON *window = usage ? cJSON_GetObjectItemCaseSensitive(usage, "modelContextWindow") : NULL;
+    if (cJSON_IsNumber(used) && used->valuedouble > 0)
+        c->context_tokens = (long)used->valuedouble;
+    if (cJSON_IsNumber(window) && window->valuedouble > 0)
+        c->context_window = (long)window->valuedouble;
+}
 
 static void cx_item_event(codex_client *c, cJSON *params, char **fallback) {
     cJSON *item = params ? cJSON_GetObjectItemCaseSensitive(params, "item") : NULL;
@@ -351,6 +378,8 @@ char *codex_send_ex(codex_client *c, const char *user_text, codex_result *meta) 
         cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
         if (jid && method) {
             cx_reject_server_request(c, msg);
+        } else if (method && !strcmp(method, "thread/tokenUsage/updated")) {
+            cx_note_usage(c, params);
         } else if (method && !strcmp(method, "item/agentMessage/delta")) {
             const char *d = params ? cJSON_GetStringValue(
                 cJSON_GetObjectItemCaseSensitive(params, "delta")) : NULL;
@@ -373,6 +402,10 @@ char *codex_send_ex(codex_client *c, const char *user_text, codex_result *meta) 
     if (!answer && fallback) { answer = fallback; fallback = NULL; }
     free(fallback);
     if (failed || !completed) { free(answer); return NULL; }
+    if (meta) {
+        meta->context_tokens = c->context_tokens;
+        meta->context_window = c->context_window;
+    }
     return answer ? answer : strdup("");
 }
 

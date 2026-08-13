@@ -172,12 +172,11 @@ Requires the CLI of whichever backend you run to be on `PATH`.
 `src/vendor/` holds copies of the single-header libraries, per the convention in
 `~/working/libs/c`. `agents/` is a copy of `~/working/libs/c/agents` —
 `backend.h` and the four drivers behind it — sharing the one `cJSON.c` beside
-it. It diverges in one place: `context_tokens` on `claude_result` and
-`backend_result` carries the latest primary-model request's context usage,
-which `claude.h` captures from the assistant events. The result event's usage
-block is aggregate traffic across every model request in a turn and can exceed
-the context window many times over, so the footer reads the former where a
-driver reports it and the aggregate otherwise.
+it. It diverges in one place: `context_tokens` on the driver and backend results
+carries the latest primary-model request's context usage, which `claude.h`
+captures from assistant events and `codex.h` from thread token-usage events.
+Aggregate usage across every model request in a turn can exceed the context
+window many times over, so the footer uses the per-request figure.
 
 `repl.h` diverges in three places:
 

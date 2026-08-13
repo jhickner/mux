@@ -464,8 +464,17 @@ static char *backend_codex_ask_ex(Backend *b, const char *user, backend_result *
     codex_result cr = {0};
     char *reply = codex_send_ex(x->client, user, &cr);
     backend_flush(&x->st);
-    if (meta) meta->interrupted = cr.interrupted;
+    if (meta) {
+        meta->context_tokens = cr.context_tokens;
+        meta->context_window = cr.context_window;
+        meta->interrupted = cr.interrupted;
+    }
     return reply;
+}
+
+static void backend_codex_usage(Backend *b, long *tokens, long *window) {
+    backend_codex *x = b->ctx;
+    codex_usage(x->client, tokens, window);
 }
 
 static char *backend_codex_ask(Backend *b, const char *user) {
@@ -517,6 +526,7 @@ static Backend *backend_codex_open(const backend_opts *o) {
     b->close = backend_codex_close;
     b->start = backend_codex_start;
     b->ask_ex = backend_codex_ask_ex;
+    b->usage = backend_codex_usage;
     b->set_model = backend_set_model_generic;
     b->set_permission = backend_set_permission_none;
     b->set_event_cb = backend_codex_set_event_cb;

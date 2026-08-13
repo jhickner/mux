@@ -6,10 +6,13 @@
 #include "vendor/cJSON.h"
 
 static int abort_turn;
+static codex_client *test_client;
+static long live_tokens, live_window;
 
 static int should_abort(void)
 {
-    return abort_turn;
+    codex_usage(test_client, &live_tokens, &live_window);
+    return abort_turn && live_tokens > 0;
 }
 
 static void respond(int id, const char *result)
@@ -40,6 +43,12 @@ static int mock_server(void)
             respond(id, turns == 1
                 ? "{\"turn\":{\"id\":\"turn-1\"}}"
                 : "{\"turn\":{\"id\":\"turn-2\"}}");
+            printf("{\"method\":\"thread/tokenUsage/updated\",\"params\":{"
+                   "\"threadId\":\"thread-1\",\"turnId\":\"turn-%d\","
+                   "\"tokenUsage\":{\"last\":{\"totalTokens\":%d},"
+                   "\"total\":{\"totalTokens\":9999},"
+                   "\"modelContextWindow\":1000}}}\n",
+                   turns, turns == 1 ? 120 : 240);
             printf("{\"method\":\"item/agentMessage/delta\","
                    "\"params\":{\"delta\":\"%s\"}}\n",
                    turns == 1 ? "partial" : "done");
@@ -72,11 +81,14 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    test_client = client;
     codex_set_abort_check(client, should_abort);
     abort_turn = 1;
     codex_result meta = {0};
     char *reply = codex_send_ex(client, "interrupt me", &meta);
-    if (!reply || strcmp(reply, "partial") || !meta.interrupted) {
+    if (!reply || strcmp(reply, "partial") || !meta.interrupted ||
+        meta.context_tokens != 120 || meta.context_window != 1000 ||
+        live_tokens != 120 || live_window != 1000) {
         fprintf(stderr, "codextest: interrupted turn was reported as a failure\n");
         free(reply);
         codex_stop(client);
@@ -93,6 +105,21 @@ int main(int argc, char **argv)
         return 1;
     }
     free(reply);
+
+    codex_usage(client, &live_tokens, &live_window);
+    if (live_tokens != 240 || live_window != 1000) {
+        fprintf(stderr, "codextest: latest context usage was not retained\n");
+        codex_stop(client);
+        return 1;
+    }
+
+    codex_reset(client);
+    codex_usage(client, &live_tokens, &live_window);
+    if (live_tokens || live_window) {
+        fprintf(stderr, "codextest: reset retained stale context usage\n");
+        codex_stop(client);
+        return 1;
+    }
     codex_stop(client);
     puts("codextest: ok");
     return 0;
