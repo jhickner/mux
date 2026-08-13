@@ -37,8 +37,17 @@ typedef struct {
 codex_client *codex_start(const codex_opts *opts);
 
 /* Start one turn on the existing process/thread and return its final agent
- * message (malloc'd), or NULL on failure/abort. */
+ * message (malloc'd), or NULL on failure. An interrupted turn returns the text
+ * produced so far (possibly empty), leaving the process ready for another
+ * turn. */
 char *codex_send(codex_client *c, const char *user_text);
+
+typedef struct {
+    int interrupted;   /* the abort predicate ended the turn */
+} codex_result;
+
+/* As codex_send, but also fills *meta (zeroed first). `meta` may be NULL. */
+char *codex_send_ex(codex_client *c, const char *user_text, codex_result *meta);
 
 const char *codex_session_id(codex_client *c);
 
@@ -298,7 +307,8 @@ static void cx_item_event(codex_client *c, cJSON *params, char **fallback) {
     }
 }
 
-char *codex_send(codex_client *c, const char *user_text) {
+char *codex_send_ex(codex_client *c, const char *user_text, codex_result *meta) {
+    if (meta) memset(meta, 0, sizeof *meta);
     if (!c || !user_text) return NULL;
     if (!c->session_id[0] && !cx_open_thread(c, NULL)) return NULL;
     cJSON *p = cJSON_CreateObject(), *input = cJSON_CreateArray();
@@ -331,6 +341,7 @@ char *codex_send(codex_client *c, const char *user_text) {
             cJSON_AddStringToObject(ip, "turnId", turn_id);
             int iid = cx_request(c, "turn/interrupt", ip);
             if (!iid) { failed = 1; break; }
+            if (meta) meta->interrupted = 1;
             interrupted = 1; continue;
         }
         if (rr != 1) { failed = 1; break; }
@@ -350,15 +361,23 @@ char *codex_send(codex_client *c, const char *user_text) {
             cJSON *t = params ? cJSON_GetObjectItemCaseSensitive(params, "turn") : NULL;
             const char *status = t ? cJSON_GetStringValue(
                 cJSON_GetObjectItemCaseSensitive(t, "status")) : NULL;
-            if (!status || strcmp(status, "completed")) failed = 1;
+            if (status && !strcmp(status, "interrupted")) {
+                if (meta) meta->interrupted = 1;
+            } else if (!status || strcmp(status, "completed")) {
+                failed = 1;
+            }
             completed = 1;
         }
         cJSON_Delete(msg);
     }
     if (!answer && fallback) { answer = fallback; fallback = NULL; }
     free(fallback);
-    if (failed || interrupted || !completed) { free(answer); return NULL; }
+    if (failed || !completed) { free(answer); return NULL; }
     return answer ? answer : strdup("");
+}
+
+char *codex_send(codex_client *c, const char *user_text) {
+    return codex_send_ex(c, user_text, NULL);
 }
 
 /* Poll for the child's exit for up to `ms`. Returns nonzero once reaped. */

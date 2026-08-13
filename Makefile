@@ -35,16 +35,20 @@ toolstyletest: tools/toolstyletest.c src/toolstyle.o src/vendor/cJSON.o
 sessionlisttest: tools/sessionlisttest.c src/sessionlist.c src/vendor/cJSON.c
 	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
 
-check: reflowtest toolstyletest sessionlisttest
+codextest: tools/codextest.c src/vendor/impl.o src/vendor/cJSON.o
+	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
+
+check: reflowtest toolstyletest sessionlisttest codextest
 	./reflowtest
 	./toolstyletest
 	./sessionlisttest
+	./codextest
 
 install: $(BIN)
 	install -d $(PREFIX)/bin
 	install -m 755 $(BIN) $(PREFIX)/bin/$(BIN)
 
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN) palette spintest reflowtest toolstyletest sessionlisttest src/*.o.tmp src/vendor/*.o.tmp
+	rm -f $(OBJ) $(DEP) $(BIN) palette spintest reflowtest toolstyletest sessionlisttest codextest src/*.o.tmp src/vendor/*.o.tmp
 
 .PHONY: all install clean check

@@ -457,17 +457,19 @@ static int backend_codex_start(Backend *b, const char *resume) {
     return 1;
 }
 
-static char *backend_codex_ask(Backend *b, const char *user) {
+static char *backend_codex_ask_ex(Backend *b, const char *user, backend_result *meta) {
     backend_codex *x = b->ctx;
+    if (meta) memset(meta, 0, sizeof *meta);
     if (!x->client && !backend_codex_start(b, x->st.resume)) return NULL;
-    char *reply = codex_send(x->client, user);
+    codex_result cr = {0};
+    char *reply = codex_send_ex(x->client, user, &cr);
     backend_flush(&x->st);
+    if (meta) meta->interrupted = cr.interrupted;
     return reply;
 }
 
-static char *backend_codex_ask_ex(Backend *b, const char *user, backend_result *meta) {
-    if (meta) memset(meta, 0, sizeof *meta);
-    return backend_codex_ask(b, user);
+static char *backend_codex_ask(Backend *b, const char *user) {
+    return backend_codex_ask_ex(b, user, NULL);
 }
 
 static int backend_codex_reset(Backend *b) {
