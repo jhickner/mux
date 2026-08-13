@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "files.h"
+#include "paste.h"
 #include "tty.h"
 #include "ui.h"
 
@@ -481,6 +482,26 @@ static void delete_forward(struct prompt *p)
     feed(p, REPL_KEY_BACKSPACE, 0, NULL);
 }
 
+/* Ctrl-V pastes the clipboard's *image*: it is saved to a file and the editor
+ * gets the path, which is what the agent needs to open it. Text arrives by the
+ * terminal's own paste, as a bracketed-paste TK_TEXT event. */
+static void paste_clipboard_image(struct prompt *p, int live)
+{
+    char path[1024];
+    if (paste_image(path, sizeof path - 1)) {
+        size_t n = strlen(path);
+        path[n] = ' ';
+        path[n + 1] = '\0';
+        repl_insert_text(&p->repl, path);
+        return;
+    }
+    if (live) /* the turn owns the screen; a note would land inside its output */
+        return;
+    erase_block(p);
+    ui_note("no image on the clipboard");
+    repaint(p);
+}
+
 enum key_result {
     KEY_OK,      /* the editor consumed it; redraw   */
     KEY_SUBMIT,  /* a complete line is ready to take */
@@ -517,6 +538,10 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         }
         if (ev->cp == 3 && live) /* Ctrl-C */
             return KEY_CANCEL;
+        if (ev->cp == 22) { /* Ctrl-V */
+            paste_clipboard_image(p, live);
+            return KEY_OK;
+        }
         if (ev->cp == 12) { /* Ctrl-L */
             if (live)
                 return KEY_OK;
