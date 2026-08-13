@@ -7,6 +7,7 @@
 #include "banner.h"
 #include "pick.h"
 #include "session.h"
+#include "image.h"
 #include "sessionfork.h"
 #include "sessionlist.h"
 #include "settings.h"
@@ -19,6 +20,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/effort", "set reasoning/thinking effort", "[level]"},
     {"/thinking", "show or hide the model's reasoning", "[on|off]"},
     {"/tools", "how much of each tool call to show", "[compact|full]"},
+    {"/image", "tallest an inline image may be drawn", "[rows]"},
     {"/permission", "how the CLI gates tool calls", "[mode]"},
     {"/resume", "resume a past conversation", NULL},
     {"/fh", "fork into a horizontal tmux split", NULL},
@@ -346,6 +348,35 @@ static void do_tools(struct session *s, const char *arg)
     ui_flush();
 }
 
+/* No argument reports the current height. The width follows from the image, so
+ * rows is the only thing worth setting. */
+static void do_image(const char *arg)
+{
+    if (arg && *arg) {
+        char *end;
+        long rows = strtol(arg, &end, 10);
+        while (*end == ' ')
+            end++;
+        if (*end || rows < IMG_ROWS_MIN || rows > IMG_ROWS_MAX) {
+            ui_error("/image takes a row count between %d and %d",
+                     IMG_ROWS_MIN, IMG_ROWS_MAX);
+            ui_put("\n");
+            ui_flush();
+            return;
+        }
+        img_set_rows((int)rows);
+        settings_set_int(SETTING_IMAGE_ROWS, img_rows());
+    }
+
+    if (img_available())
+        ui_note("inline images: up to %d rows tall", img_rows());
+    else
+        ui_note("inline images: up to %d rows tall, but this terminal has no "
+                "graphics support", img_rows());
+    ui_put("\n");
+    ui_flush();
+}
+
 int cmd_resume(struct session *s)
 {
     /* The picker reads the backend's own transcript store. */
@@ -504,6 +535,8 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line)
         do_effort(s, arg);
     } else if (!strcmp(name, "/thinking")) {
         do_thinking(s, arg);
+    } else if (!strcmp(name, "/image")) {
+        do_image(arg);
     } else if (!strcmp(name, "/tools")) {
         do_tools(s, arg);
     } else if (!strcmp(name, "/permission")) {

@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "image.h"
 #include "ui.h"
 
 /* A run of text carrying one style, produced by the inline pass. Style 0 means
@@ -610,6 +611,42 @@ static void render_ansi_line(const char *line, int indent)
     ui_put("\n");
 }
 
+/* A line that is nothing but `![alt](path)`: the path, malloc'd, or NULL. A
+ * remote target is left alone — there is nothing local to draw. */
+static char *image_line(const char *body)
+{
+    if (body[0] != '!' || body[1] != '[')
+        return NULL;
+    const char *close = strchr(body + 2, ']');
+    if (!close || close[1] != '(')
+        return NULL;
+    const char *open = close + 2;
+    const char *end = strchr(open, ')');
+    if (!end || end[1] != '\0' || end == open || is_url_start(open))
+        return NULL;
+
+    size_t n = (size_t)(end - open);
+    char *path = malloc(n + 1);
+    if (!path)
+        return NULL;
+    memcpy(path, open, n);
+    path[n] = '\0';
+    return path;
+}
+
+/* Draw the image, or name its path when the terminal cannot show one. */
+static void render_image(const char *path, int indent)
+{
+    if (img_show(path, indent))
+        return;
+    pad(indent);
+    ui_esc(ui_style(UI_DIM));
+    ui_put("[image] ");
+    ui_put(path);
+    ui_esc(ui_style(UI_RESET));
+    ui_put("\n");
+}
+
 static void render_code_line(const char *line, int indent)
 {
     pad(indent);
@@ -661,6 +698,15 @@ void md_render(const char *text, int indent)
         if (blank_pending) {
             ui_put("\n");
             blank_pending = 0;
+        }
+
+        char *img = image_line(body);
+        if (img) {
+            render_image(img, indent);
+            free(img);
+            wrote_any = 1;
+            free(line);
+            continue;
         }
 
         /* A pipe row followed by a |---|---| row starts a table. */

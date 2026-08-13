@@ -56,6 +56,12 @@ block in the history above.
   cumulative cost
 - Markdown rendering: headings, bullets, ordered lists, fenced code, quotes,
   rules, inline code, bold, italic, links
+- Inline images: a markdown image alone on a line — `![alt](/abs/path.png)` —
+  is drawn in the terminal with the kitty graphics protocol, as unicode
+  placeholder cells so it survives tmux. PNG goes over as-is; other formats are
+  converted with `sips` first. Terminals without graphics get the path instead.
+  The model is told the capability exists only when the terminal has it.
+  `/image` sets how tall one may be drawn
 - Multi-line input, word-wrapped and reflowed on terminal resize
 - Command completion dropdown, history with reverse search, emacs editing keys
 - `@` file completion: fuzzy-matched paths from the working directory (git's
@@ -89,6 +95,7 @@ block in the history above.
 | `/effort [level]` | Set reasoning/thinking effort; no argument opens a backend-specific picker |
 | `/thinking [on\|off]` | Show or hide the ✻ reasoning rows; no argument flips it |
 | `/tools [compact\|full]` | One row per tool call, or full blocks; no argument flips it |
+| `/image [rows]` | Tallest an inline image may be drawn (2–100, default 20); no argument reports it |
 | `/resume` | Pick a past conversation for this directory |
 | `/fh`, `/fs` | Fork into a horizontal tmux split, in a new worktree |
 | `/fv` | Fork into a vertical tmux split, in a new worktree |
@@ -161,7 +168,7 @@ simple-agent [-b backend] [-m model] [-e effort] [-C dir] [-s] [-r] [prompt...]
 
 - `~/.config/simple-agent/history` — prompt history
 - `~/.config/simple-agent/settings` — `key=value` per line; `/thinking`,
-  `/tools` and `/permission` write here
+  `/tools`, `/image` and `/permission` write here
 - `~/.claude/projects/<encoded cwd>/*.jsonl` — Claude Code's transcripts,
   read by `/resume` on `-b claude`
 - `~/.grok/sessions/<encoded cwd>/<id>/` — Grok's sessions, read by `/resume`
@@ -181,7 +188,10 @@ Requires the CLI of whichever backend you run to be on `PATH`.
 ## Vendored libraries
 
 `src/vendor/` holds copies of the single-header libraries, per the convention in
-`~/working/libs/c`. `agents/` is a copy of `~/working/libs/c/agents` —
+`~/working/libs/c`. `kitty.h` is used unmodified; it normally writes through
+`term.h`, which this app does not use, so `src/image.c` pre-defines that header's
+guard and supplies the four output functions itself. `agents/` is a copy of
+`~/working/libs/c/agents` —
 `backend.h` and the four drivers behind it — sharing the one `cJSON.c` beside
 it. It diverges in one place: `context_tokens` on the driver and backend results
 carries the latest primary-model request's context usage, which `claude.h`

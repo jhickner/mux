@@ -8,6 +8,7 @@
 #include "agenttabs.h"
 #include "banner.h"
 #include "cmd.h"
+#include "image.h"
 #include "prompt.h"
 #include "session.h"
 #include "sessionfork.h"
@@ -174,6 +175,10 @@ int main(int argc, char **argv)
     }
 
     ui_init();
+    /* Asks tmux for passthrough while nothing has been drawn yet, and settles
+     * whether the model is told it can show images. */
+    img_init();
+    img_set_rows(settings_get_int(SETTING_IMAGE_ROWS, IMG_ROWS_DEFAULT));
     /* Before session_start(): the CLI it spawns inherits the marker that keeps
      * the plugin's own hook from reporting this pane too. */
     agenttabs_begin(backend);
