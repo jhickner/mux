@@ -7,6 +7,7 @@
 #define SETTING_PERMISSION "permission"
 #define SETTING_COMPACT    "compact"
 #define SETTING_STICKY     "sticky"
+#define SETTING_IMAGE_ROWS "image_rows"
 
 /* Read `path`, if it is there. Without this every get returns its fallback and
  * nothing is written back. */

@@ -7,6 +7,7 @@
 
 #include "agenttabs.h"
 #include "filediff.h"
+#include "image.h"
 #include "md.h"
 #include "status.h"
 #include "title.h"
@@ -701,6 +702,17 @@ static Backend *agent(struct session *s)
     o.effort = s->effort;
     o.allow_customizations = s->customizations;
     o.permission_mode = s->permission;
+    /* The model has no way to discover the front end can draw, so it is told.
+     * Only when it actually can: the instruction is worse than useless in a
+     * terminal that would print the markdown instead. */
+    if (img_available())
+        o.system =
+            "This conversation is displayed in a terminal that renders images inline. "
+            "To show the user an image, write a markdown image with an absolute local "
+            "path — ![alt](/abs/path.png) — alone on its own line. PNG is drawn "
+            "directly; other formats are converted first. Use this whenever an image "
+            "would answer better than words: a render you just produced, a screenshot, "
+            "a diagram, a photo the user asked about.";
     s->agent = backend_open_ex(&o);
     if (s->agent) {
         s->agent->set_event_cb(s->agent, on_event, s);
