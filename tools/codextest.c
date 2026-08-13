@@ -8,11 +8,34 @@
 static int abort_turn;
 static codex_client *test_client;
 static long live_tokens, live_window;
+static int shell_starts, edit_starts, tool_results;
+static char shell_input[512], shell_output[512], edit_input[1024], edit_diff[1024];
 
 static int should_abort(void)
 {
     codex_usage(test_client, &live_tokens, &live_window);
     return abort_turn && live_tokens > 0;
+}
+
+static void capture_event(void *ud, const codex_event *ev)
+{
+    (void)ud;
+    if (ev->kind == CODEX_EV_TOOL && ev->name && !strcmp(ev->name, "Shell")) {
+        shell_starts++;
+        snprintf(shell_input, sizeof shell_input, "%s",
+                 ev->input_json ? ev->input_json : "");
+    } else if (ev->kind == CODEX_EV_TOOL && ev->name && !strcmp(ev->name, "Edit")) {
+        edit_starts++;
+        snprintf(edit_input, sizeof edit_input, "%s",
+                 ev->input_json ? ev->input_json : "");
+    } else if (ev->kind == CODEX_EV_TOOL_RESULT) {
+        tool_results++;
+        if (ev->diff) {
+            snprintf(edit_diff, sizeof edit_diff, "%s", ev->diff);
+        } else {
+            snprintf(shell_output, sizeof shell_output, "%s", ev->text ? ev->text : "");
+        }
+    }
 }
 
 static void respond(int id, const char *result)
@@ -64,6 +87,33 @@ static int mock_server(void)
                    "\"params\":{\"delta\":\"%s\"}}\n",
                    turns == 1 ? "partial" : turns == 2 ? "done" : "reset");
             if (turns > 1) {
+                if (turns == 2) {
+                    printf("{\"method\":\"item/started\",\"params\":{\"item\":{"
+                           "\"type\":\"commandExecution\",\"id\":\"cmd-1\","
+                           "\"command\":\"sed -n '1,2p' src/session.c\","
+                           "\"cwd\":\"/project\",\"status\":\"inProgress\","
+                           "\"commandActions\":[]}}}\n");
+                    printf("{\"method\":\"item/completed\",\"params\":{\"item\":{"
+                           "\"type\":\"commandExecution\",\"id\":\"cmd-1\","
+                           "\"command\":\"sed -n '1,2p' src/session.c\","
+                           "\"cwd\":\"/project\",\"status\":\"completed\","
+                           "\"commandActions\":[],"
+                           "\"aggregatedOutput\":\"line one\\nline two\\n\"}}}\n");
+                    printf("{\"method\":\"item/started\",\"params\":{\"item\":{"
+                           "\"type\":\"fileChange\",\"id\":\"edit-1\","
+                           "\"status\":\"inProgress\",\"changes\":[{"
+                           "\"path\":\"src/session.c\",\"kind\":{\"type\":\"update\"},"
+                           "\"diff\":\"@@ -1 +1 @@\\n-old\\n+new\\n\"},{"
+                           "\"path\":\"src/session.h\",\"kind\":{\"type\":\"update\"},"
+                           "\"diff\":\"@@ -2 +2 @@\\n-before\\n+after\\n\"}]}}}\n");
+                    printf("{\"method\":\"item/completed\",\"params\":{\"item\":{"
+                           "\"type\":\"fileChange\",\"id\":\"edit-1\","
+                           "\"status\":\"completed\",\"changes\":[{"
+                           "\"path\":\"src/session.c\",\"kind\":{\"type\":\"update\"},"
+                           "\"diff\":\"@@ -1 +1 @@\\n-old\\n+new\\n\"},{"
+                           "\"path\":\"src/session.h\",\"kind\":{\"type\":\"update\"},"
+                           "\"diff\":\"@@ -2 +2 @@\\n-before\\n+after\\n\"}]}}}\n");
+                }
                 printf("{\"method\":\"turn/completed\",\"params\":{"
                        "\"turn\":{\"status\":\"completed\"}}}\n");
             }
@@ -94,6 +144,7 @@ int main(int argc, char **argv)
 
     test_client = client;
     codex_set_abort_check(client, should_abort);
+    codex_set_event_cb(client, capture_event, NULL);
     abort_turn = 1;
     codex_result meta = {0};
     char *reply = codex_send_ex(client, "interrupt me", &meta);
@@ -121,6 +172,33 @@ int main(int argc, char **argv)
         return 1;
     }
     free(reply);
+
+    cJSON *shell = cJSON_Parse(shell_input);
+    const char *command = shell ? cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(shell, "command")) : NULL;
+    const char *cwd = shell ? cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(shell, "cwd")) : NULL;
+    cJSON *edit = cJSON_Parse(edit_input);
+    const char *file_path = edit ? cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(edit, "file_path")) : NULL;
+    cJSON *changes = edit ? cJSON_GetObjectItemCaseSensitive(edit, "changes") : NULL;
+    if (shell_starts != 1 || edit_starts != 1 || tool_results != 2 ||
+        !command || strcmp(command, "sed -n '1,2p' src/session.c") ||
+        !cwd || strcmp(cwd, "/project") ||
+        strcmp(shell_output, "line one\nline two\n") ||
+        !file_path || strcmp(file_path, "src/session.c") ||
+        !cJSON_IsArray(changes) || cJSON_GetArraySize(changes) != 2 ||
+        strcmp(edit_diff,
+               "@@file src/session.c\n@@ -1 +1 @@\n-old\n+new\n"
+               "@@file src/session.h\n@@ -2 +2 @@\n-before\n+after\n")) {
+        fprintf(stderr, "codextest: structured tool events were not preserved\n");
+        cJSON_Delete(shell);
+        cJSON_Delete(edit);
+        codex_stop(client);
+        return 1;
+    }
+    cJSON_Delete(shell);
+    cJSON_Delete(edit);
 
     codex_usage(client, &live_tokens, &live_window);
     if (live_tokens != 240 || live_window != 1000) {

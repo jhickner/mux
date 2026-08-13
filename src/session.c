@@ -514,7 +514,14 @@ static void on_event(void *ud, const backend_event *ev)
             status_pause();
             /* A tool that changed the file speaks for itself; one that did not
              * (a read, a failed edit) still needs its own output shown. */
-            if (!filediff_render())
+            int drew;
+            if (ev->diff) {
+                drew = filediff_render_patch(ev->diff);
+                filediff_clear();
+            } else {
+                drew = filediff_render();
+            }
+            if (!drew)
                 print_tool_output(ev->text);
             status_resume();
         }
