@@ -41,7 +41,7 @@ typedef enum {
     BACKEND_EV_ASSISTANT,   /* text: an assistant text block                    */
     BACKEND_EV_THINKING,    /* text: a reasoning block                          */
     BACKEND_EV_TOOL,        /* name, plus input_json or arg: a tool invocation  */
-    BACKEND_EV_TOOL_RESULT, /* text: the tool's output                          */
+    BACKEND_EV_TOOL_RESULT, /* text: output; diff: optional authoritative patch */
     BACKEND_EV_INIT,        /* name: the model the CLI resolved                 */
 } backend_event_kind;
 
@@ -53,6 +53,8 @@ typedef struct {
                                reports no structured input                      */
     const char *arg;        /* the driver's own one-line rendering of the input,
                                for the drivers that have no input_json          */
+    const char *diff;       /* authoritative unified patch for a tool result;
+                               NULL when the driver does not report one         */
 } backend_event;
 
 /* Accounting for one turn, zeroed before each. Token counts are that turn's;
@@ -183,10 +185,6 @@ typedef struct {
     size_t pending_len, pending_cap;
 } backend_state;
 
-/* The kinds a driver streams a fragment at a time, for backend_emit_str. */
-#define BACKEND_DELTA_ASSISTANT 1u
-#define BACKEND_DELTA_THINKING  2u
-
 static char *backend_dup(const char *s) { return (s && *s) ? strdup(s) : NULL; }
 
 static void backend_set(char **slot, const char *value) {
@@ -239,33 +237,6 @@ static void backend_delta(backend_state *st, backend_event_kind kind, const char
     }
     memcpy(st->pending + st->pending_len, text, n + 1);
     st->pending_len += n;
-}
-
-/* Translate a driver's flat (kind, text) event. `tool_name` says what that
- * driver's "tool" events carry: NULL means text is the tool's own name,
- * otherwise text is its argument and tool_name names the tool. `deltas` is the
- * set of BACKEND_DELTA_* kinds this driver streams in fragments. */
-static void backend_emit_str(backend_state *st, const char *kind, const char *text,
-                             const char *tool_name, unsigned deltas) {
-    if (!st->on_event || !kind) return;
-    backend_event ev = {0};
-    if (!strcmp(kind, "assistant")) {
-        if (deltas & BACKEND_DELTA_ASSISTANT) { backend_delta(st, BACKEND_EV_ASSISTANT, text); return; }
-        ev.kind = BACKEND_EV_ASSISTANT; ev.text = text;
-    } else if (!strcmp(kind, "thinking")) {
-        if (deltas & BACKEND_DELTA_THINKING) { backend_delta(st, BACKEND_EV_THINKING, text); return; }
-        ev.kind = BACKEND_EV_THINKING; ev.text = text;
-    } else if (!strcmp(kind, "tool-result")) {
-        ev.kind = BACKEND_EV_TOOL_RESULT; ev.text = text;
-    } else if (!strcmp(kind, "tool")) {
-        ev.kind = BACKEND_EV_TOOL;
-        ev.name = tool_name ? tool_name : text;
-        ev.arg  = tool_name ? text : NULL;
-    } else {
-        return;
-    }
-    backend_flush(st);
-    st->on_event(st->event_ud, &ev);
 }
 
 static void backend_set_model_generic(Backend *b, const char *model) {
@@ -454,11 +425,33 @@ static Backend *backend_claude_open(const backend_opts *o) {
 
 typedef struct { backend_state st; codex_client *client; } backend_codex;
 
-/* Codex streams its answer a word at a time, but reports each reasoning summary
- * whole, and a command execution rather than a named tool call. */
-static void backend_codex_event(void *ud, const char *kind, const char *text) {
+/* Codex streams answer text as deltas. Its app-server tool lifecycle is already
+ * structured, including the complete multi-file patch for an Edit result. */
+static void backend_codex_event(void *ud, const codex_event *cev) {
     backend_codex *x = ((Backend *)ud)->ctx;
-    backend_emit_str(&x->st, kind, text, "bash", BACKEND_DELTA_ASSISTANT);
+    if (!x->st.on_event) return;
+    if (cev->kind == CODEX_EV_ASSISTANT) {
+        backend_delta(&x->st, BACKEND_EV_ASSISTANT, cev->text);
+    } else if (cev->kind == CODEX_EV_THINKING) {
+        backend_flush(&x->st);
+        backend_event ev = { .kind = BACKEND_EV_THINKING, .text = cev->text };
+        backend_emit(&x->st, &ev);
+    } else {
+        backend_flush(&x->st);
+        backend_event ev = {0};
+        if (cev->kind == CODEX_EV_TOOL) {
+            ev.kind = BACKEND_EV_TOOL;
+            ev.name = cev->name;
+            ev.input_json = cev->input_json;
+        } else if (cev->kind == CODEX_EV_TOOL_RESULT) {
+            ev.kind = BACKEND_EV_TOOL_RESULT;
+            ev.text = cev->text;
+            ev.diff = cev->diff;
+        } else {
+            return;
+        }
+        backend_emit(&x->st, &ev);
+    }
 }
 
 static int backend_codex_start(Backend *b, const char *resume) {

@@ -18,6 +18,11 @@ void filediff_snapshot(const char *path);
  * snapshot either way. */
 int filediff_render(void);
 
+/* Render a unified patch supplied directly by a backend. Per-file sections may
+ * be introduced by `@@file path` lines; ordinary unified hunk headers and file
+ * headers are accepted too. Returns 1 when changed rows were drawn. */
+int filediff_render_patch(const char *patch);
+
 /* Drop the snapshot without drawing, for a turn that ended early. */
 void filediff_clear(void);
 

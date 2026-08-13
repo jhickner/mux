@@ -322,6 +322,58 @@ static int print_diff(const char *a_text, size_t a_len, const char *b_text, size
 
 /* ---------- interface ---------- */
 
+int filediff_render_patch(const char *patch)
+{
+    if (!patch || !*patch)
+        return 0;
+
+    struct linevec lines;
+    if (!lines_split(&lines, patch, strlen(patch)))
+        return 0;
+
+    int in_hunk = 0, rows = 0, changed = 0, dropped = 0;
+    for (int i = 0; i < lines.count; i++) {
+        const char *p = lines.p[i];
+        size_t n = lines.n[i];
+
+        if (n >= 7 && memcmp(p, "@@file ", 7) == 0) {
+            in_hunk = 0;
+            if (rows < MAX_ROWS) {
+                char path[1024];
+                diff_text(p + 7, n - 7, path, sizeof path);
+                print_note(path);
+            }
+            continue;
+        }
+        if (n >= 2 && p[0] == '@' && p[1] == '@') {
+            in_hunk = 1;
+            continue;
+        }
+        if (!in_hunk || n == 0 || (p[0] != ' ' && p[0] != '+' && p[0] != '-'))
+            continue;
+
+        if (p[0] == '+' || p[0] == '-')
+            changed++;
+        if (rows >= MAX_ROWS) {
+            if (p[0] == '+' || p[0] == '-')
+                dropped++;
+            continue;
+        }
+        struct op op = { .sign = p[0], .p = p + 1, .n = n - 1 };
+        print_row(&op);
+        rows++;
+    }
+    lines_free(&lines);
+
+    if (dropped > 0) {
+        char note[64];
+        snprintf(note, sizeof note, "+%d more line%s", dropped,
+                 dropped == 1 ? "" : "s");
+        print_note(note);
+    }
+    return changed > 0;
+}
+
 void filediff_clear(void)
 {
     free(snap.before);

@@ -58,8 +58,27 @@ const char *codex_session_id(codex_client *c);
 void codex_reset(codex_client *c);
 
 void codex_set_verbose(codex_client *c, int on);
+
+/* One display-worthy app-server event. Tool starts preserve the structured
+ * input Codex reports; a completed fileChange also carries its authoritative
+ * unified diff. All strings are borrowed for the callback. */
+typedef enum {
+    CODEX_EV_ASSISTANT,
+    CODEX_EV_THINKING,
+    CODEX_EV_TOOL,
+    CODEX_EV_TOOL_RESULT,
+} codex_event_kind;
+
+typedef struct {
+    codex_event_kind kind;
+    const char *text;       /* assistant/thinking text, or tool output */
+    const char *name;       /* tool name, for CODEX_EV_TOOL           */
+    const char *input_json; /* compact tool input, for CODEX_EV_TOOL  */
+    const char *diff;       /* unified patch, for a file-change result */
+} codex_event;
+
 void codex_set_event_cb(codex_client *c,
-                        void (*cb)(void *ud, const char *kind, const char *text),
+                        void (*cb)(void *ud, const codex_event *ev),
                         void *ud);
 void codex_set_abort_check(codex_client *c, int (*cb)(void));
 /* Override subsequent turns' reasoning effort. NULL clears the override. */
@@ -92,7 +111,7 @@ struct codex_client {
     pid_t pid;
     int in_fd, out_fd, next_id, verbose;
     int (*abort)(void);
-    void (*on_event)(void *ud, const char *kind, const char *text);
+    void (*on_event)(void *ud, const codex_event *ev);
     void *on_event_ud;
     char *model, *effort, *sandbox, *sys;
     int effort_changed;
@@ -104,12 +123,23 @@ struct codex_client {
 
 static char *cx_dup(const char *s) { return (s && *s) ? strdup(s) : NULL; }
 
-static void cx_sink(codex_client *c, const char *kind, const char *text) {
+static void cx_emit(codex_client *c, const codex_event *ev) {
+    static const char *const kinds[] = {
+        "assistant", "thinking", "tool", "tool-result"
+    };
+    const char *preview = ev->kind == CODEX_EV_TOOL ? ev->name : ev->text;
+    if (!preview) preview = ev->diff ? ev->diff : "";
+    if (c->verbose) {
+        fprintf(stderr, "  [%s] %.400s%s\n", kinds[ev->kind], preview,
+                strlen(preview) > 400 ? " ..." : "");
+    }
+    if (c->on_event) c->on_event(c->on_event_ud, ev);
+}
+
+static void cx_text_event(codex_client *c, codex_event_kind kind, const char *text) {
     if (!text) return;
-    if (c->verbose)
-        fprintf(stderr, "  [%s] %.400s%s\n", kind, text,
-                strlen(text) > 400 ? " ..." : "");
-    if (c->on_event) c->on_event(c->on_event_ud, kind, text);
+    codex_event ev = { .kind = kind, .text = text };
+    cx_emit(c, &ev);
 }
 
 static void cx_append(char **dst, const char *s) {
@@ -305,7 +335,7 @@ void codex_usage(codex_client *c, long *tokens, long *window) {
     if (window) *window = c ? c->context_window : 0;
 }
 void codex_set_event_cb(codex_client *c,
-                        void (*cb)(void *ud, const char *kind, const char *text),
+                        void (*cb)(void *ud, const codex_event *ev),
                         void *ud) {
     if (c) { c->on_event = cb; c->on_event_ud = ud; }
 }
@@ -332,23 +362,120 @@ static void cx_note_usage(codex_client *c, cJSON *params) {
         c->context_window = (long)window->valuedouble;
 }
 
-static void cx_item_event(codex_client *c, cJSON *params, char **fallback) {
+/* The generic renderer expects a command under `command`, and a file edit's
+ * first path under `file_path`. Keep the full changes array too: callers that
+ * understand Codex can inspect every path and change kind. */
+static char *cx_command_input(cJSON *item) {
+    const char *command = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(item, "command"));
+    const char *cwd = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(item, "cwd"));
+    if (!command) return NULL;
+    cJSON *input = cJSON_CreateObject();
+    cJSON_AddStringToObject(input, "command", command);
+    if (cwd) cJSON_AddStringToObject(input, "cwd", cwd);
+    char *json = cJSON_PrintUnformatted(input);
+    cJSON_Delete(input);
+    return json;
+}
+
+static char *cx_file_input(cJSON *changes) {
+    if (!cJSON_IsArray(changes)) return NULL;
+    cJSON *input = cJSON_CreateObject();
+    cJSON *first = cJSON_GetArrayItem(changes, 0);
+    const char *path = first ? cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(first, "path")) : NULL;
+    if (path) cJSON_AddStringToObject(input, "file_path", path);
+    cJSON *copy = cJSON_Duplicate(changes, 1);
+    if (copy) cJSON_AddItemToObject(input, "changes", copy);
+    char *json = cJSON_PrintUnformatted(input);
+    cJSON_Delete(input);
+    return json;
+}
+
+/* Prefix each per-file hunk with a private marker consumed by filediff. The
+ * app-server's diff intentionally contains hunks rather than filename headers. */
+static char *cx_file_diff(cJSON *changes) {
+    if (!cJSON_IsArray(changes)) return NULL;
+    char *patch = NULL;
+    int n = cJSON_GetArraySize(changes);
+    for (int i = 0; i < n; i++) {
+        cJSON *change = cJSON_GetArrayItem(changes, i);
+        const char *path = change ? cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(change, "path")) : NULL;
+        const char *diff = change ? cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(change, "diff")) : NULL;
+        if (!path || !diff) continue;
+        cx_append(&patch, "@@file ");
+        cx_append(&patch, path);
+        cx_append(&patch, "\n");
+        cx_append(&patch, diff);
+        size_t len = strlen(diff);
+        if (!len || diff[len - 1] != '\n') cx_append(&patch, "\n");
+    }
+    return patch;
+}
+
+static void cx_item_event(codex_client *c, cJSON *params, int started,
+                          char **fallback) {
     cJSON *item = params ? cJSON_GetObjectItemCaseSensitive(params, "item") : NULL;
     const char *type = item ? cJSON_GetStringValue(
         cJSON_GetObjectItemCaseSensitive(item, "type")) : NULL;
     if (!type) return;
     if (!strcmp(type, "agentMessage")) {
+        if (started) return;
         const char *s = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "text"));
         if (s) { free(*fallback); *fallback = strdup(s); }
     } else if (!strcmp(type, "reasoning")) {
+        if (started) return;
         cJSON *summary = cJSON_GetObjectItemCaseSensitive(item, "summary");
         cJSON *s = cJSON_IsArray(summary) ? cJSON_GetArrayItem(summary, 0) : NULL;
-        if (cJSON_IsString(s)) cx_sink(c, "thinking", s->valuestring);
+        if (cJSON_IsString(s)) cx_text_event(c, CODEX_EV_THINKING, s->valuestring);
     } else if (!strcmp(type, "commandExecution")) {
-        const char *cmd = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "command"));
-        const char *out = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(item, "aggregatedOutput"));
-        if (cmd) cx_sink(c, "tool", cmd);
-        if (out) cx_sink(c, "tool-result", out);
+        if (started) {
+            char *input = cx_command_input(item);
+            codex_event ev = {
+                .kind = CODEX_EV_TOOL,
+                .name = "Shell",
+                .input_json = input,
+            };
+            cx_emit(c, &ev);
+            free(input);
+        } else {
+            const char *out = cJSON_GetStringValue(
+                cJSON_GetObjectItemCaseSensitive(item, "aggregatedOutput"));
+            const char *status = cJSON_GetStringValue(
+                cJSON_GetObjectItemCaseSensitive(item, "status"));
+            codex_event ev = {
+                .kind = CODEX_EV_TOOL_RESULT,
+                .text = out ? out : (status && strcmp(status, "completed") ? status : ""),
+            };
+            cx_emit(c, &ev);
+        }
+    } else if (!strcmp(type, "fileChange")) {
+        cJSON *changes = cJSON_GetObjectItemCaseSensitive(item, "changes");
+        if (started) {
+            char *input = cx_file_input(changes);
+            codex_event ev = {
+                .kind = CODEX_EV_TOOL,
+                .name = "Edit",
+                .input_json = input,
+            };
+            cx_emit(c, &ev);
+            free(input);
+        } else {
+            const char *status = cJSON_GetStringValue(
+                cJSON_GetObjectItemCaseSensitive(item, "status"));
+            int completed = status && !strcmp(status, "completed");
+            char *diff = completed ? cx_file_diff(changes) : NULL;
+            codex_event ev = {
+                .kind = CODEX_EV_TOOL_RESULT,
+                .text = completed ? "" : (status ? status : "failed"),
+                .diff = diff,
+            };
+            cx_emit(c, &ev);
+            free(diff);
+        }
     }
 }
 
@@ -406,9 +533,11 @@ char *codex_send_ex(codex_client *c, const char *user_text, codex_result *meta) 
         } else if (method && !strcmp(method, "item/agentMessage/delta")) {
             const char *d = params ? cJSON_GetStringValue(
                 cJSON_GetObjectItemCaseSensitive(params, "delta")) : NULL;
-            if (d) { cx_append(&answer, d); cx_sink(c, "assistant", d); }
+            if (d) { cx_append(&answer, d); cx_text_event(c, CODEX_EV_ASSISTANT, d); }
+        } else if (method && !strcmp(method, "item/started")) {
+            cx_item_event(c, params, 1, &fallback);
         } else if (method && !strcmp(method, "item/completed")) {
-            cx_item_event(c, params, &fallback);
+            cx_item_event(c, params, 0, &fallback);
         } else if (method && !strcmp(method, "turn/completed")) {
             cJSON *t = params ? cJSON_GetObjectItemCaseSensitive(params, "turn") : NULL;
             const char *status = t ? cJSON_GetStringValue(

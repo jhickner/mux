@@ -104,7 +104,7 @@ invoked (`/todo buy milk`, `/w what do I know about X`).
 | | claude | codex | grok | pi |
 |---|---|---|---|---|
 | Streamed text and reasoning | ✓ | ✓ | ✓ | ✓ |
-| Tool calls and their output | ✓ | shell commands | ✓ | tool names |
+| Tool calls and their output | ✓ | ✓ | ✓ | tool names |
 | Tokens, context window, cost | ✓ | — | — | — |
 | Resume a past conversation | ✓ | ✓ | ✓ | ✓ |
 | `/new` without restarting | ✓ | ✓ | restarts | ✓ |
@@ -116,6 +116,10 @@ invoked (`/todo buy milk`, `/w what do I know about X`).
 `~/.pi/agent/sessions`. `--session` and the command printed on quit work
 wherever resume is. Forking needs a session id and is available wherever
 resume is. Pi has no default model configured by itself — pass one with `-m`.
+
+Codex command executions retain their structured command and working directory;
+file changes appear as `Edit` calls with the app-server's complete multi-file
+diff.
 
 ## Keys
 
