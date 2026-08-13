@@ -15,3 +15,6 @@ pitest
 agenttabstest
 imagetest
 pastetest
+.codex/
+.grok/
+.claude/worktrees
