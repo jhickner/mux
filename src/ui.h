@@ -47,6 +47,18 @@ void ui_flush(void);
 /* Emit a control sequence verbatim, exempt from newline translation. */
 void ui_esc(const char *s);
 
+/* Synchronized output (DECSET 2026): brackets a repaint so the terminal presents
+ * it as one frame. Without it an erase and the redraw that follows can be shown
+ * separately, which is what a resize turns into visible tearing. */
+void ui_sync_begin(void);
+void ui_sync_end(void);
+
+/* Physical rows that `count` logical rows of the given cell widths occupy at
+ * `cols`. A row is re-wrapped by the terminal when the window narrows, so this
+ * must be recomputed at the current width rather than remembered from the paint.
+ * An empty row still occupies one row. */
+int ui_reflow_rows(const int *row_widths, int count, int cols);
+
 int    ui_columns(void);
 size_t ui_cells(const char *s);              /* display width of UTF-8 text */
 size_t ui_cells_n(const char *s, size_t n);

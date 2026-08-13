@@ -169,7 +169,7 @@ int main(int argc, char **argv)
     /* Keep the prompt on screen and editable while a turn runs, so a message
      * typed then is queued for the moment the turn ends. */
     session_set_typeahead(prompt_live_key, prompt);
-    status_set_below(prompt_live_paint, prompt);
+    status_set_below(prompt_live_paint, prompt_live_offset, prompt);
     prompt_set_live_command(prompt, live_command, session);
 
     /* cmd_resume() prints the identity row itself when it adopts a session. */
@@ -202,7 +202,7 @@ int main(int argc, char **argv)
 
     /* Both hooks borrow the prompt, so they go first. */
     session_set_typeahead(NULL, NULL);
-    status_set_below(NULL, NULL);
+    status_set_below(NULL, NULL, NULL);
     prompt_free(prompt);
     session_free(session);
     ui_raw(0);

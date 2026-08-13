@@ -135,6 +135,19 @@ void ui_printf(const char *fmt, ...)
 
 void ui_esc(const char *s) { fputs(s, stdout); }
 
+void ui_sync_begin(void) { fputs("\x1b[?2026h", stdout); }
+void ui_sync_end(void) { fputs("\x1b[?2026l", stdout); }
+
+int ui_reflow_rows(const int *row_widths, int count, int cols)
+{
+    if (cols <= 0)
+        return count > 0 ? count : 0;
+    int rows = 0;
+    for (int i = 0; i < count; i++)
+        rows += row_widths[i] > 0 ? (row_widths[i] + cols - 1) / cols : 1;
+    return rows;
+}
+
 void ui_flush(void) { fflush(stdout); }
 
 int ui_columns(void) { return tty_columns(); }

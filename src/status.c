@@ -5,6 +5,7 @@
 #include <string.h>
 #include <sys/time.h>
 
+#include "tty.h"
 #include "ui.h"
 
 static const char *const FRAMES[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
@@ -20,9 +21,16 @@ static int     frame;
 static double  frame_at;
 static char   *label;
 
-static status_paint_fn below;
-static void           *below_ud;
-static int             caret_row; /* rows from the spinner row down to the caret */
+static status_paint_fn  below;
+static status_offset_fn below_offset;
+static void            *below_ud;
+static int              caret_row;  /* rows from the spinner row down to the caret */
+static int              painted;    /* a block is on screen */
+static int              spin_width; /* cells the spinner row occupies */
+
+/* Set when a resize arrives, cleared once the size has been quiet again. */
+static unsigned resize_epoch;
+static double   resize_at;
 
 static double now_seconds(void)
 {
@@ -33,10 +41,30 @@ static double now_seconds(void)
 
 double status_elapsed(void) { return now_seconds() - started; }
 
-void status_set_below(status_paint_fn paint_fn, void *ud)
+void status_set_below(status_paint_fn paint_fn, status_offset_fn offset_fn, void *ud)
 {
     below = paint_fn;
+    below_offset = offset_fn;
     below_ud = ud;
+}
+
+/* True while the window is still being dragged or zoomed.
+ *
+ * The erase walks up from the cursor by rows measured against the width read
+ * back from the terminal, which is only right when that width and the rows
+ * on screen agree. Mid-drag they need not: the multiplexer rewraps its grid and
+ * resizes the pty as separate steps, so a paint landing between the two climbs
+ * by a count for one layout while the other is on screen, and leaves the rows it
+ * failed to reach behind. Sitting out the burst keeps paints on the settled side
+ * of that split. */
+static int size_changing(void)
+{
+    unsigned epoch = tty_resize_epoch();
+    if (epoch != resize_epoch) {
+        resize_epoch = epoch;
+        resize_at = now_seconds();
+    }
+    return resize_at > 0 && (now_seconds() - resize_at) * 1000.0 < TTY_RESIZE_SETTLE_MS;
 }
 
 static void move(int count, char direction)
@@ -48,15 +76,35 @@ static void move(int count, char direction)
     ui_esc(esc);
 }
 
+/* Rows from the cursor up to the first row of the block, as the terminal shows
+ * them now. A resize rewraps what is on screen, so every row that contributes is
+ * re-measured against the current width instead of the width it was drawn at;
+ * walking up by the count from that paint would leave its top rows stranded.
+ *
+ * Without a block below, the cursor rests on the spinner row's last physical
+ * row. With one, the offset lands on the block's first row and one more step
+ * reaches the spinner row's last. */
+static int rows_above_caret(void)
+{
+    int cols = ui_columns();
+    int spin = spin_width ? ui_reflow_rows(&spin_width, 1, cols) : 0;
+    if (!below)
+        return spin > 0 ? spin - 1 : 0;
+    return spin + (below_offset ? below_offset(below_ud) : caret_row - 1);
+}
+
 /* Wipe the spinner row and everything the block painted below it, leaving the
- * cursor at the start of the spinner row. */
+ * cursor at the start of the spinner row. Emits without flushing so a caller can
+ * bracket the erase and the redraw that follows into one frame. */
 static void erase_block(void)
 {
     ui_esc("\x1b[?25l");
-    move(caret_row, 'A');
+    if (painted)
+        move(rows_above_caret(), 'A');
     ui_esc("\r\x1b[J");
     caret_row = 0;
-    ui_flush();
+    spin_width = 0;
+    painted = 0;
 }
 
 static void paint(void)
@@ -65,20 +113,27 @@ static void paint(void)
     char left[64];
     snprintf(left, sizeof left, "%s %.0fs", FRAMES[frame], elapsed);
 
+    ui_sync_begin();
     erase_block();
     ui_esc(ui_style(UI_DIM));
     ui_put(left);
+    spin_width = (int)ui_cells(left);
     if (label && *label) {
         ui_put(" · ");
-        /* Keep the spinner to one row so the next erase clears all of it. */
-        int budget = ui_columns() - (int)ui_cells(left) - 4;
+        /* Budget out the separator, the ellipsis, and one column at the margin:
+         * a row filled to the edge leaves the terminal holding a deferred wrap,
+         * which resolves into a second row that the next resize then rewraps. */
+        int budget = ui_columns() - spin_width - 3 - 1 - 1;
         if (budget < 1)
             budget = 1;
         size_t skip = 0;
         size_t fit = ui_wrap_row(label, (size_t)budget, &skip);
         ui_putn(label, fit);
-        if (label[fit])
+        spin_width += 3 + (int)ui_cells_n(label, fit);
+        if (label[fit]) {
             ui_put("…");
+            spin_width += 1;
+        }
     }
     ui_esc(ui_style(UI_RESET));
 
@@ -92,6 +147,8 @@ static void paint(void)
         caret_row = 1 + row;
         ui_esc("\x1b[?25h"); /* the caret marks where typing lands */
     }
+    painted = 1;
+    ui_sync_end();
     ui_flush();
 }
 
@@ -104,12 +161,14 @@ void status_begin(void)
     free(label);
     label = NULL;
     caret_row = 0;
+    spin_width = 0;
+    painted = 0;
     paint();
 }
 
 void status_tick(void)
 {
-    if (!visible)
+    if (!visible || size_changing())
         return;
     double t = now_seconds();
     if ((t - frame_at) * 1000.0 >= FRAME_MS) {
@@ -123,7 +182,10 @@ void status_pause(void)
 {
     if (!visible)
         return;
+    ui_sync_begin();
     erase_block();
+    ui_sync_end();
+    ui_flush();
     visible = 0;
 }
 
@@ -132,21 +194,25 @@ void status_resume(void)
     if (visible)
         return;
     visible = 1;
-    paint();
+    if (!size_changing())
+        paint();
 }
 
 void status_activity(const char *text)
 {
     free(label);
     label = text ? strdup(text) : NULL;
-    if (visible)
+    if (visible && !size_changing())
         paint();
 }
 
 void status_end(void)
 {
-    if (visible)
+    if (visible) {
+        ui_sync_begin();
         erase_block();
+        ui_sync_end();
+    }
     visible = 0;
     free(label);
     label = NULL;

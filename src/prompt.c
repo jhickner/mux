@@ -25,7 +25,10 @@ struct prompt {
     Repl         repl;
     struct frame frame;
     int          painted_rows; /* rows the last paint occupies, 0 when clean */
-    int          cursor_row;   /* where the terminal cursor sits within them */
+    int          painted_cols; /* the width it was painted at */
+    int          caret_row;    /* rows from the top of the block to the caret */
+    int          caret_col;
+    int          caret_frame_row; /* the caret's row within the frame */
     char        *history_path;
     prompt_live_fn live_command;
     void          *live_ud;
@@ -162,13 +165,52 @@ static int row_extent(const struct frame *f, int y)
     return last + 1;
 }
 
+static size_t queued_budget(int cols)
+{
+    return (size_t)(cols - 2 > 4 ? cols - 2 : 4);
+}
+
+/* Rows a line of `cells` cells occupies at this width. */
+static int rows_for(size_t cells, int cols)
+{
+    return cells ? (int)((cells - 1) / (size_t)cols) + 1 : 1;
+}
+
+/* Rows from the top of the painted block down to the caret, as the terminal
+ * shows them now. A resize rewraps what is on screen, so any painted row that
+ * no longer fits sits on more rows than it did when it was drawn; walking up by
+ * the old count would land inside the block and leave its top rows stranded. */
+static int caret_offset(const struct prompt *p, int cols)
+{
+    if (p->painted_rows == 0 || cols == p->painted_cols || p->painted_cols <= 0)
+        return p->caret_row;
+
+    int up = 0;
+    size_t budget = queued_budget(p->painted_cols);
+    for (int i = 0; i < p->queued_count; i++) {
+        const char *text = p->queued[i];
+        int first = 1;
+        while (*text || first) {
+            size_t skip = 0;
+            size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
+            up += rows_for(2 + ui_cells_n(text, row), cols); /* the "▌ " prefix */
+            text += row + skip;
+            first = 0;
+        }
+    }
+    for (int y = 0; y < p->caret_frame_row && y < p->frame.rows; y++)
+        up += rows_for((size_t)row_extent(&p->frame, y), cols);
+    return up + p->caret_col / cols;
+}
+
 /* Move the terminal cursor to the top-left of the painted block. */
 static void goto_origin(struct prompt *p)
 {
-    if (p->cursor_row > 0)
-        printf("\x1b[%dA", p->cursor_row);
+    int up = caret_offset(p, ui_columns());
+    if (up > 0)
+        printf("\x1b[%dA", up);
     fputs("\r", stdout);
-    p->cursor_row = 0;
+    p->caret_row = 0;
 }
 
 static void erase_block(struct prompt *p)
@@ -186,11 +228,6 @@ static void erase_block(struct prompt *p)
 static int caret_is_synthetic(const Repl *r)
 {
     return r->cursor >= r->len || r->buf[r->cursor] == '\n';
-}
-
-static size_t queued_budget(int cols)
-{
-    return (size_t)(cols - 2 > 4 ? cols - 2 : 4);
 }
 
 /* Rows the queued messages occupy once wrapped, which the block height depends
@@ -256,6 +293,8 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
     if (!p->frame.cells) {
         *rows_out = 1;
         *caret_row = 0;
+        p->painted_cols = cols;
+        p->caret_row = p->caret_col = p->caret_frame_row = 0;
         return;
     }
     repl_render(&p->repl, 0, 0, cols, true, draw_cell, &p->frame);
@@ -264,6 +303,13 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
 
     *caret_row += p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
     *caret_col = p->frame.have_cursor ? p->frame.cursor_x : 0;
+
+    /* Kept so the next erase can re-measure the block against a width that may
+     * have changed under it. */
+    p->painted_cols = cols;
+    p->caret_row = *caret_row;
+    p->caret_col = *caret_col;
+    p->caret_frame_row = p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
 
     paint_queued(p, cols);
 
@@ -320,7 +366,6 @@ static void repaint(struct prompt *p)
     fflush(stdout);
 
     p->painted_rows = rows;
-    p->cursor_row = caret_row;
 }
 
 /* ---------- the submitted block left in scrollback ---------- */
@@ -432,7 +477,7 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
             if (live)
                 return KEY_OK;
             p->painted_rows = 0;
-            p->cursor_row = 0;
+            p->caret_row = 0;
             fputs("\x1b[2J\x1b[H", stdout);
             fflush(stdout);
             return KEY_OK;
@@ -503,13 +548,25 @@ char *prompt_read(struct prompt *p)
     /* Whatever was typed during the last turn but never submitted carries over,
      * so the block is repainted rather than reset. */
     p->painted_rows = 0;
-    p->cursor_row = 0;
+    p->caret_row = 0;
     repaint(p);
 
+    int resizing = 0;
     for (;;) {
         tty_event ev;
-        if (!tty_read(&ev, -1))
+        /* Once the size stops changing, one repaint puts the block back. */
+        if (!tty_read(&ev, resizing ? TTY_RESIZE_SETTLE_MS : -1)) {
+            if (resizing) {
+                resizing = 0;
+                repaint(p);
+            }
             continue;
+        }
+        if (ev.key == TK_RESIZE) {
+            resizing = 1;
+            continue;
+        }
+        resizing = 0;
 
         switch (feed_key(p, &ev, 0)) {
         case KEY_EOF:
@@ -608,4 +665,10 @@ int prompt_live_key(void *ud, tty_event *ev)
 void prompt_live_paint(void *ud, int *rows, int *caret_row, int *caret_col)
 {
     paint_block(ud, rows, caret_row, caret_col);
+    ((struct prompt *)ud)->painted_rows = *rows;
+}
+
+int prompt_live_offset(void *ud)
+{
+    return caret_offset(ud, ui_columns());
 }

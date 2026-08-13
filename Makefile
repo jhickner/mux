@@ -22,11 +22,20 @@ $(BIN): $(OBJ)
 palette: tools/palette.c src/vendor/colors.h
 	$(CC) $(CFLAGS) -Isrc/vendor -o $@ tools/palette.c
 
+spintest: tools/spintest.c src/status.o src/tty.o src/ui.o src/vendor/impl.o src/vendor/cJSON.o
+	$(CC) $(CFLAGS) -Isrc -o $@ $^
+
+reflowtest: tools/reflowtest.c src/ui.o src/tty.o src/vendor/impl.o src/vendor/cJSON.o
+	$(CC) $(CFLAGS) -Isrc -o $@ $^
+
+check: reflowtest
+	./reflowtest
+
 install: $(BIN)
 	install -d $(PREFIX)/bin
 	install -m 755 $(BIN) $(PREFIX)/bin/$(BIN)
 
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN) palette src/*.o.tmp src/vendor/*.o.tmp
+	rm -f $(OBJ) $(DEP) $(BIN) palette spintest reflowtest src/*.o.tmp src/vendor/*.o.tmp
 
-.PHONY: all install clean
+.PHONY: all install clean check

@@ -15,7 +15,13 @@ void   status_end(void);
  * the terminal cursor at the end of its last row, and reports how many rows it
  * drew and where the caret belongs within them. NULL for no block. */
 typedef void (*status_paint_fn)(void *ud, int *rows, int *caret_row, int *caret_col);
-void   status_set_below(status_paint_fn paint, void *ud);
+
+/* Asked, when the block is about to be erased, how many rows now separate its
+ * first row from the caret: a resize rewraps the block on screen, so this can
+ * be more than the last paint reported. NULL to trust the paint. */
+typedef int  (*status_offset_fn)(void *ud);
+
+void   status_set_below(status_paint_fn paint, status_offset_fn offset, void *ud);
 
 /* Redraw the spinner and elapsed time; cheap enough to call on every poll. */
 void   status_tick(void);

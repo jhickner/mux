@@ -46,6 +46,19 @@ int  tty_read(tty_event *ev, int timeout_ms);
 /* Nonzero while the terminal is in raw mode. */
 int  tty_is_raw(void);
 
+/* Bumped for every size change the terminal reports, whether or not the event
+ * is ever read, so a caller that only repaints can tell the window moved. */
+unsigned tty_resize_epoch(void);
+
+/* A drag or a zoom delivers a burst of size changes. Callers that redraw on
+ * resize coalesce the burst by waiting this long for the size to go quiet.
+ *
+ * Sized by measurement, not feel: a multiplexer reports the new width before it
+ * has finished rewrapping the rows already on screen, and redrawing inside that
+ * gap strands them. Stranding was still reproducible at 120ms and stopped at
+ * 200ms, so this leaves margin over the point where it cleared. */
+#define TTY_RESIZE_SETTLE_MS 250
+
 /* Current terminal width in columns, floored at 20. */
 int  tty_columns(void);
 

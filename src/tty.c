@@ -24,9 +24,15 @@ static volatile sig_atomic_t got_winch;
 static unsigned char pending[4096];
 static size_t pending_len, pending_pos;
 
-static void on_winch(int sig) { (void)sig; got_winch = 1; }
+/* Counted rather than flagged, so a caller that only repaints still sees that
+ * the window moved even when nothing is draining the input queue. */
+static volatile sig_atomic_t winch_count;
+
+static void on_winch(int sig) { (void)sig; got_winch = 1; winch_count++; }
 
 int tty_is_raw(void) { return in_raw; }
+
+unsigned tty_resize_epoch(void) { return (unsigned)winch_count; }
 
 int tty_columns(void)
 {

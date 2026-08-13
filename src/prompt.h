@@ -28,6 +28,10 @@ char *prompt_read(struct prompt *p);
 int  prompt_live_key(void *ud, tty_event *ev);
 void prompt_live_paint(void *ud, int *rows, int *caret_row, int *caret_col);
 
+/* Rows from the block's first row down to the caret as the terminal shows them
+ * now, which a resize can grow past what the last paint reported. */
+int  prompt_live_offset(void *ud);
+
 /* Consulted for each line submitted while a turn runs, before it is queued.
  * Return 1 to claim the line and have it dropped from the queue — for the few
  * commands that make sense mid-turn. The callee owns echoing and display. */
