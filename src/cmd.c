@@ -75,6 +75,7 @@ static void show_help(void)
     help_row("enter", "submit prompt, or queue it while a turn is running");
     help_row("ctrl-j", "insert a newline");
     help_row("tab", "accept the completion");
+    help_row("@", "complete a file path from the working directory");
     help_row("up / down", "browse history");
     help_row("ctrl-r", "search history");
     help_row("esc", "interrupt the model or a running tool");
