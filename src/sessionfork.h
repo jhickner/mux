@@ -22,4 +22,9 @@ enum fork_where {
  * Returns 1 on success; reports its own errors. */
 int sessionfork(const struct session *s, enum fork_where where);
 
+/* When this agent is itself running in a linked worktree, print the command
+ * that reopens this conversation there. Call on the way out, while the display
+ * is still up. Does nothing anywhere else. */
+void sessionfork_exit_note(const struct session *s);
+
 #endif /* SESSIONFORK_H */

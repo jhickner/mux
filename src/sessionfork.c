@@ -211,3 +211,48 @@ int sessionfork(const struct session *s, enum fork_where where)
     ui_flush();
     return 1;
 }
+
+/* ---------- the note on the way out ---------- */
+
+/* A linked worktree keeps its .git as a file pointing back at the main
+ * repository, where an ordinary checkout has a directory there. */
+static int worktree_root(const char *cwd, char *out, size_t size)
+{
+    char *rev[] = {"git", "-C", (char *)cwd, "rev-parse", "--show-toplevel", NULL};
+    if (!capture_line(rev, out, size))
+        return 0;
+
+    char dotgit[4200];
+    snprintf(dotgit, sizeof dotgit, "%s/.git", out);
+    struct stat st;
+    return stat(dotgit, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+void sessionfork_exit_note(const struct session *s)
+{
+    const char *id = session_id(s);
+    if (!id || !*id || !session_can_resume(s))
+        return;
+
+    char top[4096];
+    if (!worktree_root(session_cwd(s), top, sizeof top))
+        return;
+
+    char cmd[9000];
+    int n = snprintf(cmd, sizeof cmd, "cd %s && %s -b %s --session %s", top, program,
+                     session_backend(s), id);
+    const char *model = session_model(s);
+    if (n > 0 && (size_t)n < sizeof cmd && strcmp(model, "default") != 0)
+        snprintf(cmd + n, sizeof cmd - (size_t)n, " -m %s", model);
+
+    char branch[128];
+    char *rev[] = {"git", "-C", top, "rev-parse", "--abbrev-ref", "HEAD", NULL};
+    if (capture_line(rev, branch, sizeof branch))
+        ui_bar(ui_style(UI_DIM), "worktree \xc2\xb7 %s", branch);
+    else
+        ui_bar(ui_style(UI_DIM), "worktree");
+    ui_bar(ui_style(UI_DIM), "resume this conversation here:");
+    /* No gutter bar on the command itself: it has to survive a copy-paste. */
+    ui_printf("%s%s%s\n", ui_style(UI_CODE), cmd, ui_style(UI_RESET));
+    ui_flush();
+}

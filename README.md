@@ -61,7 +61,8 @@ block in the history above.
 - Fork a conversation into a second agent: a git worktree off HEAD carrying your
   uncommitted changes, opened in a tmux split or window, resumed on the same
   context. The fork commands run immediately even with a turn in flight, so a
-  second agent can be started while the first is still working
+  second agent can be started while the first is still working. Quitting inside
+  a worktree prints the command that reopens that conversation there
 - One-shot mode: `simple-agent "question"` prints the answer and exits; piped
   output is plain text with no spinner or footer
 

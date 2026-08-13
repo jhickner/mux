@@ -249,6 +249,7 @@ int main(int argc, char **argv)
     session_set_typeahead(NULL, NULL);
     status_set_below(NULL, NULL, NULL);
     prompt_free(prompt);
+    sessionfork_exit_note(session);
     session_free(session);
     ui_raw(0);
     tty_raw_end();
