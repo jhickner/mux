@@ -28,6 +28,12 @@ char *prompt_read(struct prompt *p);
 int  prompt_live_key(void *ud, tty_event *ev);
 void prompt_live_paint(void *ud, int *rows, int *caret_row, int *caret_col);
 
+/* Consulted for each line submitted while a turn runs, before it is queued.
+ * Return 1 to claim the line and have it dropped from the queue — for the few
+ * commands that make sense mid-turn. The callee owns echoing and display. */
+typedef int (*prompt_live_fn)(void *ud, const char *line);
+void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud);
+
 /* The oldest message queued during a turn, or NULL when none is waiting. The
  * caller owns it and is responsible for echoing it. */
 char *prompt_take_queued(struct prompt *p);

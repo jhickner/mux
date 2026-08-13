@@ -7,6 +7,7 @@
 #include "banner.h"
 #include "pick.h"
 #include "session.h"
+#include "sessionfork.h"
 #include "sessionlist.h"
 #include "ui.h"
 
@@ -15,6 +16,10 @@ const ReplCommand CMD_TABLE[] = {
     {"/clear", "alias for /new", NULL},
     {"/model", "switch model", "[name]"},
     {"/resume", "resume a past conversation", NULL},
+    {"/fh", "fork into a horizontal tmux split", NULL},
+    {"/fs", "alias for /fh", NULL},
+    {"/fv", "fork into a vertical tmux split", NULL},
+    {"/fw", "fork into a tmux window", NULL},
     {"/session", "show this session's info and totals", NULL},
     {"/copy", "copy last response to clipboard", NULL},
     {"/help", "show this help", NULL},
@@ -69,7 +74,7 @@ static void show_help(void)
     help_heading("shortcuts");
     help_row("enter", "submit prompt, or queue it while a turn is running");
     help_row("ctrl-j", "insert a newline");
-    help_row("tab", "accept the completion or suggestion");
+    help_row("tab", "accept the completion");
     help_row("up / down", "browse history");
     help_row("ctrl-r", "search history");
     help_row("esc", "interrupt the model or a running tool");
@@ -194,23 +199,78 @@ static void do_copy(struct session *s)
     ui_flush();
 }
 
-enum cmd_result cmd_dispatch(struct session *s, const char *line)
+/* Split "/name rest" into `name` and a pointer to the argument. Returns 0 when
+ * the line is not a command this table could own. */
+static int split_command(const char *line, char *name, size_t size, const char **arg)
 {
     if (*line != '/')
-        return CMD_NOT_A_COMMAND;
+        return 0;
 
-    /* Split "/name rest". */
     const char *space = strchr(line, ' ');
     size_t name_len = space ? (size_t)(space - line) : strlen(line);
-    const char *arg = space ? space + 1 : "";
-    while (*arg == ' ')
-        arg++;
+    if (name_len >= size)
+        return 0;
 
-    char name[32];
-    if (name_len >= sizeof name)
-        return CMD_NOT_A_COMMAND;
+    const char *rest = space ? space + 1 : "";
+    while (*rest == ' ')
+        rest++;
+    *arg = rest;
+
     memcpy(name, line, name_len);
     name[name_len] = '\0';
+    return 1;
+}
+
+/* The fork commands and where each one puts the new agent. */
+static int fork_target(const char *name, enum fork_where *where)
+{
+    static const struct {
+        const char     *name;
+        enum fork_where where;
+    } TARGETS[] = {
+        {"/fh", FORK_SPLIT_H},
+        {"/fs", FORK_SPLIT_H},
+        {"/fv", FORK_SPLIT_V},
+        {"/fw", FORK_WINDOW},
+    };
+
+    for (size_t i = 0; i < sizeof TARGETS / sizeof *TARGETS; i++) {
+        if (strcmp(name, TARGETS[i].name) == 0) {
+            if (where)
+                *where = TARGETS[i].where;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Forking only reads the session id and the git tree, so it is safe with a turn
+ * in flight. Anything that restarts the CLI is not. */
+int cmd_is_live(const char *line)
+{
+    char name[32];
+    const char *arg;
+    if (!split_command(line, name, sizeof name, &arg))
+        return 0;
+    return fork_target(name, NULL);
+}
+
+void cmd_dispatch_live(struct session *s, const char *line)
+{
+    char name[32];
+    const char *arg;
+    enum fork_where where;
+    if (split_command(line, name, sizeof name, &arg) && fork_target(name, &where))
+        sessionfork(s, where);
+}
+
+enum cmd_result cmd_dispatch(struct session *s, const char *line)
+{
+    char name[32];
+    const char *arg;
+    enum fork_where where;
+    if (!split_command(line, name, sizeof name, &arg))
+        return CMD_NOT_A_COMMAND;
 
     if (!strcmp(name, "/help")) {
         show_help();
@@ -220,6 +280,8 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line)
         do_model(s, arg);
     } else if (!strcmp(name, "/resume")) {
         cmd_resume(s);
+    } else if (fork_target(name, &where)) {
+        sessionfork(s, where);
     } else if (!strcmp(name, "/session")) {
         session_report(s);
     } else if (!strcmp(name, "/copy")) {

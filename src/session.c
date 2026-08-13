@@ -471,6 +471,12 @@ int session_set_model(struct session *s, const char *model)
     return 0;
 }
 
+void session_adopt_id(struct session *s, const char *id)
+{
+    if (s && id && *id)
+        snprintf(s->id, sizeof s->id, "%s", id);
+}
+
 int session_resume(struct session *s, const char *id)
 {
     if (!restart(s, id))

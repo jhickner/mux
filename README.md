@@ -51,6 +51,10 @@ block in the history above.
 - Interrupt an in-flight turn without losing the session
 - Model switching mid-conversation, carrying context across the restart
 - Resume any past conversation for the current directory
+- Fork a conversation into a second agent: a git worktree off HEAD carrying your
+  uncommitted changes, opened in a tmux split or window, resumed on the same
+  context. The fork commands run immediately even with a turn in flight, so a
+  second agent can be started while the first is still working
 - One-shot mode: `simple-agent "question"` prints the answer and exits; piped
   output is plain text with no spinner or footer
 
@@ -61,6 +65,9 @@ block in the history above.
 | `/new`, `/clear` | Start a fresh conversation |
 | `/model [name]` | Switch model; no argument opens a picker |
 | `/resume` | Pick a past conversation for this directory |
+| `/fh`, `/fs` | Fork into a horizontal tmux split, in a new worktree |
+| `/fv` | Fork into a vertical tmux split, in a new worktree |
+| `/fw` | Fork into a tmux window, in a new worktree |
 | `/session` | Model, auth, session id, cwd, turns, context, cost |
 | `/copy` | Copy the last response to the clipboard |
 | `/help` | Command and key reference |
@@ -75,8 +82,8 @@ invoked (`/todo buy milk`, `/w what do I know about X`).
 |---|---|
 | `enter` | Submit, or queue the message when a turn is running |
 | `ctrl-j` | Insert a newline |
-| `tab` | Accept the completion or inline suggestion |
-| `up` / `down` | Browse history |
+| `tab` | Accept the completion |
+| `up` / `down` | Browse history; with a message queued, `up` recalls it for editing |
 | `ctrl-r` | Reverse history search |
 | `esc` | Interrupt the model or a running tool |
 | `ctrl-c` | Clear the current line, or interrupt while a turn runs |
@@ -96,6 +103,7 @@ simple-agent [-m model] [-C dir] [-s] [-r] [prompt...]
   -C dir     working directory for the agent's tools
   -s         safe mode: skip skills, CLAUDE.md, MCP servers, hooks
   -r         --resume: pick a past conversation to continue
+  --session id  resume a specific conversation (used by the fork commands)
   -h         this help
 ```
 
@@ -136,3 +144,9 @@ Requires the `claude` CLI on `PATH`.
 - `claude_stop()` signals immediately instead of waiting out Node's ~300ms
   unwind, which an interactive caller feels on quit
 - the read poll is 80ms so the abort predicate can double as a UI tick
+
+`repl.h` diverges in one place:
+
+- a `suggest_off` flag on `Repl` suppresses the inline history autosuggestion;
+  `repl_suggestion()` returns NULL when it is set. History browsing and Ctrl-R
+  search are unaffected

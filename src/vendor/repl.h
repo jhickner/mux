@@ -131,6 +131,7 @@ typedef struct {
     bool  cand_is_command;       // true: slash command (append a space on accept)
     int   sel;                   // index into cands[]; -1 = nothing highlighted
     bool  dropdown_open;
+    bool  suggest_off;           // suppress the inline history autosuggestion
 
     // Reverse-incremental history search (Ctrl-R). While active, input edits the
     // query and the matched history entry is previewed; Enter/motion accepts it,
@@ -513,6 +514,7 @@ const char *repl_arg_hint(const Repl *r) {
 // current buffer is a prefix of, or NULL. Only offered with the cursor at the
 // end of a non-empty live line and no dropdown/search in the way.
 const char *repl_suggestion(const Repl *r) {
+    if (r->suggest_off) return NULL;
     if (r->searching || r->dropdown_open) return NULL;
     if (r->len == 0 || r->cursor != r->len || r->hist_pos != -1) return NULL;
     for (int i = r->hist_count - 1; i >= 0; i--) {

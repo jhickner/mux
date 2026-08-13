@@ -9,6 +9,7 @@
 #include "cmd.h"
 #include "prompt.h"
 #include "session.h"
+#include "sessionfork.h"
 #include "status.h"
 #include "tty.h"
 #include "ui.h"
@@ -43,9 +44,24 @@ static void usage(void)
             "  -C dir     working directory for the agent's tools\n"
             "  -s         safe mode: skip skills, CLAUDE.md, MCP servers, hooks\n"
             "  -r         --resume: pick a past conversation to continue\n"
+            "  --session id  resume a specific conversation (used by the fork commands)\n"
             "  -h         this help\n"
             "\n"
             "With a prompt on the command line, answer it and exit.\n");
+}
+
+/* A command submitted while a turn is streaming. The spinner and the live
+ * prompt block are lifted out of the way so the command's own output lands in
+ * scrollback rather than being overwritten. */
+static int live_command(void *ud, const char *line)
+{
+    if (!cmd_is_live(line))
+        return 0;
+    status_pause();
+    prompt_echo_message(line);
+    cmd_dispatch_live(ud, line);
+    status_resume();
+    return 1;
 }
 
 int main(int argc, char **argv)
@@ -55,12 +71,14 @@ int main(int argc, char **argv)
         {"dir",     required_argument, NULL, 'C'},
         {"safe",    no_argument,       NULL, 's'},
         {"resume",  no_argument,       NULL, 'r'},
+        {"session", required_argument, NULL, 'S'}, /* long only: no -S */
         {"help",    no_argument,       NULL, 'h'},
         {NULL,      0,                 NULL, 0},
     };
 
     const char *model = NULL;
     const char *dir = NULL;
+    const char *session_arg = NULL;
     int safe_mode = 0;
     int resume = 0;
     int opt;
@@ -71,9 +89,12 @@ int main(int argc, char **argv)
         case 'C': dir = optarg; break;
         case 's': safe_mode = 1; break;
         case 'r': resume = 1; break;
+        case 'S': session_arg = optarg; break;
         default:  usage(); return opt == 'h' ? 0 : 2;
         }
     }
+
+    sessionfork_set_program(argv[0]);
 
     /* The picker needs the terminal, so it cannot combine with one-shot mode. */
     if (resume && optind < argc) {
@@ -94,8 +115,11 @@ int main(int argc, char **argv)
 
     ui_init();
     struct session *session = session_new(cwd, model);
-    if (session)
+    if (session) {
         session_set_customizations(session, !safe_mode);
+        /* Set before start: the CLI then comes up already resumed. */
+        session_adopt_id(session, session_arg);
+    }
     if (!session || !session_start(session)) {
         fprintf(stderr, APP ": could not start the claude CLI — is it on PATH?\n");
         return 1;
@@ -146,6 +170,7 @@ int main(int argc, char **argv)
      * typed then is queued for the moment the turn ends. */
     session_set_typeahead(prompt_live_key, prompt);
     status_set_below(prompt_live_paint, prompt);
+    prompt_set_live_command(prompt, live_command, session);
 
     /* cmd_resume() prints the identity row itself when it adopts a session. */
     if (resume && cmd_resume(session))

@@ -27,6 +27,8 @@ struct prompt {
     int          painted_rows; /* rows the last paint occupies, 0 when clean */
     int          cursor_row;   /* where the terminal cursor sits within them */
     char        *history_path;
+    prompt_live_fn live_command;
+    void          *live_ud;
     char       **queued;       /* lines submitted while a turn was running */
     int          queued_count;
     int          queued_cap;
@@ -186,23 +188,52 @@ static int caret_is_synthetic(const Repl *r)
     return r->cursor >= r->len || r->buf[r->cursor] == '\n';
 }
 
-/* Messages queued during a turn, shown above the input as dim bars so the user
- * can see what is waiting to run. One row each. */
-static void paint_queued(const struct prompt *p, int cols)
+static size_t queued_budget(int cols)
 {
-    size_t budget = (size_t)(cols - 2 > 4 ? cols - 2 : 4);
+    return (size_t)(cols - 2 > 4 ? cols - 2 : 4);
+}
+
+/* Rows the queued messages occupy once wrapped, which the block height depends
+ * on. Must agree with paint_queued(). */
+static int queued_rows(const struct prompt *p, int cols)
+{
+    size_t budget = queued_budget(cols);
+    int rows = 0;
     for (int i = 0; i < p->queued_count; i++) {
         const char *text = p->queued[i];
-        size_t skip = 0;
-        size_t row = ui_wrap_row(text, budget, &skip);
-        fputs("\x1b[K", stdout);
-        fputs(ui_style(UI_DIM), stdout);
-        fputs(UI_BAR " ", stdout);
-        fwrite(text, 1, row, stdout);
-        if (text[row])
-            fputs("…", stdout);
-        fputs(ui_style(UI_RESET), stdout);
-        fputs("\r\n", stdout);
+        int first = 1;
+        while (*text || first) {
+            size_t skip = 0;
+            size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
+            rows++;
+            text += row + skip;
+            first = 0;
+        }
+    }
+    return rows;
+}
+
+/* Messages queued during a turn, shown above the input as dim bars so the user
+ * can see what is waiting to run. Wrapped the same way the history echo wraps
+ * them, so a long message reads the same before and after it runs. */
+static void paint_queued(const struct prompt *p, int cols)
+{
+    size_t budget = queued_budget(cols);
+    for (int i = 0; i < p->queued_count; i++) {
+        const char *text = p->queued[i];
+        int first = 1;
+        while (*text || first) {
+            size_t skip = 0;
+            size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
+            fputs("\x1b[K", stdout);
+            fputs(ui_style(UI_DIM), stdout);
+            fputs(UI_BAR " ", stdout);
+            fwrite(text, 1, row, stdout);
+            fputs(ui_style(UI_RESET), stdout);
+            fputs("\r\n", stdout);
+            text += row + skip;
+            first = 0;
+        }
     }
 }
 
@@ -216,8 +247,9 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
     if (rows < 1)
         rows = 1;
 
-    *rows_out = rows + p->queued_count;
-    *caret_row = p->queued_count;
+    int above = queued_rows(p, cols);
+    *rows_out = rows + above;
+    *caret_row = above;
     *caret_col = 0;
 
     frame_size(&p->frame, rows, cols);
@@ -321,6 +353,9 @@ struct prompt *prompt_new(const ReplCommand *commands, int command_count)
     if (!p)
         return NULL;
     repl_init(&p->repl, commands, command_count);
+    /* History stays available through up/down and Ctrl-R; only the inline ghost
+     * text is off. */
+    p->repl.suggest_off = true;
     return p;
 }
 
@@ -521,13 +556,44 @@ char *prompt_take_queued(struct prompt *p)
     return line;
 }
 
+/* Up on an empty line pulls the newest queued message back into the editor
+ * instead of browsing history: while something is waiting to run, that pending
+ * message is what the user means to change. Submitting re-queues it. */
+static int recall_queued(struct prompt *p)
+{
+    if (p->queued_count == 0)
+        return 0;
+    const char *live = repl_line(&p->repl);
+    if (live && *live)
+        return 0;
+
+    char *line = p->queued[--p->queued_count];
+    repl_reset(&p->repl);
+    repl_insert_text(&p->repl, line);
+    free(line);
+    return 1;
+}
+
+void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud)
+{
+    p->live_command = fn;
+    p->live_ud = ud;
+}
+
 int prompt_live_key(void *ud, tty_event *ev)
 {
     struct prompt *p = ud;
-    switch (feed_key(p, ev, 1)) {
-    case KEY_SUBMIT:
-        queue_push(p, take_line(p));
+    if (ev->key == TK_UP && recall_queued(p))
         return 0;
+    switch (feed_key(p, ev, 1)) {
+    case KEY_SUBMIT: {
+        char *line = take_line(p);
+        if (line && p->live_command && p->live_command(p->live_ud, line))
+            free(line);
+        else
+            queue_push(p, line);
+        return 0;
+    }
     case KEY_EOF:
     case KEY_CANCEL:
         return 1;

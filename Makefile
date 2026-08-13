@@ -27,6 +27,6 @@ install: $(BIN)
 	install -m 755 $(BIN) $(PREFIX)/bin/$(BIN)
 
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN) palette
+	rm -f $(OBJ) $(DEP) $(BIN) palette src/*.o.tmp src/vendor/*.o.tmp
 
 .PHONY: all install clean

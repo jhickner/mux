@@ -44,6 +44,10 @@ int session_set_model(struct session *s, const char *model);
 /* Restart on a past session id, adopting its context. */
 int session_resume(struct session *s, const char *id);
 
+/* Adopt a session id before session_start(), so the CLI comes up already
+ * resumed instead of being spawned twice. */
+void session_adopt_id(struct session *s, const char *id);
+
 const char *session_model(const struct session *s);
 const char *session_id(const struct session *s);
 const char *session_cwd(const struct session *s);
