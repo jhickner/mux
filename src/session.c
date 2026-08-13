@@ -8,6 +8,7 @@
 #include "filediff.h"
 #include "md.h"
 #include "status.h"
+#include "toolstyle.h"
 #include "tty.h"
 #include "ui.h"
 #include "vendor/agents/backend.h"
@@ -32,6 +33,15 @@ struct session {
     int      customizations; /* load the user's skills, CLAUDE.md, MCP, ... */
     int      after_activity; /* last thing printed was a tool/thinking row  */
     int      after_tool;     /* ... and specifically a tool call block      */
+    int      after_collapse; /* ... and specifically a collapsed tool row   */
+
+    /* The run of collapsed calls sharing the row above the cursor. */
+    struct {
+        char  tool[64];
+        char *line;    /* the row as printed, before styling */
+        int   columns; /* the width it was fitted to         */
+        int   onscreen;
+    } cluster;
 };
 
 /* ---------- small helpers ---------- */
@@ -193,17 +203,22 @@ static void print_activity(const char *marker, const char *text, enum ui_role ro
     ui_put("\n");
 }
 
+static void tool_tag(const char *name, char *out, size_t size)
+{
+    size_t t = 0;
+    out[t++] = '[';
+    for (const char *p = name; *p && t + 2 < size; p++)
+        out[t++] = (*p >= 'A' && *p <= 'Z') ? (char)(*p + 32) : *p;
+    out[t++] = ']';
+    out[t] = '\0';
+}
+
 /* Render a tool call as "[bash] <command>": the tag in its own color, the full
  * argument in normal weight so it stands out, wrapped under the tag. */
 static void print_tool_call(const char *name, const char *arg)
 {
     char tag[64];
-    size_t t = 0;
-    tag[t++] = '[';
-    for (const char *p = name; *p && t + 2 < sizeof tag; p++)
-        tag[t++] = (*p >= 'A' && *p <= 'Z') ? (char)(*p + 32) : *p;
-    tag[t++] = ']';
-    tag[t] = '\0';
+    tool_tag(name, tag, sizeof tag);
 
     int indent = (int)ui_cells(tag) + 1;
     int columns = ui_columns();
@@ -233,6 +248,92 @@ static void print_tool_call(const char *name, const char *arg)
         p += row + skip;
         first = 0;
     }
+}
+
+/* ---------- collapsed tool rows ---------- */
+
+/* A call that only looks at the workspace is worth a row, not a block: the tag
+ * and its argument dimmed, no output preview, and a run of calls to the same
+ * tool listed together on one row.
+ *
+ * The row grows by being written again over itself. That works because every
+ * print here happens with the status block lifted, which leaves the cursor at
+ * the start of the row directly below the row to replace — and because the row
+ * is kept inside the terminal width, so it never wrapped into two. */
+
+static void cluster_forget(struct session *s)
+{
+    free(s->cluster.line);
+    s->cluster.line = NULL;
+    s->cluster.tool[0] = '\0';
+    s->cluster.onscreen = 0;
+}
+
+/* Cells the row may fill: one short of the width so the terminal is never left
+ * holding a deferred wrap, and one more in hand for the ellipsis. */
+static int cluster_budget(void)
+{
+    int budget = ui_columns() - 2;
+    return budget < 8 ? 8 : budget;
+}
+
+static void cluster_start(struct session *s, const char *name, const char *arg)
+{
+    char tag[64];
+    tool_tag(name, tag, sizeof tag);
+
+    int budget = cluster_budget() - (int)ui_cells(tag) - 1;
+    if (budget < 8)
+        budget = 8;
+
+    size_t skip = 0;
+    size_t fit = arg && *arg ? ui_wrap_row(arg, (size_t)budget, &skip) : 0;
+
+    char row[4096];
+    snprintf(row, sizeof row, "%s %.*s%s", tag, (int)fit, arg ? arg : "",
+             arg && arg[fit] ? "…" : "");
+
+    cluster_forget(s);
+    snprintf(s->cluster.tool, sizeof s->cluster.tool, "%s", name);
+    s->cluster.line = strdup(row);
+    s->cluster.columns = ui_columns();
+}
+
+/* List another call on the open row. Fails when the row belongs to another
+ * tool, was fitted to another width, or has no room left. */
+static int cluster_extend(struct session *s, const char *name, const char *arg)
+{
+    if (!s->cluster.line || !s->after_collapse || strcmp(s->cluster.tool, name) != 0 ||
+        s->cluster.columns != ui_columns())
+        return 0;
+
+    char row[4096];
+    snprintf(row, sizeof row, "%s, %s", s->cluster.line, arg ? arg : "");
+    if ((int)ui_cells(row) > cluster_budget())
+        return 0;
+
+    free(s->cluster.line);
+    s->cluster.line = strdup(row);
+    return 1;
+}
+
+static void cluster_paint(struct session *s)
+{
+    if (!s->cluster.line)
+        return;
+    size_t tag = strcspn(s->cluster.line, "]");
+    if (s->cluster.line[tag])
+        tag++;
+
+    if (s->cluster.onscreen)
+        ui_esc("\x1b[1A\r\x1b[K");
+    ui_esc(ui_style(UI_TOOLDIM));
+    ui_putn(s->cluster.line, tag);
+    ui_esc(ui_style(UI_DIM));
+    ui_put(s->cluster.line + tag);
+    ui_esc(ui_style(UI_RESET));
+    ui_put("\n");
+    s->cluster.onscreen = 1;
 }
 
 /* Preview of a tool's output: the first few lines, dimmed, with a count of
@@ -321,8 +422,10 @@ static void on_event(void *ud, const backend_event *ev)
         status_resume();
         replace(&s->last_block, ev->text);
         append(&s->streamed, ev->text);
+        cluster_forget(s);
         s->after_activity = 0;
         s->after_tool = 0;
+        s->after_collapse = 0;
         break;
 
     case BACKEND_EV_THINKING:
@@ -331,22 +434,36 @@ static void on_event(void *ud, const backend_event *ev)
         status_pause();
         print_activity("\xe2\x9c\xbb", ev->text, UI_DIM); /* ✻ */
         status_resume();
+        cluster_forget(s);
         s->after_activity = 1;
         s->after_tool = 0;
+        s->after_collapse = 0;
         break;
 
     case BACKEND_EV_TOOL: {
         const char *name = ev->name ? ev->name : "?";
         char arg[4096];
         tool_argument(s, ev, arg, sizeof arg);
+        int collapsed = toolstyle_collapses(name, ev->input_json, ev->arg);
+
         status_pause();
-        if (s->after_tool) /* one blank row between consecutive tool blocks */
-            ui_put("\n");
-        print_tool_call(name, arg);
+        if (collapsed) {
+            if (!cluster_extend(s, name, arg)) {
+                if (s->after_tool && !s->after_collapse) /* clear of the block above */
+                    ui_put("\n");
+                cluster_start(s, name, arg);
+            }
+            cluster_paint(s);
+        } else {
+            cluster_forget(s);
+            if (s->after_tool) /* one blank row between consecutive tool blocks */
+                ui_put("\n");
+            print_tool_call(name, arg);
+        }
         status_resume();
 
         char path[4096];
-        if (tool_path(s, ev->input_json, path, sizeof path))
+        if (!collapsed && tool_path(s, ev->input_json, path, sizeof path))
             filediff_snapshot(path);
         else
             filediff_clear();
@@ -356,16 +473,21 @@ static void on_event(void *ud, const backend_event *ev)
         status_activity(label);
         s->after_activity = 1;
         s->after_tool = 1;
+        s->after_collapse = collapsed;
         break;
     }
 
     case BACKEND_EV_TOOL_RESULT:
-        status_pause();
-        /* A tool that changed the file speaks for itself; one that did not (a
-         * read, a failed edit) still needs its own output shown. */
-        if (!filediff_render())
-            print_tool_output(ev->text);
-        status_resume();
+        /* A collapsed call has already said everything it is going to; leaving
+         * the row untouched is also what keeps the next one able to rewrite it. */
+        if (!s->after_collapse) {
+            status_pause();
+            /* A tool that changed the file speaks for itself; one that did not
+             * (a read, a failed edit) still needs its own output shown. */
+            if (!filediff_render())
+                print_tool_output(ev->text);
+            status_resume();
+        }
         status_activity(NULL);
         s->after_activity = 1;
         s->after_tool = 1;
@@ -440,6 +562,7 @@ void session_free(struct session *s)
     free(s->last_reply);
     free(s->last_block);
     free(s->streamed);
+    free(s->cluster.line);
     free(s);
 }
 
@@ -591,6 +714,8 @@ int session_turn(struct session *s, const char *text)
     replace(&s->streamed, NULL);
     s->after_activity = 0;
     s->after_tool = 0;
+    s->after_collapse = 0;
+    cluster_forget(s);
     double started = now_seconds();
     if (!s->quiet)
         status_begin();

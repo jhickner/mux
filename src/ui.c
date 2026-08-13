@@ -32,6 +32,7 @@ static const struct {
     [UI_ERROR]   = { NULL, COLOR_UI_MSG_ERROR },
     [UI_OK]      = { NULL, COLOR_BASE11 },
     [UI_TOOL]    = { NULL, COLOR_BASE10 },
+    [UI_TOOLDIM] = { "2",  COLOR_BASE10 },
 };
 
 static char styles[UI_RESET][32];
