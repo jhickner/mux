@@ -47,7 +47,9 @@ typedef struct {
                                     {0} default) keeps the sandboxed behaviour.    */
 } claude_opts;
 
-/* Start a persistent headless claude process. Returns NULL on failure. */
+/* Start a persistent headless claude process and prewarm it in the background.
+ * Returns once the child and worker exist; the first operation waits if startup
+ * is still in progress. */
 claude_client *claude_start(const claude_opts *opts);
 
 /*
@@ -161,6 +163,8 @@ void claude_stop(claude_client *c);
 #include <signal.h>
 #include <poll.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <sys/wait.h>
 #include "cJSON.h"
 
@@ -189,7 +193,13 @@ struct claude_client {
     claude_result *meta;      /* filled from the in-flight turn's result event */
     char *buf;                /* line-assembly buffer for out_fd       */
     size_t len, cap;
+    pthread_t warm_thread;
+    int warm_joinable;
+    atomic_int warm_state;    /* 0 while starting, 1 ready, -1 failed */
 };
+
+static void *cl_warm(void *arg);
+static int cl_await_ready(claude_client *c);
 
 void claude_set_verbose(claude_client *c, int on) { if (c) c->verbose = on; }
 
@@ -328,6 +338,11 @@ claude_client *claude_start(const claude_opts *opts) {
     c->err_fd = err_pipe[0];
     /* Never block the parent on the child's diagnostics. */
     fcntl(c->err_fd, F_SETFL, O_NONBLOCK);
+    atomic_init(&c->warm_state, 0);
+    if (!pthread_create(&c->warm_thread, NULL, cl_warm, c))
+        c->warm_joinable = 1;
+    else
+        cl_warm(c);             /* rare resource failure: retain old semantics */
     return c;
 }
 
@@ -336,7 +351,9 @@ void claude_set_abort_check(claude_client *c, int (*cb)(void)) {
 }
 
 const char *claude_session_id(claude_client *c) {
-    return (c && c->session_id[0]) ? c->session_id : NULL;
+    if (!c || atomic_load_explicit(&c->warm_state, memory_order_acquire) != 1)
+        return NULL;
+    return c->session_id[0] ? c->session_id : NULL;
 }
 
 /* Capture session_id from any event that carries one. */
@@ -542,6 +559,92 @@ static int cl_write_json(claude_client *c, cJSON *msg) {
     return 1;
 }
 
+/* Read one complete JSONL message during startup. The worker is the only stdout
+ * reader until initialization completes, so it can safely leave any following
+ * bytes in the same buffer the normal turn loop uses. */
+static int cl_warm_read(claude_client *c, cJSON **out) {
+    *out = NULL;
+    for (;;) {
+        char *nl = memchr(c->buf, '\n', c->len);
+        if (nl) {
+            size_t n = (size_t)(nl - c->buf);
+            if (n && c->buf[n - 1] == '\r') n--;
+            char save = c->buf[n]; c->buf[n] = '\0';
+            *out = n ? cJSON_Parse(c->buf) : NULL;
+            c->buf[n] = save;
+            size_t used = (size_t)(nl + 1 - c->buf);
+            memmove(c->buf, c->buf + used, c->len - used);
+            c->len -= used;
+            if (*out) return 1;
+            continue;
+        }
+
+        struct pollfd pfds[2] = {
+            { c->out_fd, POLLIN, 0 }, { c->err_fd, POLLIN, 0 }
+        };
+        int pr = poll(pfds, 2, CL_TICK_MS);
+        if (pr < 0) { if (errno == EINTR) continue; return 0; }
+        if (pfds[1].revents) cl_drain_stderr(c);
+        if (!(pfds[0].revents & (POLLIN | POLLHUP))) continue;
+        char tmp[8192];
+        ssize_t r = read(c->out_fd, tmp, sizeof tmp);
+        if (r <= 0) return 0;
+        if (c->len + (size_t)r + 1 > c->cap) {
+            size_t nc = (c->len + (size_t)r + 1) * 2;
+            char *nb = realloc(c->buf, nc);
+            if (!nb) return 0;
+            c->buf = nb; c->cap = nc;
+        }
+        memcpy(c->buf + c->len, tmp, (size_t)r);
+        c->len += (size_t)r;
+        c->buf[c->len] = '\0';
+    }
+}
+
+/* Claude's initialize control request forces skills, hooks, MCP configuration,
+ * authentication, and the rest of CLI startup to finish without creating a
+ * model turn. Run it while the prompt is already available to the user. */
+static void *cl_warm(void *arg) {
+    claude_client *c = arg;
+    cJSON *msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(msg, "type", "control_request");
+    cJSON_AddStringToObject(msg, "request_id", "claude_h_initialize");
+    cJSON *req = cJSON_AddObjectToObject(msg, "request");
+    cJSON_AddStringToObject(req, "subtype", "initialize");
+    int ok = cl_write_json(c, msg);
+
+    while (ok) {
+        cJSON *ev = NULL;
+        if (!cl_warm_read(c, &ev)) { ok = 0; break; }
+        cl_note_session(c, ev);
+        const char *type = cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(ev, "type"));
+        cJSON *response = cJSON_GetObjectItemCaseSensitive(ev, "response");
+        const char *request_id = response ? cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(response, "request_id")) : NULL;
+        if (type && !strcmp(type, "control_response") && request_id &&
+            !strcmp(request_id, "claude_h_initialize")) {
+            const char *subtype = cJSON_GetStringValue(
+                cJSON_GetObjectItemCaseSensitive(response, "subtype"));
+            ok = subtype && !strcmp(subtype, "success");
+            cJSON_Delete(ev);
+            break;
+        }
+        cJSON_Delete(ev);
+    }
+    atomic_store_explicit(&c->warm_state, ok ? 1 : -1, memory_order_release);
+    return NULL;
+}
+
+static int cl_await_ready(claude_client *c) {
+    if (!c) return 0;
+    if (c->warm_joinable) {
+        pthread_join(c->warm_thread, NULL);
+        c->warm_joinable = 0;
+    }
+    return atomic_load_explicit(&c->warm_state, memory_order_acquire) == 1;
+}
+
 int claude_interrupt(claude_client *c) {
     if (!c) return 0;
     cJSON *msg = cJSON_CreateObject();
@@ -555,6 +658,7 @@ int claude_interrupt(claude_client *c) {
 
 static char *cl_send(claude_client *c, const char *user_text, int content_block) {
     if (!c || !user_text) return NULL;
+    if (!cl_await_ready(c)) return NULL;
 
     /* Frame the user turn as one JSONL line (cJSON handles all escaping). */
     cJSON *msg = cJSON_CreateObject();
@@ -684,6 +788,10 @@ void claude_stop(claude_client *c) {
             waitpid(c->pid, NULL, 0);
             c->pid = 0;
         }
+    }
+    if (c->warm_joinable) {
+        pthread_join(c->warm_thread, NULL);
+        c->warm_joinable = 0;
     }
     if (c->out_fd >= 0) close(c->out_fd);
     if (c->err_fd >= 0) close(c->err_fd);
