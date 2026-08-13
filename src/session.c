@@ -490,6 +490,9 @@ static void on_event(void *ud, const backend_event *ev)
         s->after_tool = 1;
         break;
     }
+    /* Tool rows end without one, so the spinner would otherwise butt right up
+     * against them; prose and the ✻ rows already close with a blank. */
+    status_gap(s->after_tool);
     ui_flush();
 }
 

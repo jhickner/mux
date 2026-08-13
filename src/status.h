@@ -30,6 +30,11 @@ void   status_tick(void);
 void   status_pause(void);
 void   status_resume(void);
 
+/* Carry a blank row above the spinner, so it does not sit flush against the
+ * tool rows printed just before it. The row belongs to the block and is erased
+ * with it, leaving the spacing that survives in scrollback to the caller. */
+void   status_gap(int on);
+
 /* Seconds since status_begin(). */
 double status_elapsed(void);
 

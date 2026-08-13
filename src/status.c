@@ -28,6 +28,8 @@ static void            *below_ud;
 static int              caret_row;  /* rows from the spinner row down to the caret */
 static int              painted;    /* a block is on screen */
 static int              spin_width; /* cells the spinner row occupies */
+static int              gap;        /* asked for a blank row above the spinner */
+static int              painted_gap;/* ... and whether the block on screen has one */
 
 /* Set when a resize arrives, cleared once the size has been quiet again. */
 static unsigned resize_epoch;
@@ -84,18 +86,20 @@ static void move(int count, char direction)
  *
  * Without a block below, the cursor rests on the spinner row's last physical
  * row. With one, the offset lands on the block's first row and one more step
- * reaches the spinner row's last. */
+ * reaches the spinner row's last. The leading blank row counts as painted, so
+ * the walk is measured against what is on screen rather than what is now
+ * asked for. */
 static int rows_above_caret(void)
 {
     int cols = ui_columns();
     int spin = spin_width ? ui_reflow_rows(&spin_width, 1, cols) : 0;
     if (!below)
-        return spin > 0 ? spin - 1 : 0;
-    return spin + (below_offset ? below_offset(below_ud) : caret_row - 1);
+        return painted_gap + (spin > 0 ? spin - 1 : 0);
+    return painted_gap + spin + (below_offset ? below_offset(below_ud) : caret_row - 1);
 }
 
 /* Wipe the spinner row and everything the block painted below it, leaving the
- * cursor at the start of the spinner row. Emits without flushing so a caller can
+ * cursor at the start of the block. Emits without flushing so a caller can
  * bracket the erase and the redraw that follows into one frame. */
 static void erase_block(void)
 {
@@ -105,6 +109,7 @@ static void erase_block(void)
     ui_esc("\r\x1b[J");
     caret_row = 0;
     spin_width = 0;
+    painted_gap = 0;
     painted = 0;
 }
 
@@ -131,6 +136,11 @@ static void paint(void)
 
     ui_sync_begin();
     erase_block();
+    /* Part of the block, not of scrollback: it is erased along with the spinner,
+     * so the permanent spacing between tool rows stays the caller's business. */
+    painted_gap = gap;
+    if (painted_gap)
+        ui_esc("\r\n");
     ui_esc(ui_style(UI_ACCENT));
     ui_put(left);
     spin_width = (int)ui_cells(left);
@@ -168,6 +178,8 @@ void status_begin(void)
     visible = 1;
     caret_row = 0;
     spin_width = 0;
+    gap = 0;
+    painted_gap = 0;
     painted = 0;
     paint();
 }
@@ -201,6 +213,16 @@ void status_resume(void)
         return;
     visible = 1;
     if (!size_changing())
+        paint();
+}
+
+void status_gap(int on)
+{
+    on = on ? 1 : 0;
+    if (gap == on)
+        return;
+    gap = on;
+    if (visible && !size_changing())
         paint();
 }
 
