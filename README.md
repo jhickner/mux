@@ -45,6 +45,10 @@ block in the history above.
 - Live rendering: assistant text, tool calls, and tool results appear as they
   stream, with a spinner and elapsed time. Reasoning shows as dimmed ✻ rows,
   which `/thinking` hides for good
+- A call that only reads — a file read, or a shell command built entirely of
+  read-only parts — collapses to one dimmed row with no output preview, and a
+  run of them to the same tool is listed on a single row. Anything that acts
+  keeps its full block
 - Per-turn footer: elapsed time, context used against the model's window, and
   cumulative cost
 - Markdown rendering: headings, bullets, ordered lists, fenced code, quotes,

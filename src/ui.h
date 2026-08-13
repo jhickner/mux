@@ -23,6 +23,7 @@ enum ui_role {
     UI_ERROR,
     UI_OK,
     UI_TOOL,    /* the [name] tag on a tool call */
+    UI_TOOLDIM, /* ... and on a collapsed one, where the whole row recedes */
     UI_RESET,
 };
 
