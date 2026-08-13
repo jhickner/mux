@@ -67,6 +67,7 @@ typedef struct {
     long   output_tokens;
     long   cache_read_tokens;
     long   cache_creation_tokens;
+    long   context_tokens; /* latest primary-model request, including output */
     long   context_window;
     int    is_error;
     int    interrupted;   /* the turn ended because claude_interrupt() was sent */
@@ -411,6 +412,27 @@ static long cl_long(cJSON *obj, const char *key) {
     return (v && cJSON_IsNumber(v)) ? (long)v->valuedouble : 0;
 }
 
+/* The result event's usage block is aggregate traffic across every model call
+ * made during an agentic turn.  It is useful for billing, but it is not the
+ * amount occupying the context window: a long tool loop can read the same
+ * cached prompt many times and report several windows' worth of aggregate
+ * input.  Assistant events carry per-request usage, so retain the latest one
+ * from the primary model instead. */
+static void cl_note_context(claude_client *c, cJSON *ev, const char *type) {
+    if (!c->meta || strcmp(type, "assistant") != 0) return;
+    cJSON *message = cJSON_GetObjectItemCaseSensitive(ev, "message");
+    cJSON *usage = message ? cJSON_GetObjectItemCaseSensitive(message, "usage") : NULL;
+    if (!cJSON_IsObject(usage)) return;
+
+    const char *model = cJSON_GetStringValue(cJSON_GetObjectItem(message, "model"));
+    if (c->model[0] && model && strcmp(model, c->model) != 0) return;
+
+    long used = cl_long(usage, "input_tokens") + cl_long(usage, "output_tokens") +
+                cl_long(usage, "cache_read_input_tokens") +
+                cl_long(usage, "cache_creation_input_tokens");
+    if (used > 0) c->meta->context_tokens = used;
+}
+
 /* modelUsage is keyed by the concrete model id and may carry several entries
  * when a turn used a helper model; take the window from the entry matching the
  * session model, else the largest one seen. */
@@ -465,6 +487,7 @@ static int cl_handle_line(claude_client *c, const char *line, char **out) {
             cl_sink(c, &out);
         }
     }
+    cl_note_context(c, ev, ts);
     if ((c->verbose || c->on_event) && *ts) cl_emit(c, ev, ts);
     int is_result = strcmp(ts, "result") == 0;
     if (is_result) {

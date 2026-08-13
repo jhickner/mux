@@ -127,8 +127,9 @@ Requires the `claude` CLI on `PATH`.
 `src/vendor/` holds copies of the single-header libraries, per the convention in
 `~/working/libs/c`. `claude.h` diverges from its upstream copy:
 
-- `claude_send_ex()` and `claude_result` expose the result event's duration,
-  token usage, context window, cost, and subtype
+- `claude_send_ex()` and `claude_result` expose duration, aggregate token
+  usage, the latest primary-model request's context usage, context window,
+  cost, and subtype
 - the event callback takes a typed `claude_event` (tool name and input JSON are
   separate fields) instead of two loose strings
 - `claude_interrupt()` sends the Agent SDK's interrupt control request; the

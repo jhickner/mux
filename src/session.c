@@ -614,10 +614,11 @@ int session_turn(struct session *s, const char *text)
     s->turns++;
     if (meta.cost_usd > 0)
         s->cost_usd = meta.cost_usd;
-    /* An interrupted turn reports a stub usage block (and sometimes a helper
-     * model's context window), so keep the last real numbers instead. */
-    long used = meta.input_tokens + meta.output_tokens + meta.cache_read_tokens +
-                meta.cache_creation_tokens;
+    /* Result-event usage is aggregate traffic across every model request in
+     * the turn and can exceed the context window many times over.  The client
+     * instead captures the latest primary-model request from the stream.  An
+     * interrupted turn may not have one, so keep the last real number then. */
+    long used = meta.context_tokens;
     if (used > 0) {
         s->context_tokens = used;
         if (meta.context_window > 0)
