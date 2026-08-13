@@ -317,6 +317,7 @@ static int backend_claude_start(Backend *b, const char *resume) {
     claude_set_abort_check(c, x->st.abort);
     if (x->client) claude_stop(x->client);
     x->client = c;
+    x->live.context_tokens = x->live.context_window = 0;
     backend_set(&x->st.resume, resume);
     return 1;
 }
@@ -358,6 +359,7 @@ static char *backend_claude_ask(Backend *b, const char *user) {
 
 static int backend_claude_reset(Backend *b) {
     backend_claude *x = b->ctx;
+    x->live.context_tokens = x->live.context_window = 0;
     if (!x->client) return backend_claude_ready(b);
     if (claude_reset(x->client)) return 1;
     claude_stop(x->client);
