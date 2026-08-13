@@ -174,7 +174,7 @@ static void print_activity(const char *marker, const char *text, enum ui_role ro
     ui_put("\n");
 }
 
-/* Render a tool call as "[bash] <command>": the tag in chrome, the full
+/* Render a tool call as "[bash] <command>": the tag in its own color, the full
  * argument in normal weight so it stands out, wrapped under the tag. */
 static void print_tool_call(const char *name, const char *arg)
 {
@@ -189,7 +189,7 @@ static void print_tool_call(const char *name, const char *arg)
     int indent = (int)ui_cells(tag) + 1;
     int columns = ui_columns();
 
-    ui_esc(ui_style(UI_CHROME));
+    ui_esc(ui_style(UI_TOOL));
     ui_put(tag);
     ui_esc(ui_style(UI_RESET));
     ui_put(" ");

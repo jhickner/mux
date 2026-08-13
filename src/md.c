@@ -147,19 +147,18 @@ static void emit_styled(const struct styled *s, int first_indent, int indent)
 
         pad(row_indent);
         size_t base = (size_t)(p - s->text);
-        signed char open = 0;
+        /* -1 rather than 0, so the unstyled run also opens (as UI_BODY). */
+        int open = -1;
         for (size_t i = 0; i < row; i++) {
             signed char style = s->style[base + i];
             if (style != open) {
-                if (open)
-                    ui_esc(ui_style(UI_RESET));
-                if (style)
-                    ui_esc(ui_style((enum ui_role)(style - 1)));
+                ui_esc(ui_style(UI_RESET));
+                ui_esc(ui_style(style ? (enum ui_role)(style - 1) : UI_BODY));
                 open = style;
             }
             ui_putn(p + i, 1);
         }
-        if (open)
+        if (open >= 0)
             ui_esc(ui_style(UI_RESET));
         ui_put("\n");
 

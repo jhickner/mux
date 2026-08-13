@@ -261,7 +261,6 @@ void prompt_echo_message(const char *text)
         size_t row = *p ? ui_wrap_row(p, budget, &skip) : 0;
         ui_esc(ui_style(UI_ACCENT));
         ui_put(UI_BAR);
-        ui_esc(ui_style(UI_TEXT));
         ui_put(" ");
         ui_putn(p, row);
         ui_esc(ui_style(UI_RESET));

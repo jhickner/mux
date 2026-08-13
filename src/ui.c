@@ -23,13 +23,15 @@ static const struct {
     [UI_TEXT]    = { NULL, COLOR_UI_TYPED },
     [UI_CHROME]  = { NULL, COLOR_UI_BORDER_FLOAT },
     [UI_DIM]     = { NULL, COLOR_UI_DIM },
-    [UI_BOLD]    = { "1",  -1 },
-    [UI_ITALIC]  = { "3",  -1 },
-    [UI_CODE]    = { NULL, COLOR_BASE14 },
+    [UI_BODY]    = { NULL, COLOR_BASE5 },
+    [UI_BOLD]    = { "1",  COLOR_BASE6 },
+    [UI_ITALIC]  = { "3",  COLOR_BASE6 },
+    [UI_CODE]    = { NULL, COLOR_BASE6 },
     [UI_HEADING] = { "1",  COLOR_BASE7 },
     [UI_LINK]    = { "4",  COLOR_BASE13 },
     [UI_ERROR]   = { NULL, COLOR_UI_MSG_ERROR },
     [UI_OK]      = { NULL, COLOR_BASE11 },
+    [UI_TOOL]    = { NULL, COLOR_BASE10 },
 };
 
 static char styles[UI_RESET][32];

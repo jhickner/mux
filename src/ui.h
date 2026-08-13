@@ -10,17 +10,19 @@
 /* SGR sequences, or "" when color is off. Use through ui_style() so NO_COLOR and
  * non-tty output stay clean. */
 enum ui_role {
-    UI_ACCENT,  /* the caret, and the bar beside the user's own words */
-    UI_TEXT,    /* the user's own words */
+    UI_ACCENT,  /* the caret, and the user's words once submitted */
+    UI_TEXT,    /* the user's words while being typed */
     UI_CHROME,  /* application frame */
     UI_DIM,     /* asides, footers, tool activity */
-    UI_BOLD,
+    UI_BODY,    /* the assistant's prose */
+    UI_BOLD,    /* the accents within it: emphasis and code */
     UI_ITALIC,
     UI_CODE,    /* inline code and fenced blocks */
     UI_HEADING,
     UI_LINK,
     UI_ERROR,
     UI_OK,
+    UI_TOOL,    /* the [name] tag on a tool call */
     UI_RESET,
 };
 
