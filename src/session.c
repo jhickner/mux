@@ -614,6 +614,39 @@ static void name_poll(struct session *s)
         status_set_note(s->title);
 }
 
+static int effort_is_off(const char *effort)
+{
+    return !effort || !*effort ||
+           !strcmp(effort, "none") || !strcmp(effort, "off");
+}
+
+/* Requested level if the user set one; otherwise whatever the backend has
+ * resolved (Claude's settings.json / stream `effort`, GROK_EFFORT, ...). */
+static const char *spin_effort(const struct session *s)
+{
+    if (s->effort && *s->effort &&
+        strcmp(s->effort, "default") != 0 && strcmp(s->effort, "auto") != 0)
+        return s->effort;
+    if (s->agent && s->agent->effort) {
+        const char *got = s->agent->effort(s->agent);
+        if (got && *got && strcmp(got, "auto") != 0)
+            return got;
+    }
+    return NULL;
+}
+
+static void set_spin_word(const struct session *s)
+{
+    const char *effort = spin_effort(s);
+    if (effort_is_off(effort)) {
+        status_set_word("working");
+        return;
+    }
+    char phrase[64];
+    snprintf(phrase, sizeof phrase, "thinking with %s effort", effort);
+    status_set_word(phrase);
+}
+
 /* Polled by the backend many times a second: drain whatever was typed, then
  * tick the spinner, and report whether the user asked to interrupt. This is the
  * only place keys are read during a turn, so its cadence is what echo latency
@@ -622,6 +655,8 @@ static int abort_check(void)
 {
     name_poll(live);
     quota_poll(live);
+    if (live)
+        set_spin_word(live);
 
     /* Without a raw terminal there is no interrupt key to read, and reading a
      * redirected stdin would see EOF and cancel the turn immediately. */
@@ -990,8 +1025,10 @@ int session_turn(struct session *s, const char *text)
     live = s;
     double started = now_seconds();
     agenttabs_working();
-    if (!s->quiet)
+    if (!s->quiet) {
+        set_spin_word(s);
         status_begin();
+    }
 
     backend_result meta = {0};
     char *reply = s->agent->ask_ex(s->agent, text, &meta);

@@ -23,6 +23,11 @@ typedef int  (*status_offset_fn)(void *ud);
 
 void   status_set_below(status_paint_fn paint, status_offset_fn offset, void *ud);
 
+/* Activity phrase after the elapsed time — "working", or "thinking with
+ * medium effort". Shown only when the row is wide enough. NULL or ""
+ * restores "working". */
+void   status_set_word(const char *text);
+
 /* Trailing text for the spinner row — the conversation's name. Shown only when
  * the row is wide enough for all of it. NULL or "" removes it. */
 void   status_set_note(const char *text);
