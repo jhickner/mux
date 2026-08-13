@@ -42,7 +42,7 @@ struct session {
     int      customizations; /* load the user's skills, CLAUDE.md, MCP, ... */
     char    *permission;     /* --permission-mode; NULL means the default   */
     int      after_activity; /* last thing printed was a tool/thinking row  */
-    int      after_tool;     /* ... and specifically a tool call block      */
+    int      after_tool;     /* ... a tool or thinking block that wants air */
     int      after_collapse; /* ... and specifically a collapsed tool row   */
 
     /* The run of collapsed calls sharing the row above the cursor. */
@@ -208,30 +208,44 @@ static void pad(int cells)
         ui_put(" ");
 }
 
+/* A reasoning block: the ✻ in chrome, the full text in the thinking color,
+ * wrapped under the marker the same way a tool argument sits under its tag. */
 static void print_activity(const char *marker, const char *text, enum ui_role role)
 {
+    int indent = TOOL_INDENT + (int)ui_cells(marker) + 1;
     int columns = ui_columns();
-    int budget = columns - 6;
+    int budget = columns - indent;
     if (budget < 8)
         budget = 8;
-
-    char clipped[512];
-    one_line(text, clipped, sizeof clipped);
-
-    size_t skip = 0;
-    size_t fit = ui_wrap_row(clipped, (size_t)budget, &skip);
 
     pad(TOOL_INDENT);
     ui_esc(ui_style(UI_CHROME));
     ui_put(marker);
     ui_esc(ui_style(UI_RESET));
     ui_put(" ");
-    ui_esc(ui_style(role));
-    ui_putn(clipped, fit);
-    if (clipped[fit])
-        ui_put("…");
-    ui_esc(ui_style(UI_RESET));
-    ui_put("\n");
+
+    if (!text || !*text) {
+        ui_put("\n");
+        return;
+    }
+
+    const char *style = ui_style(role);
+    const char *p = text;
+    int first = 1;
+    while (*p) {
+        size_t skip = 0;
+        size_t row = ui_wrap_row(p, (size_t)budget, &skip);
+        if (!first)
+            pad(indent);
+        if (*style)
+            ui_esc(style);
+        ui_putn(p, row);
+        if (*style)
+            ui_esc(ui_style(UI_RESET));
+        ui_put("\n");
+        p += row + skip;
+        first = 0;
+    }
 }
 
 static void tool_tag(const char *name, char *out, size_t size)
@@ -465,11 +479,13 @@ static void on_event(void *ud, const backend_event *ev)
         if (!s->thinking || !ev->text || !*ev->text)
             break;
         status_pause();
-        print_activity("\xe2\x9c\xbb", ev->text, UI_DIM); /* ✻ */
-        status_resume();
         cluster_forget(s);
+        if (s->after_tool) /* same blank as between consecutive tool blocks */
+            ui_put("\n");
+        print_activity("\xe2\x9c\xbb", ev->text, UI_THINKING); /* ✻ */
+        status_resume();
         s->after_activity = 1;
-        s->after_tool = 0;
+        s->after_tool = 1;
         s->after_collapse = 0;
         break;
 
@@ -489,7 +505,7 @@ static void on_event(void *ud, const backend_event *ev)
             cluster_paint(s);
         } else {
             cluster_forget(s);
-            if (s->after_tool) /* one blank row between consecutive tool blocks */
+            if (s->after_tool) /* one blank row between consecutive spaced blocks */
                 ui_put("\n");
             print_tool_call(name, arg);
         }
@@ -529,8 +545,8 @@ static void on_event(void *ud, const backend_event *ev)
         s->after_tool = 1;
         break;
     }
-    /* Tool rows end without one, so the spinner would otherwise butt right up
-     * against them; prose and the ✻ rows already close with a blank. */
+    /* Tool and thinking rows end without a trailing blank, so the spinner would
+     * otherwise sit flush against them. The row is part of the status block. */
     status_gap(s->after_tool);
     ui_flush();
 }

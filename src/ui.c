@@ -31,6 +31,7 @@ static const struct {
     [UI_LINK]    = { "4",  COLOR_BASE13 },
     [UI_ERROR]   = { NULL, COLOR_UI_MSG_ERROR },
     [UI_OK]      = { NULL, COLOR_BASE11 },
+    [UI_THINKING] = { "3", COLOR_BASE14 },
     [UI_TOOL]    = { NULL, COLOR_BASE10 },
     [UI_TOOLDIM] = { "2",  COLOR_BASE10 },
 };
