@@ -38,17 +38,21 @@ sessionlisttest: tools/sessionlisttest.c src/sessionlist.c src/vendor/cJSON.c
 codextest: tools/codextest.c src/vendor/impl.o src/vendor/cJSON.o
 	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
 
-check: reflowtest toolstyletest sessionlisttest codextest
+pitest: tools/pitest.c src/vendor/impl.o src/vendor/cJSON.o
+	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
+
+check: reflowtest toolstyletest sessionlisttest codextest pitest
 	./reflowtest
 	./toolstyletest
 	./sessionlisttest
 	./codextest
+	./pitest
 
 install: $(BIN)
 	install -d $(PREFIX)/bin
 	install -m 755 $(BIN) $(PREFIX)/bin/$(BIN)
 
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN) palette spintest reflowtest toolstyletest sessionlisttest codextest src/*.o.tmp src/vendor/*.o.tmp
+	rm -f $(OBJ) $(DEP) $(BIN) palette spintest reflowtest toolstyletest sessionlisttest codextest pitest src/*.o.tmp src/vendor/*.o.tmp
 
 .PHONY: all install clean check

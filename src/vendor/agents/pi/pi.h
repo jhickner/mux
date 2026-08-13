@@ -45,9 +45,17 @@ pi_client *pi_start(const pi_opts *opts);
 
 /* Send one plain-text prompt and wait for the complete agent operation
  * (`agent_settled`). Returns accumulated assistant text (malloc'd; caller
- * frees), or NULL if pi rejects the prompt, exits, or the wait is aborted.
- * Context is retained across calls. */
+ * frees), or NULL if pi rejects the prompt or exits. An interrupted operation
+ * returns the text produced so far (possibly empty). Context is retained
+ * across calls. */
 char *pi_send(pi_client *c, const char *user_text);
+
+typedef struct {
+    int interrupted;   /* the abort predicate ended the operation */
+} pi_result;
+
+/* As pi_send, but also fills *meta (zeroed first). `meta` may be NULL. */
+char *pi_send_ex(pi_client *c, const char *user_text, pi_result *meta);
 
 /* Start a fresh in-memory pi session, discarding conversation context. Returns
  * nonzero on success. This does not restart the subprocess. */
@@ -298,7 +306,8 @@ pi_client *pi_start(const pi_opts *opts) {
 
 int pi_abort(pi_client *c) { return c ? pi_command(c, "abort", NULL) != 0 : 0; }
 
-char *pi_send(pi_client *c, const char *user_text) {
+char *pi_send_ex(pi_client *c, const char *user_text, pi_result *meta) {
+    if (meta) memset(meta, 0, sizeof *meta);
     if (!c || !user_text) return NULL;
     char *full = NULL;
     if (c->sys) {
@@ -318,7 +327,12 @@ char *pi_send(pi_client *c, const char *user_text) {
     while (!settled) {
         cJSON *ev;
         int r = pi_read(c, &ev, !aborted);
-        if (r == 0 && !aborted) { pi_abort(c); aborted = 1; continue; }
+        if (r == 0 && !aborted) {
+            if (!pi_abort(c)) { free(answer); return NULL; }
+            if (meta) meta->interrupted = 1;
+            aborted = 1;
+            continue;
+        }
         if (r != 1) { free(answer); return NULL; }
         int response = pi_response(ev, id);
         if (response == 0) { cJSON_Delete(ev); free(answer); return NULL; }
@@ -326,8 +340,12 @@ char *pi_send(pi_client *c, const char *user_text) {
         pi_event(c, ev, &answer, &settled);
         cJSON_Delete(ev);
     }
-    if (!accepted || aborted) { free(answer); return NULL; }
+    if (!accepted) { free(answer); return NULL; }
     return answer ? answer : strdup("");
+}
+
+char *pi_send(pi_client *c, const char *user_text) {
+    return pi_send_ex(c, user_text, NULL);
 }
 
 int pi_reset(pi_client *c) {
@@ -404,16 +422,18 @@ static int pi_backend_start(Backend *b, const char *resume) {
     return 1;
 }
 
-static char *pi_backend_ask(Backend *b, const char *user) {
+static char *pi_backend_ask_ex(Backend *b, const char *user, backend_result *meta) {
     pi_backend_ctx *cx = b->ctx;
+    if (meta) memset(meta, 0, sizeof *meta);
     if (!cx->c && !pi_backend_start(b, NULL)) return NULL;
-    char *reply = pi_send(cx->c, user);
+    pi_result pr = {0};
+    char *reply = pi_send_ex(cx->c, user, &pr);
     backend_flush(&cx->st);
+    if (meta) meta->interrupted = pr.interrupted;
     return reply;
 }
-static char *pi_backend_ask_ex(Backend *b, const char *user, backend_result *meta) {
-    if (meta) memset(meta, 0, sizeof *meta);
-    return pi_backend_ask(b, user);
+static char *pi_backend_ask(Backend *b, const char *user) {
+    return pi_backend_ask_ex(b, user, NULL);
 }
 static int pi_backend_reset(Backend *b) {
     pi_backend_ctx *cx = b->ctx;
