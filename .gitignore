@@ -1,0 +1,5 @@
+*.o
+*.o.tmp
+*.d
+simple-agent
+palette

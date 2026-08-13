@@ -1,0 +1,47 @@
+/* The conversation: one persistent claude CLI process, the running totals for
+ * its turns, and the live rendering of a turn as it streams. */
+#ifndef SESSION_H
+#define SESSION_H
+
+struct session;
+
+/* `cwd` is where the CLI runs its tools; `model` may be NULL for the CLI
+ * default. Neither pointer is retained. */
+struct session *session_new(const char *cwd, const char *model);
+void            session_free(struct session *s);
+
+/* Print only the reply text: no spinner, tool activity, or footer. For piped
+ * output and one-shot runs. */
+void session_set_quiet(struct session *s, int quiet);
+
+/* Load the user's discovered customizations — skills, CLAUDE.md, plugins,
+ * hooks, MCP servers, custom commands and agents. Must be set before
+ * session_start(). */
+void session_set_customizations(struct session *s, int on);
+
+/* Spawn (or respawn) the CLI process. Returns 0 on failure. */
+int session_start(struct session *s);
+
+/* Run one turn, printing activity, the reply, and the stats footer. Returns 0
+ * when the process has died and the caller should stop. */
+int session_turn(struct session *s, const char *text);
+
+/* Drop the conversation context, keeping the process alive. */
+int session_clear(struct session *s);
+
+/* Switch models by restarting the CLI on the current session id, so context
+ * carries over. Returns 0 on failure, leaving the old client in place. */
+int session_set_model(struct session *s, const char *model);
+
+/* Restart on a past session id, adopting its context. */
+int session_resume(struct session *s, const char *id);
+
+const char *session_model(const struct session *s);
+const char *session_id(const struct session *s);
+const char *session_cwd(const struct session *s);
+const char *session_last_reply(const struct session *s);
+
+/* Print the /session report: model, id, cwd, turns, tokens, cost. */
+void session_report(const struct session *s);
+
+#endif /* SESSION_H */
