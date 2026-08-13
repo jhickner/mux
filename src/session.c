@@ -814,20 +814,18 @@ int session_turn(struct session *s, const char *text)
     s->turns++;
     if (meta.cost_usd > 0)
         s->cost_usd = meta.cost_usd;
-    /* Result-event usage is aggregate traffic across every model request in
-     * the turn and can exceed the context window many times over, so prefer
-     * the latest primary-model request where the driver reports one.  The rest
-     * only have the aggregate.  An interrupted turn reports a stub usage block
-     * either way, so keep the last real number then. */
-    long used = meta.context_tokens;
-    if (used <= 0 && !meta.interrupted)
-        used = meta.input_tokens + meta.output_tokens + meta.cache_read_tokens +
-               meta.cache_creation_tokens;
-    if (used > 0) {
-        s->context_tokens = used;
-        if (meta.context_window > 0)
-            s->context_window = meta.context_window;
-    }
+    /* Only the latest primary-model request says how much of the window is
+     * occupied. The result event's usage block is aggregate traffic across
+     * every model request in the turn — a long tool loop re-reads the same
+     * cached prompt and reports several windows' worth — so a driver that
+     * reports no per-request figure leaves the last real one standing rather
+     * than overwrite it with a number that measures something else. An
+     * interrupted turn reports a stub usage block, which this skips for free.
+     * The window is a property of the model, so it stands on its own. */
+    if (meta.context_window > 0)
+        s->context_window = meta.context_window;
+    if (meta.context_tokens > 0)
+        s->context_tokens = meta.context_tokens;
 
     if (!s->quiet)
         print_footer(s, elapsed);

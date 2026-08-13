@@ -412,6 +412,16 @@ static long cl_long(cJSON *obj, const char *key) {
     return (v && cJSON_IsNumber(v)) ? (long)v->valuedouble : 0;
 }
 
+/* Same model, allowing for the variant suffix that marks a context-window
+ * choice: the CLI announces "claude-opus-5[1m]" in its init event and keys
+ * modelUsage the same way, but the per-message model id drops the suffix. A
+ * plain strcmp reads those as two models and throws the per-request usage away.
+ */
+static int cl_same_model(const char *a, const char *b) {
+    size_t na = strcspn(a, "["), nb = strcspn(b, "[");
+    return na == nb && strncmp(a, b, na) == 0;
+}
+
 /* The result event's usage block is aggregate traffic across every model call
  * made during an agentic turn.  It is useful for billing, but it is not the
  * amount occupying the context window: a long tool loop can read the same
@@ -425,7 +435,7 @@ static void cl_note_context(claude_client *c, cJSON *ev, const char *type) {
     if (!cJSON_IsObject(usage)) return;
 
     const char *model = cJSON_GetStringValue(cJSON_GetObjectItem(message, "model"));
-    if (c->model[0] && model && strcmp(model, c->model) != 0) return;
+    if (c->model[0] && model && !cl_same_model(model, c->model)) return;
 
     long used = cl_long(usage, "input_tokens") + cl_long(usage, "output_tokens") +
                 cl_long(usage, "cache_read_input_tokens") +
@@ -443,7 +453,7 @@ static long cl_context_window(claude_client *c, cJSON *ev) {
     cJSON *entry;
     cJSON_ArrayForEach(entry, mu) {
         long window = cl_long(entry, "contextWindow");
-        if (c->model[0] && entry->string && strcmp(entry->string, c->model) == 0)
+        if (c->model[0] && entry->string && cl_same_model(entry->string, c->model))
             return window;
         if (window > best) best = window;
     }
