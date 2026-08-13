@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "files.h"
 #include "tty.h"
 #include "ui.h"
 
@@ -35,6 +36,7 @@ struct prompt {
     char       **queued;       /* lines submitted while a turn was running */
     int          queued_count;
     int          queued_cap;
+    char        *file_root;    /* project root for @-completion, or NULL */
 };
 
 /* ---------- history ---------- */
@@ -407,12 +409,22 @@ struct prompt *prompt_new(const ReplCommand *commands, int command_count)
     return p;
 }
 
+void prompt_file_completion(struct prompt *p, const char *root)
+{
+    free(p->file_root);
+    p->file_root = strdup(root);
+    if (p->file_root)
+        repl_set_completer(&p->repl, files_complete, p->file_root);
+}
+
 void prompt_free(struct prompt *p)
 {
     if (!p)
         return;
     repl_free(&p->repl);
+    files_forget();
     free(p->frame.cells);
+    free(p->file_root);
     free(p->history_path);
     for (int i = 0; i < p->queued_count; i++)
         free(p->queued[i]);
@@ -486,8 +498,13 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         return KEY_OK;
 
     case TK_TAB:
-        /* repl.h accepts a candidate or an inline suggestion with Right. */
-        if (p->repl.dropdown_open || repl_suggestion(&p->repl))
+        /* Tab takes the highlighted completion wherever the cursor sits. With
+         * the dropdown closed it first tries to open one — the cursor may have
+         * moved back into a token — and failing that accepts the inline
+         * suggestion, which repl.h binds to Right. */
+        if (repl_accept_completion(&p->repl) || repl_open_completion(&p->repl))
+            return KEY_OK;
+        if (repl_suggestion(&p->repl))
             feed(p, REPL_KEY_RIGHT, 0, NULL);
         return KEY_OK;
 

@@ -46,6 +46,8 @@ block in the history above.
   rules, inline code, bold, italic, links
 - Multi-line input, word-wrapped and reflowed on terminal resize
 - Command completion dropdown, history with reverse search, emacs editing keys
+- `@` file completion: fuzzy-matched paths from the working directory (git's
+  file list where there is one, so ignored files stay out)
 - Type while a turn runs: the prompt stays live under the spinner, and each
   message submitted there is queued and run, in order, once the turn ends
 - Interrupt an in-flight turn without losing the session
@@ -83,6 +85,7 @@ invoked (`/todo buy milk`, `/w what do I know about X`).
 | `enter` | Submit, or queue the message when a turn is running |
 | `ctrl-j` | Insert a newline |
 | `tab` | Accept the completion |
+| `@` | Open the file picker; keep typing to filter, `tab` or `enter` to take it |
 | `up` / `down` | Browse history; with a message queued, `up` recalls it for editing |
 | `ctrl-r` | Reverse history search |
 | `esc` | Interrupt the model or a running tool |
@@ -146,8 +149,17 @@ Requires the `claude` CLI on `PATH`.
   unwind, which an interactive caller feels on quit
 - the read poll is 80ms so the abort predicate can double as a UI tick
 
-`repl.h` diverges in one place:
+`repl.h` diverges in three places:
 
 - a `suggest_off` flag on `Repl` suppresses the inline history autosuggestion;
   `repl_suggestion()` returns NULL when it is set. History browsing and Ctrl-R
   search are unaffected
+- `repl_accept_completion()` takes the highlighted candidate from anywhere in
+  the line, so Tab completes a token mid-line instead of only at the end (Right
+  accepts only at end-of-line, where it cannot be confused with cursor motion).
+  Accepting closes the dropdown unless the candidate is a directory, which keeps
+  it open to narrow the next path segment. A leading `@` is a trigger rather than
+  part of the path, so it survives the replacement and candidates stay bare
+- `repl_open_completion()` re-derives the candidates from the token under the
+  cursor, so Tab can offer completions for a token the cursor moved back into
+  (candidates otherwise only change on an edit)

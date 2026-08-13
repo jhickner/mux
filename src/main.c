@@ -159,6 +159,7 @@ int main(int argc, char **argv)
         session_free(session);
         return 1;
     }
+    prompt_file_completion(prompt, cwd);
     char config[4096];
     if (config_dir(config, sizeof config)) {
         char history[4200];

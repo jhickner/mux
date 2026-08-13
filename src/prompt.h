@@ -15,6 +15,10 @@ void           prompt_free(struct prompt *p);
 /* Load history from `path` and append submitted lines to it. */
 void prompt_history_open(struct prompt *p, const char *path);
 
+/* Complete an "@" token against the files under `root`, chosen from a dropdown
+ * with the arrow keys and Tab/Enter. */
+void prompt_file_completion(struct prompt *p, const char *root);
+
 /* Read one message. Returns malloc'd text (possibly multi-line), or NULL when
  * the user quits with Ctrl-D or EOF. The submitted text is left in scrollback
  * as a "▌ " block. Anything typed but not submitted during the previous turn is

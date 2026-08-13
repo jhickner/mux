@@ -52,7 +52,8 @@ typedef struct {
 } ReplCandidate;
 
 // Host callback supplying @-file (or other token) completions. `token` is the
-// active word with its leading '@' stripped. Fill up to `max` candidates and
+// active word with its leading '@' stripped; candidates are likewise bare, as
+// the '@' stays in the line on accept. Fill up to `max` candidates and
 // return the count. NULL when the host offers no file completion.
 typedef int (*ReplCompleter)(void *ctx, const char *token,
                              ReplCandidate *out, int max);
@@ -176,6 +177,17 @@ const char *repl_line(const Repl *r);
 // input is word-wrapped on render); tabs become spaces; other control bytes are
 // dropped. The buffer grows to fit.
 void        repl_insert_text(Repl *r, const char *s);
+
+// Accept the highlighted dropdown candidate — or the first one when nothing is
+// highlighted — replacing the active token. Returns false with the dropdown
+// closed. For hosts that bind Tab to completion; Right does the same at
+// end-of-line, where it cannot be confused with cursor motion.
+bool repl_accept_completion(Repl *r);
+
+// Re-derive the dropdown from the token under the cursor and report whether it
+// opened. Only edits recompute candidates, so a host binding Tab to completion
+// calls this to pick up a token the cursor merely moved back into.
+bool repl_open_completion(Repl *r);
 
 // Number of dropdown rows currently shown (0 when closed) — for panel sizing.
 int  repl_dropdown_rows(const Repl *r);
@@ -796,11 +808,20 @@ static void accept_completion(Repl *r, int idx) {
     if (te > r->len) te = r->len;
     if (te < ts) te = ts;
 
+    // '@' triggers the completer but is not part of a path, so candidates carry
+    // the bare path and the sigil is left standing. A slash command's '/' is
+    // part of its name, so it gets replaced along with the rest of the token.
+    if (!r->cand_is_command && ts < r->len && r->buf[ts] == '@') ts++;
+
     char *suffix = dupstr(r->buf + te);   // text after the token (incl. any space)
     if (!suffix) return;
     int suffix_len = (int)strlen(suffix);
     int tlen = (int)strlen(text);
     bool add_space = r->cand_is_command && suffix[0] != ' ';
+    // A directory keeps the list up so the next segment can be narrowed; any
+    // other candidate is complete, so the list gets out of the way. (Both are
+    // read before recompute_candidates() overwrites cands[].)
+    bool keep_open = r->cand_is_command || (tlen > 0 && text[tlen - 1] == '/');
 
     if (!buf_ensure(r, ts + tlen + (add_space ? 1 : 0) + suffix_len)) { free(suffix); return; }
     int n = ts;
@@ -816,6 +837,22 @@ static void accept_completion(Repl *r, int idx) {
     r->hist_pos = -1;
     undo_anchor_here(r);
     recompute_candidates(r);  // re-derive from the new cursor position
+    if (!keep_open) {
+        r->dropdown_open = false;
+        r->sel = -1;
+    }
+}
+
+bool repl_accept_completion(Repl *r) {
+    if (!r->dropdown_open || r->cand_count == 0) return false;
+    accept_completion(r, r->sel >= 0 ? r->sel : 0);
+    return true;
+}
+
+bool repl_open_completion(Repl *r) {
+    if (r->searching) return false;
+    recompute_candidates(r);
+    return r->dropdown_open;
 }
 
 // Yank the kill register at the cursor (one structural undo step).
