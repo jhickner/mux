@@ -62,4 +62,11 @@ unsigned tty_resize_epoch(void);
 /* Current terminal width in columns, floored at 20. */
 int  tty_columns(void);
 
+/* Current terminal height in rows, floored at 3. */
+int  tty_rows(void);
+
+/* Ask the terminal where its cursor is. Any keystrokes that arrive around the
+ * reply stay queued for tty_read(). Returns 1 on success. */
+int  tty_cursor_position(int *row, int *column);
+
 #endif /* TTY_H */

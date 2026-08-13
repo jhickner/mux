@@ -150,7 +150,7 @@ static void put_codepoint(uint32_t cp)
         buf[3] = (char)(0x80 | (cp & 0x3F));
         n = 4;
     }
-    fwrite(buf, 1, (size_t)n, stdout);
+    ui_putn(buf, (size_t)n);
 }
 
 /* Trailing unstyled blanks need no output; a highlighted row keeps its run so
@@ -211,9 +211,12 @@ static int caret_offset(const struct prompt *p, int cols)
 static void goto_origin(struct prompt *p)
 {
     int up = caret_offset(p, ui_columns());
-    if (up > 0)
-        printf("\x1b[%dA", up);
-    fputs("\r", stdout);
+    if (up > 0) {
+        char esc[32];
+        snprintf(esc, sizeof esc, "\x1b[%dA", up);
+        ui_esc(esc);
+    }
+    ui_esc("\r");
     p->caret_row = 0;
 }
 
@@ -222,7 +225,7 @@ static void erase_block(struct prompt *p)
     if (p->painted_rows == 0)
         return;
     goto_origin(p);
-    fputs("\x1b[J", stdout);
+    ui_esc("\x1b[J");
     fflush(stdout);
     p->painted_rows = 0;
 }
@@ -266,12 +269,12 @@ static void paint_queued(const struct prompt *p, int cols)
         while (*text || first) {
             size_t skip = 0;
             size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
-            fputs("\x1b[K", stdout);
-            fputs(ui_style(UI_DIM), stdout);
-            fputs(UI_BAR " ", stdout);
-            fwrite(text, 1, row, stdout);
-            fputs(ui_style(UI_RESET), stdout);
-            fputs("\r\n", stdout);
+            ui_esc("\x1b[K");
+            ui_esc(ui_style(UI_DIM));
+            ui_put(UI_BAR " ");
+            ui_putn(text, row);
+            ui_esc(ui_style(UI_RESET));
+            ui_put("\n");
             text += row + skip;
             first = 0;
         }
@@ -339,7 +342,7 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
     paint_queued(p, cols);
 
     for (int y = 0; y < rows; y++) {
-        fputs("\x1b[K", stdout);
+        ui_esc("\x1b[K");
         int extent = row_extent(&p->frame, y);
         const char *open = "";
         for (int x = 0; x < extent; x++) {
@@ -358,19 +361,19 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
                 p->frame.cursor_x == x && p->frame.cursor_y == y)
                 cp = ' ';
             if (seq != open) {
-                fputs(ui_style(UI_RESET), stdout);
-                fputs(seq, stdout);
+                ui_esc(ui_style(UI_RESET));
+                ui_esc(seq);
                 open = seq;
             }
             put_codepoint(cp);
         }
         if (*open)
-            fputs(ui_style(UI_RESET), stdout);
+            ui_esc(ui_style(UI_RESET));
         if (y + 1 < rows)
-            fputs("\r\n", stdout);
+            ui_put("\n");
     }
     /* Clear anything the previous, taller block left below. */
-    fputs("\x1b[J", stdout);
+    ui_esc("\x1b[J");
 }
 
 static void repaint(struct prompt *p)
@@ -378,16 +381,22 @@ static void repaint(struct prompt *p)
     int rows = 1, caret_row = 0, caret_col = 0;
 
     goto_origin(p);
-    fputs("\x1b[?25l", stdout); /* hide while the block redraws */
+    ui_esc("\x1b[?25l"); /* hide while the block redraws */
     paint_block(p, &rows, &caret_row, &caret_col);
 
     int up = (rows - 1) - caret_row;
-    if (up > 0)
-        printf("\x1b[%dA", up);
-    fputs("\r", stdout);
-    if (caret_col > 0)
-        printf("\x1b[%dC", caret_col);
-    fputs("\x1b[?25h", stdout);
+    if (up > 0) {
+        char esc[32];
+        snprintf(esc, sizeof esc, "\x1b[%dA", up);
+        ui_esc(esc);
+    }
+    ui_esc("\r");
+    if (caret_col > 0) {
+        char esc[32];
+        snprintf(esc, sizeof esc, "\x1b[%dC", caret_col);
+        ui_esc(esc);
+    }
+    ui_esc("\x1b[?25h");
     fflush(stdout);
 
     p->painted_rows = rows;
@@ -511,9 +520,10 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         if (ev->cp == 12) { /* Ctrl-L */
             if (live)
                 return KEY_OK;
+            ui_sticky_end();
             p->painted_rows = 0;
             p->caret_row = 0;
-            fputs("\x1b[2J\x1b[H", stdout);
+            ui_esc("\x1b[2J\x1b[H");
             fflush(stdout);
             return KEY_OK;
         }

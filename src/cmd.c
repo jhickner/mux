@@ -19,6 +19,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/effort", "set reasoning/thinking effort", "[level]"},
     {"/thinking", "show or hide the model's reasoning", "[on|off]"},
     {"/tools", "how much of each tool call to show", "[compact|full]"},
+    {"/sticky", "keep the latest prompt at the top", "[on|off]"},
     {"/permission", "how the CLI gates tool calls", "[mode]"},
     {"/resume", "resume a past conversation", NULL},
     {"/fh", "fork into a horizontal tmux split", NULL},
@@ -346,6 +347,31 @@ static void do_tools(struct session *s, const char *arg)
     ui_flush();
 }
 
+/* No argument flips it; "on"/"off" set it outright. The terminal margin is
+ * released immediately when the feature is switched off. */
+static void do_sticky(const char *arg)
+{
+    int on;
+    if (!arg || !*arg)
+        on = !ui_sticky_enabled();
+    else if (!strcmp(arg, "on"))
+        on = 1;
+    else if (!strcmp(arg, "off"))
+        on = 0;
+    else {
+        ui_error("/sticky takes on, off, or nothing to flip it");
+        ui_put("\n");
+        ui_flush();
+        return;
+    }
+
+    ui_sticky_set(on);
+    settings_set_int(SETTING_STICKY, on);
+    ui_note("sticky prompt %s", on ? "on" : "off");
+    ui_put("\n");
+    ui_flush();
+}
+
 int cmd_resume(struct session *s)
 {
     /* The picker reads the backend's own transcript store. */
@@ -506,6 +532,8 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line)
         do_thinking(s, arg);
     } else if (!strcmp(name, "/tools")) {
         do_tools(s, arg);
+    } else if (!strcmp(name, "/sticky")) {
+        do_sticky(arg);
     } else if (!strcmp(name, "/permission")) {
         do_permission(s, arg);
     } else if (!strcmp(name, "/resume")) {

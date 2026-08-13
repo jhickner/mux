@@ -13,6 +13,22 @@
 static int use_color;
 static int raw_newlines;
 
+static struct {
+    int enabled;
+    int tracking;
+    int pinned;
+    int prompt_top;
+    int prompt_rows;
+    int cursor_row;
+    int cursor_col;
+    int screen_rows;
+    int screen_cols;
+} sticky;
+
+static void sticky_activate(void);
+static void sticky_after_linefeed(void);
+static void sticky_note_escape(const char *s);
+
 /* Each role is an optional SGR attribute plus a foreground drawn from the
  * active colors.h theme. `slot` is -1 for the attribute-only roles. */
 static const struct {
@@ -100,6 +116,8 @@ void ui_putn(const char *s, size_t n)
             continue;
         fwrite(s + start, 1, i - start, stdout);
         fputs("\r\n", stdout);
+        sticky.cursor_col = 1;
+        sticky_after_linefeed();
         start = i + 1;
     }
     if (start < n)
@@ -135,10 +153,182 @@ void ui_printf(const char *fmt, ...)
     free(heap);
 }
 
-void ui_esc(const char *s) { fputs(s, stdout); }
+void ui_esc(const char *s)
+{
+    fputs(s, stdout);
+    sticky_note_escape(s);
+}
 
 void ui_sync_begin(void) { fputs("\x1b[?2026h", stdout); }
 void ui_sync_end(void) { fputs("\x1b[?2026l", stdout); }
+
+static int sticky_message_rows(const char *text, int cols)
+{
+    size_t budget = (size_t)(cols - 2 > 4 ? cols - 2 : 4);
+    int rows = 0, first = 1;
+    const char *p = text ? text : "";
+    while (*p || first) {
+        size_t skip = 0;
+        size_t row = *p ? ui_wrap_row(p, budget, &skip) : 0;
+        rows++;
+        p += row + skip;
+        first = 0;
+    }
+    return rows;
+}
+
+/* DECSTBM moves the cursor while changing the scrolling margins. Put it back
+ * explicitly so callers can turn the feature on and off between ordinary
+ * writes without otherwise changing the terminal's output position. */
+static void sticky_margin(int top, int bottom, int row, int column)
+{
+    char esc[64];
+    if (top > 0)
+        snprintf(esc, sizeof esc, "\x1b[%d;%dr\x1b[%d;%dH",
+                 top, bottom, row, column);
+    else
+        snprintf(esc, sizeof esc, "\x1b[r\x1b[%d;%dH", row, column);
+    fputs(esc, stdout); /* deliberately bypass ui_esc's cursor bookkeeping */
+    fflush(stdout);
+}
+
+static void sticky_release(void)
+{
+    if (!sticky.pinned)
+        return;
+    int row = sticky.cursor_row, column = sticky.cursor_col;
+    (void)tty_cursor_position(&row, &column);
+    sticky_margin(0, 0, row, column);
+    sticky.cursor_row = row;
+    sticky.cursor_col = column;
+    sticky.pinned = 0;
+}
+
+void ui_sticky_end(void)
+{
+    sticky_release();
+    sticky.tracking = 0;
+}
+
+void ui_sticky_set(int on)
+{
+    on = on ? 1 : 0;
+    if (!on)
+        ui_sticky_end();
+    sticky.enabled = on;
+}
+
+int ui_sticky_enabled(void) { return sticky.enabled; }
+
+void ui_sticky_begin(const char *text)
+{
+    if (!sticky.enabled || !raw_newlines || !tty_is_raw())
+        return;
+
+    ui_sticky_end();
+    sticky.screen_rows = tty_rows();
+    sticky.screen_cols = tty_columns();
+    sticky.prompt_rows = sticky_message_rows(text, sticky.screen_cols);
+    if (sticky.prompt_rows >= sticky.screen_rows - 1)
+        return; /* leave room for at least one content row and the editor */
+
+    int row, column;
+    if (!tty_cursor_position(&row, &column))
+        return; /* the terminal does not implement a cursor-position report */
+
+    sticky.cursor_row = row;
+    sticky.cursor_col = column;
+    /* prompt_echo_message() leaves one blank separator row after the block. */
+    sticky.prompt_top = row - sticky.prompt_rows - 1;
+    if (sticky.prompt_top < 1)
+        return;
+    sticky.tracking = 1;
+    if (sticky.prompt_top == 1)
+        sticky_activate();
+}
+
+static void sticky_activate(void)
+{
+    if (!sticky.tracking || sticky.pinned || sticky.prompt_top != 1)
+        return;
+    int first_content = sticky.prompt_rows + 1;
+    if (first_content >= sticky.screen_rows)
+        return;
+    sticky_margin(first_content, sticky.screen_rows,
+                  sticky.cursor_row, sticky.cursor_col);
+    sticky.pinned = 1;
+}
+
+static void sticky_after_linefeed(void)
+{
+    if (!sticky.tracking)
+        return;
+
+    if (tty_rows() != sticky.screen_rows || tty_columns() != sticky.screen_cols) {
+        /* Reflow changes both the prompt height and its position. Releasing is
+         * safer than reserving the wrong rows; the next submitted prompt starts
+         * a fresh tracker at the new dimensions. */
+        ui_sticky_end();
+        return;
+    }
+
+    if (sticky.cursor_row < sticky.screen_rows) {
+        sticky.cursor_row++;
+        return;
+    }
+    if (sticky.pinned)
+        return; /* only the content region scrolled */
+
+    if (sticky.prompt_top > 1)
+        sticky.prompt_top--;
+    if (sticky.prompt_top == 1)
+        sticky_activate();
+}
+
+/* Cursor motion is sparse in this application but important: the spinner and
+ * live editor repeatedly walk up, erase, and repaint. Follow the vertical CSI
+ * operations so a later line feed is judged against the real bottom row. */
+static void sticky_note_escape(const char *s)
+{
+    if (!sticky.tracking)
+        return;
+    for (size_t i = 0; s[i]; i++) {
+        if (s[i] == '\r') {
+            sticky.cursor_col = 1;
+            continue;
+        }
+        if ((unsigned char)s[i] != 0x1b || s[i + 1] != '[')
+            continue;
+        size_t j = i + 2;
+        if (s[j] == '?' || s[j] == '>' || s[j] == '<')
+            j++;
+        int first = 0, second = 0, have_first = 0, have_second = 0;
+        while (s[j] >= '0' && s[j] <= '9') {
+            first = first * 10 + s[j++] - '0';
+            have_first = 1;
+        }
+        if (s[j] == ';') {
+            j++;
+            while (s[j] >= '0' && s[j] <= '9') {
+                second = second * 10 + s[j++] - '0';
+                have_second = 1;
+            }
+        }
+        int n = have_first ? first : 1;
+        if (s[j] == 'A') {
+            sticky.cursor_row -= n;
+            if (sticky.cursor_row < 1) sticky.cursor_row = 1;
+        } else if (s[j] == 'B') {
+            sticky.cursor_row += n;
+            if (sticky.cursor_row > sticky.screen_rows)
+                sticky.cursor_row = sticky.screen_rows;
+        } else if (s[j] == 'H' || s[j] == 'f') {
+            sticky.cursor_row = have_first ? first : 1;
+            sticky.cursor_col = have_second ? second : 1;
+        }
+        i = j;
+    }
+}
 
 int ui_reflow_rows(const int *row_widths, int count, int cols)
 {

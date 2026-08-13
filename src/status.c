@@ -155,7 +155,7 @@ static void paint(void)
      * so the permanent spacing between tool rows stays the caller's business. */
     painted_gap = gap;
     if (painted_gap)
-        ui_esc("\r\n");
+        ui_put("\n");
     ui_esc(ui_style(UI_ACCENT));
     ui_put(left);
     spin_width = (int)ui_cells(left);
@@ -184,7 +184,7 @@ static void paint(void)
 
     if (below) {
         int rows = 1, row = 0, col = 0;
-        ui_esc("\r\n");
+        ui_put("\n");
         below(below_ud, &rows, &row, &col);
         move((rows - 1) - row, 'A');
         ui_esc("\r");

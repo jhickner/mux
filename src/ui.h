@@ -55,6 +55,14 @@ void ui_esc(const char *s);
 void ui_sync_begin(void);
 void ui_sync_end(void);
 
+/* Optional sticky user-message header. begin() is called after a submitted
+ * message has been echoed; normal scrolling continues until that block reaches
+ * row one, then subsequent output scrolls in the rows beneath it. */
+void ui_sticky_set(int on);
+int  ui_sticky_enabled(void);
+void ui_sticky_begin(const char *text);
+void ui_sticky_end(void);
+
 /* Physical rows that `count` logical rows of the given cell widths occupy at
  * `cols`. A row is re-wrapped by the terminal when the window narrows, so this
  * must be recomputed at the current width rather than remembered from the paint.
