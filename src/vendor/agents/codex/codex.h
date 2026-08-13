@@ -34,7 +34,9 @@ typedef struct {
     int skip_git_repo_check;    /* retained for source compatibility; unused  */
 } codex_opts;
 
-/* Spawn app-server, initialize it, and start/resume a thread. */
+/* Spawn app-server and initialize/start its thread in the background. Returns
+ * once the child and worker exist; the first operation waits if startup is
+ * still in progress. */
 codex_client *codex_start(const codex_opts *opts);
 
 /* Start one turn on the existing process/thread and return its final agent
@@ -93,7 +95,9 @@ void codex_stop(codex_client *c);
 
 #include <errno.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -113,12 +117,15 @@ struct codex_client {
     int (*abort)(void);
     void (*on_event)(void *ud, const codex_event *ev);
     void *on_event_ud;
-    char *model, *effort, *sandbox, *sys;
+    char *model, *effort, *sandbox, *sys, *resume;
     int effort_changed;
     char session_id[128];
     long context_tokens, context_window;
     char *buf;
     size_t len, cap;
+    pthread_t warm_thread;
+    int warm_joinable;
+    atomic_int warm_state;     /* 0 while starting, 1 ready, -1 failed */
 };
 
 static char *cx_dup(const char *s) { return (s && *s) ? strdup(s) : NULL; }
@@ -274,6 +281,27 @@ static int cx_open_thread(codex_client *c, const char *resume) {
     cJSON_Delete(r); return sid != NULL;
 }
 
+/* The app-server handshake and thread creation are local but noticeably slower
+ * than drawing the prompt. Do them while the user is reading or typing instead
+ * of holding the whole interface behind them. */
+static void *cx_warm(void *arg) {
+    codex_client *c = arg;
+    int ok = cx_initialize(c) && cx_open_thread(c, c->resume);
+    atomic_store_explicit(&c->warm_state, ok ? 1 : -1, memory_order_release);
+    return NULL;
+}
+
+/* A turn submitted unusually quickly waits for the one startup worker. In the
+ * normal interactive case it has already finished by the time this is called. */
+static int cx_await_ready(codex_client *c) {
+    if (!c) return 0;
+    if (c->warm_joinable) {
+        pthread_join(c->warm_thread, NULL);
+        c->warm_joinable = 0;
+    }
+    return atomic_load_explicit(&c->warm_state, memory_order_acquire) == 1;
+}
+
 codex_client *codex_start(const codex_opts *opts) {
     codex_opts o = opts ? *opts : (codex_opts){0};
     const char *cli = o.cli_path && *o.cli_path ? o.cli_path : "codex";
@@ -282,6 +310,7 @@ codex_client *codex_start(const codex_opts *opts) {
     c->in_fd = c->out_fd = -1; c->next_id = 1;
     c->model = cx_dup(o.model); c->effort = cx_dup(o.effort);
     c->sys = cx_dup(o.append_system);
+    c->resume = cx_dup(o.resume_session);
     c->sandbox = strdup(o.bypass_approvals ? "danger-full-access" :
                         (o.sandbox && *o.sandbox ? o.sandbox : "workspace-write"));
     if (!c->sandbox) { codex_stop(c); return NULL; }
@@ -315,9 +344,11 @@ codex_client *codex_start(const codex_opts *opts) {
     }
     close(in[0]); close(out[1]);
     c->pid = pid; c->in_fd = in[1]; c->out_fd = out[0];
-    if (!cx_initialize(c) || !cx_open_thread(c, o.resume_session)) {
-        codex_stop(c); return NULL;
-    }
+    atomic_init(&c->warm_state, 0);
+    if (!pthread_create(&c->warm_thread, NULL, cx_warm, c))
+        c->warm_joinable = 1;
+    else
+        cx_warm(c);             /* rare resource failure: retain old semantics */
     return c;
 }
 
@@ -340,10 +371,13 @@ void codex_set_event_cb(codex_client *c,
     if (c) { c->on_event = cb; c->on_event_ud = ud; }
 }
 const char *codex_session_id(codex_client *c) {
-    return c && c->session_id[0] ? c->session_id : NULL;
+    if (!c || atomic_load_explicit(&c->warm_state, memory_order_acquire) != 1)
+        return NULL;
+    return c->session_id[0] ? c->session_id : NULL;
 }
 void codex_reset(codex_client *c) {
     if (c) {
+        if (!cx_await_ready(c)) return;
         c->session_id[0] = '\0';
         c->context_tokens = c->context_window = 0;
     }
@@ -482,6 +516,7 @@ static void cx_item_event(codex_client *c, cJSON *params, int started,
 char *codex_send_ex(codex_client *c, const char *user_text, codex_result *meta) {
     if (meta) memset(meta, 0, sizeof *meta);
     if (!c || !user_text) return NULL;
+    if (!cx_await_ready(c)) return NULL;
     if (!c->session_id[0] && !cx_open_thread(c, NULL)) return NULL;
     cJSON *p = cJSON_CreateObject(), *input = cJSON_CreateArray();
     cJSON *text = cJSON_CreateObject();
@@ -588,8 +623,12 @@ void codex_stop(codex_client *c) {
             c->pid = 0;
         }
     }
+    if (c->warm_joinable) {
+        pthread_join(c->warm_thread, NULL);
+        c->warm_joinable = 0;
+    }
     if (c->out_fd >= 0) close(c->out_fd);
-    free(c->model); free(c->effort); free(c->sandbox); free(c->sys);
+    free(c->model); free(c->effort); free(c->sandbox); free(c->sys); free(c->resume);
     free(c->buf); free(c);
 }
 

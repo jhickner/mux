@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "vendor/agents/codex/codex.h"
 #include "vendor/cJSON.h"
@@ -10,6 +12,13 @@ static codex_client *test_client;
 static long live_tokens, live_window;
 static int shell_starts, edit_starts, tool_results;
 static char shell_input[512], shell_output[512], edit_input[1024], edit_diff[1024];
+
+static long milliseconds(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
 
 static int should_abort(void)
 {
@@ -58,6 +67,7 @@ static int mock_server(void)
         int id = cJSON_IsNumber(idj) ? idj->valueint : 0;
 
         if (method && !strcmp(method, "initialize")) {
+            usleep(400000);
             respond(id, "{}");
         } else if (method && !strcmp(method, "thread/start")) {
             respond(id, "{\"thread\":{\"id\":\"thread-1\"}}");
@@ -136,9 +146,15 @@ int main(int argc, char **argv)
         return mock_server();
 
     codex_opts opts = { .cli_path = argv[0], .effort = "high" };
+    long started = milliseconds();
     codex_client *client = codex_start(&opts);
     if (!client) {
         fprintf(stderr, "codextest: could not start mock app-server\n");
+        return 1;
+    }
+    if (milliseconds() - started >= 250 || codex_session_id(client)) {
+        fprintf(stderr, "codextest: startup did not return during background prewarm\n");
+        codex_stop(client);
         return 1;
     }
 

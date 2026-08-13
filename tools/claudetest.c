@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "vendor/agents/claude/claude.h"
 #include "vendor/cJSON.h"
@@ -22,6 +24,13 @@ static void result(const char *text)
     fflush(stdout);
 }
 
+static long milliseconds(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
+
 static int mock_cli(void)
 {
     char *line = NULL;
@@ -29,6 +38,22 @@ static int mock_cli(void)
     int effort_changes = 0;
     while (getline(&line, &cap, stdin) >= 0) {
         cJSON *msg = cJSON_Parse(line);
+        const char *type = msg ? cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(msg, "type")) : NULL;
+        cJSON *request = msg ? cJSON_GetObjectItemCaseSensitive(msg, "request") : NULL;
+        const char *subtype = request ? cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(request, "subtype")) : NULL;
+        if (type && !strcmp(type, "control_request") && subtype &&
+            !strcmp(subtype, "initialize")) {
+            usleep(400000);
+            printf("{\"type\":\"control_response\",\"response\":{"
+                   "\"subtype\":\"success\","
+                   "\"request_id\":\"claude_h_initialize\","
+                   "\"response\":{}},\"session_id\":\"session-1\"}\n");
+            fflush(stdout);
+            cJSON_Delete(msg);
+            continue;
+        }
         const char *text = msg ? message_text(msg) : NULL;
         if (text && !strcmp(text, "/effort low") && effort_changes++ == 0)
             result("Set effort level to low");
@@ -52,9 +77,15 @@ int main(int argc, char **argv)
         return mock_cli();
 
     claude_opts opts = { .cli_path = argv[0] };
+    long started = milliseconds();
     claude_client *client = claude_start(&opts);
     if (!client) {
         fputs("claudetest: could not start mock CLI\n", stderr);
+        return 1;
+    }
+    if (milliseconds() - started >= 250 || claude_session_id(client)) {
+        fputs("claudetest: startup did not return during background prewarm\n", stderr);
+        claude_stop(client);
         return 1;
     }
     if (!claude_set_effort(client, "low") ||
