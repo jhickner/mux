@@ -10,13 +10,33 @@
 #include "prompt.h"
 #include "session.h"
 #include "sessionfork.h"
+#include "settings.h"
 #include "status.h"
 #include "tty.h"
 #include "ui.h"
-#include "vendor/claude.h"
+#include "vendor/agents/backend.h"
 #include "vendor/repl.h"
 
 #define APP "simple-agent"
+
+/* The agent CLIs backend.h can drive, as "claude, codex, grok, pi". */
+static void backend_choices(char *out, size_t size)
+{
+    size_t n = 0;
+    for (const char *const *p = backend_names(); *p && n + 1 < size; p++) {
+        int w = snprintf(out + n, size - n, "%s%s", n ? ", " : "", *p);
+        if (w > 0)
+            n += (size_t)w < size - n ? (size_t)w : size - n - 1;
+    }
+}
+
+static int backend_known(const char *name)
+{
+    for (const char *const *p = backend_names(); *p; p++)
+        if (strcmp(*p, name) == 0)
+            return 1;
+    return 0;
+}
 
 static void restore_terminal(void)
 {
@@ -37,17 +57,21 @@ static int config_dir(char *out, size_t size)
 
 static void usage(void)
 {
+    char choices[128];
+    backend_choices(choices, sizeof choices);
     fprintf(stderr,
-            "usage: " APP " [-m model] [-C dir] [-s] [-r] [prompt...]\n"
+            "usage: " APP " [-b backend] [-m model] [-C dir] [-s] [-r] [prompt...]\n"
             "\n"
-            "  -m model   model to run (default: the claude CLI's own)\n"
+            "  -b name    agent CLI to drive: %s (default: claude)\n"
+            "  -m model   model to run (default: the CLI's own)\n"
             "  -C dir     working directory for the agent's tools\n"
             "  -s         safe mode: skip skills, CLAUDE.md, MCP servers, hooks\n"
             "  -r         --resume: pick a past conversation to continue\n"
             "  --session id  resume a specific conversation (used by the fork commands)\n"
             "  -h         this help\n"
             "\n"
-            "With a prompt on the command line, answer it and exit.\n");
+            "With a prompt on the command line, answer it and exit.\n",
+            choices);
 }
 
 /* A command submitted while a turn is streaming. The spinner and the live
@@ -67,6 +91,7 @@ static int live_command(void *ud, const char *line)
 int main(int argc, char **argv)
 {
     static const struct option LONG_OPTS[] = {
+        {"backend", required_argument, NULL, 'b'},
         {"model",   required_argument, NULL, 'm'},
         {"dir",     required_argument, NULL, 'C'},
         {"safe",    no_argument,       NULL, 's'},
@@ -76,6 +101,7 @@ int main(int argc, char **argv)
         {NULL,      0,                 NULL, 0},
     };
 
+    const char *backend = "claude";
     const char *model = NULL;
     const char *dir = NULL;
     const char *session_arg = NULL;
@@ -83,8 +109,9 @@ int main(int argc, char **argv)
     int resume = 0;
     int opt;
 
-    while ((opt = getopt_long(argc, argv, "m:C:srh", LONG_OPTS, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "b:m:C:srh", LONG_OPTS, NULL)) != -1) {
         switch (opt) {
+        case 'b': backend = optarg; break;
         case 'm': model = optarg; break;
         case 'C': dir = optarg; break;
         case 's': safe_mode = 1; break;
@@ -92,6 +119,13 @@ int main(int argc, char **argv)
         case 'S': session_arg = optarg; break;
         default:  usage(); return opt == 'h' ? 0 : 2;
         }
+    }
+
+    if (!backend_known(backend)) {
+        char choices[128];
+        backend_choices(choices, sizeof choices);
+        fprintf(stderr, APP ": unknown backend '%s' — pick one of %s\n", backend, choices);
+        return 2;
     }
 
     sessionfork_set_program(argv[0]);
@@ -113,15 +147,24 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    char config[4096];
+    int have_config = config_dir(config, sizeof config);
+    if (have_config) {
+        char path[4200];
+        snprintf(path, sizeof path, "%s/settings", config);
+        settings_open(path);
+    }
+
     ui_init();
-    struct session *session = session_new(cwd, model);
+    struct session *session = session_new(backend, cwd, model);
     if (session) {
         session_set_customizations(session, !safe_mode);
+        session_set_thinking(session, settings_get_int(SETTING_THINKING, 1));
         /* Set before start: the CLI then comes up already resumed. */
         session_adopt_id(session, session_arg);
     }
     if (!session || !session_start(session)) {
-        fprintf(stderr, APP ": could not start the claude CLI — is it on PATH?\n");
+        fprintf(stderr, APP ": could not start the %s CLI — is it on PATH?\n", backend);
         return 1;
     }
 
@@ -159,8 +202,7 @@ int main(int argc, char **argv)
         session_free(session);
         return 1;
     }
-    char config[4096];
-    if (config_dir(config, sizeof config)) {
+    if (have_config) {
         char history[4200];
         snprintf(history, sizeof history, "%s/history", config);
         prompt_history_open(prompt, history);

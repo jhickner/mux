@@ -14,8 +14,9 @@ $(BIN): $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDFLAGS)
 
 # -MMD -MP emits the .d files that keep object files in step with header edits.
+# -Isrc/vendor lets the agent drivers find the single shared cJSON.h.
 %.o: %.c
-	$(CC) $(CFLAGS) -Isrc -MMD -MP -c -o $@ $<
+	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -MMD -MP -c -o $@ $<
 
 -include $(DEP)
 

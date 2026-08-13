@@ -9,12 +9,14 @@
 #include "session.h"
 #include "sessionfork.h"
 #include "sessionlist.h"
+#include "settings.h"
 #include "ui.h"
 
 const ReplCommand CMD_TABLE[] = {
     {"/new", "start a fresh conversation", NULL},
     {"/clear", "alias for /new", NULL},
     {"/model", "switch model", "[name]"},
+    {"/thinking", "show or hide the model's reasoning", "[on|off]"},
     {"/resume", "resume a past conversation", NULL},
     {"/fh", "fork into a horizontal tmux split", NULL},
     {"/fs", "alias for /fh", NULL},
@@ -27,6 +29,7 @@ const ReplCommand CMD_TABLE[] = {
 };
 const int CMD_COUNT = (int)(sizeof CMD_TABLE / sizeof *CMD_TABLE);
 
+/* The picker only knows Claude's line-up; every other backend takes a name. */
 static const struct pick_item MODELS[] = {
     {"claude-opus-5", "most capable"},
     {"claude-opus-5[1m]", "opus with a 1M-token context"},
@@ -36,6 +39,11 @@ static const struct pick_item MODELS[] = {
     {"default", "whatever the claude CLI is configured to use"},
 };
 #define MODEL_COUNT ((int)(sizeof MODELS / sizeof *MODELS))
+
+static int is_claude(const struct session *s)
+{
+    return strcmp(session_backend(s), "claude") == 0;
+}
 
 /* ---------- helpers ---------- */
 
@@ -84,7 +92,7 @@ static void show_help(void)
     ui_put("\n");
     help_heading("skills");
     help_row("", "your skills, CLAUDE.md, MCP servers and agents load by default.");
-    help_row("", "any slash command not listed above goes to the claude CLI, so");
+    help_row("", "any slash command not listed above goes to the agent CLI, so");
     help_row("", "/w, /todo and the rest work here. start with -s to run without");
     help_row("", "them; /session shows what is active.");
     ui_put("\n");
@@ -110,6 +118,12 @@ static int copy_to_clipboard(const char *text)
 static void do_model(struct session *s, const char *arg)
 {
     const char *chosen = arg;
+    if ((!chosen || !*chosen) && !is_claude(s)) {
+        ui_note("/model <name> — the picker only lists claude's models");
+        ui_put("\n");
+        ui_flush();
+        return;
+    }
     if (!chosen || !*chosen) {
         int initial = 0;
         const char *current = session_model(s);
@@ -133,8 +147,42 @@ static void do_model(struct session *s, const char *arg)
     ui_flush();
 }
 
+/* No argument flips it; "on"/"off" set it outright. The choice is remembered
+ * across runs. */
+static void do_thinking(struct session *s, const char *arg)
+{
+    int on;
+    if (!arg || !*arg)
+        on = !session_thinking(s);
+    else if (!strcmp(arg, "on"))
+        on = 1;
+    else if (!strcmp(arg, "off"))
+        on = 0;
+    else {
+        ui_error("/thinking takes on, off, or nothing to flip it");
+        ui_put("\n");
+        ui_flush();
+        return;
+    }
+
+    session_set_thinking(s, on);
+    settings_set_int(SETTING_THINKING, on);
+    ui_note("reasoning %s", on ? "shown" : "hidden");
+    ui_put("\n");
+    ui_flush();
+}
+
 int cmd_resume(struct session *s)
 {
+    /* The picker reads Claude Code's own transcript store; no other backend
+     * keeps one we can list. */
+    if (!is_claude(s)) {
+        ui_note("%s keeps no transcripts to resume from", session_backend(s));
+        ui_put("\n");
+        ui_flush();
+        return 0;
+    }
+
     struct past_session *list = NULL;
     int count = sessionlist_load(session_cwd(s), session_id(s), &list);
     if (count == 0) {
@@ -278,6 +326,8 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line)
         do_new(s);
     } else if (!strcmp(name, "/model")) {
         do_model(s, arg);
+    } else if (!strcmp(name, "/thinking")) {
+        do_thinking(s, arg);
     } else if (!strcmp(name, "/resume")) {
         cmd_resume(s);
     } else if (fork_target(name, &where)) {

@@ -10,25 +10,28 @@
 #include "status.h"
 #include "tty.h"
 #include "ui.h"
+#include "vendor/agents/backend.h"
 #include "vendor/cJSON.h"
-#include "vendor/claude.h"
 
 struct session {
-    claude_client *client;
-    char          *cwd;
-    char          *model;      /* requested; NULL means the CLI's default */
-    char          *resolved;   /* what the CLI reported at init           */
-    char           id[128];
-    char          *last_reply;
-    char          *last_block; /* the final streamed text block           */
-    int            turns;
-    double         cost_usd;
-    long           context_tokens;
-    long           context_window;
-    int            quiet;         /* suppress activity, spinner, and footer */
-    int            customizations; /* load the user's skills, CLAUDE.md, MCP, ... */
-    int            after_activity; /* last thing printed was a tool/thinking row */
-    int            after_tool;     /* ... and specifically a tool call block     */
+    Backend *agent;
+    char    *backend;  /* driver name: claude, codex, grok, pi     */
+    char    *cwd;
+    char    *model;    /* requested; NULL means the CLI's default  */
+    char    *resolved; /* what the CLI reported at init            */
+    char     id[128];
+    char    *last_reply;
+    char    *last_block;  /* the final streamed text block of a turn  */
+    char    *streamed;    /* every text block of a turn, in order     */
+    int      turns;
+    double   cost_usd;
+    long     context_tokens;
+    long     context_window;
+    int      quiet;          /* suppress activity, spinner, and footer      */
+    int      thinking;       /* show the model's reasoning rows             */
+    int      customizations; /* load the user's skills, CLAUDE.md, MCP, ... */
+    int      after_activity; /* last thing printed was a tool/thinking row  */
+    int      after_tool;     /* ... and specifically a tool call block      */
 };
 
 /* ---------- small helpers ---------- */
@@ -37,6 +40,18 @@ static void replace(char **slot, const char *value)
 {
     free(*slot);
     *slot = value ? strdup(value) : NULL;
+}
+
+static void append(char **slot, const char *value)
+{
+    if (!value || !*value)
+        return;
+    size_t have = *slot ? strlen(*slot) : 0, add = strlen(value);
+    char *grown = realloc(*slot, have + add + 1);
+    if (!grown)
+        return;
+    memcpy(grown + have, value, add + 1);
+    *slot = grown;
 }
 
 static void humanize(long n, char *out, size_t size)
@@ -93,16 +108,17 @@ static const char *shorten_path(const struct session *s, const char *value, char
     return value;
 }
 
-/* The field of a tool's input that best identifies the work it is doing. */
-static void tool_argument(const struct session *s, const char *input_json, char *out, size_t size)
+/* What a tool call is doing: the telling field of its JSON input, or the
+ * one-line summary a backend that reports no structured input handed us. */
+static void tool_argument(const struct session *s, const backend_event *ev, char *out, size_t size)
 {
     static const char *const KEYS[] = {"command",     "file_path", "path",   "pattern",
                                        "url",         "query",     "prompt", "description",
                                        "notebook_path"};
     char arg[4096] = "";
 
-    if (input_json) {
-        cJSON *input = cJSON_Parse(input_json);
+    if (ev->input_json) {
+        cJSON *input = cJSON_Parse(ev->input_json);
         if (input) {
             for (size_t i = 0; i < sizeof KEYS / sizeof *KEYS; i++) {
                 const char *v = cJSON_GetStringValue(cJSON_GetObjectItem(input, KEYS[i]));
@@ -114,6 +130,8 @@ static void tool_argument(const struct session *s, const char *input_json, char 
             }
             cJSON_Delete(input);
         }
+    } else if (ev->arg) {
+        one_line(ev->arg, arg, sizeof arg);
     }
     snprintf(out, size, "%s", arg);
 }
@@ -276,11 +294,11 @@ static void print_tool_output(const char *text)
     }
 }
 
-static void on_event(void *ud, const claude_event *ev)
+static void on_event(void *ud, const backend_event *ev)
 {
     struct session *s = ud;
 
-    if (ev->kind == CLAUDE_EV_INIT) {
+    if (ev->kind == BACKEND_EV_INIT) {
         replace(&s->resolved, ev->name);
         return;
     }
@@ -288,10 +306,10 @@ static void on_event(void *ud, const claude_event *ev)
         return;
 
     switch (ev->kind) {
-    case CLAUDE_EV_INIT:
+    case BACKEND_EV_INIT:
         break;
 
-    case CLAUDE_EV_ASSISTANT:
+    case BACKEND_EV_ASSISTANT:
         if (!ev->text || !*ev->text)
             break;
         status_pause();
@@ -302,12 +320,13 @@ static void on_event(void *ud, const claude_event *ev)
         ui_put("\n");
         status_resume();
         replace(&s->last_block, ev->text);
+        append(&s->streamed, ev->text);
         s->after_activity = 0;
         s->after_tool = 0;
         break;
 
-    case CLAUDE_EV_THINKING:
-        if (!ev->text || !*ev->text)
+    case BACKEND_EV_THINKING:
+        if (!s->thinking || !ev->text || !*ev->text)
             break;
         status_pause();
         print_activity("\xe2\x9c\xbb", ev->text, UI_DIM); /* ✻ */
@@ -316,10 +335,10 @@ static void on_event(void *ud, const claude_event *ev)
         s->after_tool = 0;
         break;
 
-    case CLAUDE_EV_TOOL: {
+    case BACKEND_EV_TOOL: {
         const char *name = ev->name ? ev->name : "?";
         char arg[4096];
-        tool_argument(s, ev->input_json, arg, sizeof arg);
+        tool_argument(s, ev, arg, sizeof arg);
         status_pause();
         if (s->after_tool) /* one blank row between consecutive tool blocks */
             ui_put("\n");
@@ -340,7 +359,7 @@ static void on_event(void *ud, const claude_event *ev)
         break;
     }
 
-    case CLAUDE_EV_TOOL_RESULT:
+    case BACKEND_EV_TOOL_RESULT:
         status_pause();
         /* A tool that changed the file speaks for itself; one that did not (a
          * read, a failed edit) still needs its own output shown. */
@@ -355,8 +374,8 @@ static void on_event(void *ud, const claude_event *ev)
     ui_flush();
 }
 
-/* Where keys typed during a turn go. The abort predicate claude.h polls takes
- * no argument, so the hook lives here rather than on the session. */
+/* Where keys typed during a turn go. The abort predicate the backend polls
+ * takes no argument, so the hook lives here rather than on the session. */
 static session_key_fn typeahead;
 static void          *typeahead_ud;
 
@@ -366,8 +385,8 @@ void session_set_typeahead(session_key_fn fn, void *ud)
     typeahead_ud = ud;
 }
 
-/* Polled by claude.h roughly every 80ms: drain whatever was typed, then tick
- * the spinner, and report whether the user asked to interrupt. */
+/* Polled by the backend a few times a second: drain whatever was typed, then
+ * tick the spinner, and report whether the user asked to interrupt. */
 static int abort_check(void)
 {
     /* Without a raw terminal there is no interrupt key to read, and reading a
@@ -396,13 +415,15 @@ static int abort_check(void)
 
 /* ---------- lifecycle ---------- */
 
-struct session *session_new(const char *cwd, const char *model)
+struct session *session_new(const char *backend, const char *cwd, const char *model)
 {
     struct session *s = calloc(1, sizeof *s);
     if (!s)
         return NULL;
+    s->backend = strdup(backend && *backend ? backend : "claude");
     s->cwd = cwd ? strdup(cwd) : NULL;
     s->model = model ? strdup(model) : NULL;
+    s->thinking = 1;
     return s;
 }
 
@@ -410,64 +431,69 @@ void session_free(struct session *s)
 {
     if (!s)
         return;
-    if (s->client)
-        claude_stop(s->client);
+    if (s->agent)
+        s->agent->close(s->agent);
+    free(s->backend);
     free(s->cwd);
     free(s->model);
     free(s->resolved);
     free(s->last_reply);
     free(s->last_block);
+    free(s->streamed);
     free(s);
 }
 
-/* Spawn a client, optionally adopting `resume_id`. */
-static claude_client *spawn(struct session *s, const char *resume_id)
+/* Open the backend on first use. Everything the driver is told at open time —
+ * the name, the working directory, whether to load the user's customizations —
+ * is fixed here, so this runs after the setters and before the first start. */
+static Backend *agent(struct session *s)
 {
-    claude_opts o = {0};
+    if (s->agent)
+        return s->agent;
+    backend_opts o = {0};
+    o.name = s->backend;
     o.cwd = s->cwd;
     o.model = s->model;
-    o.permission_mode = "bypassPermissions";
-    o.use_subscription = 1;
     o.allow_customizations = s->customizations;
-    o.resume_session = resume_id;
-    claude_client *c = claude_start(&o);
-    if (!c)
-        return NULL;
-    claude_set_event_cb(c, on_event, s);
-    claude_set_abort_check(c, abort_check);
-    return c;
+    s->agent = backend_open_ex(&o);
+    if (s->agent) {
+        s->agent->set_event_cb(s->agent, on_event, s);
+        s->agent->set_abort_check(s->agent, abort_check);
+    }
+    return s->agent;
 }
 
 void session_set_quiet(struct session *s, int quiet) { s->quiet = quiet; }
 
+void session_set_thinking(struct session *s, int on) { s->thinking = on; }
+
+int session_thinking(const struct session *s) { return s->thinking; }
+
 void session_set_customizations(struct session *s, int on) { s->customizations = on; }
 
-int session_start(struct session *s)
-{
-    if (s->client)
-        claude_stop(s->client);
-    s->client = spawn(s, s->id[0] ? s->id : NULL);
-    return s->client != NULL;
-}
-
-/* Restart the process, carrying the conversation across via --resume. */
+/* (Re)start the child process, carrying the conversation across on the backends
+ * that can resume one. */
 static int restart(struct session *s, const char *resume_id)
 {
-    claude_client *fresh = spawn(s, resume_id);
-    if (!fresh)
+    Backend *b = agent(s);
+    if (!b || !b->start(b, resume_id))
         return 0;
-    if (s->client)
-        claude_stop(s->client);
-    s->client = fresh;
     if (resume_id && resume_id != s->id)
         snprintf(s->id, sizeof s->id, "%s", resume_id);
     return 1;
 }
 
+int session_start(struct session *s) { return restart(s, s->id[0] ? s->id : NULL); }
+
 int session_set_model(struct session *s, const char *model)
 {
+    Backend *b = agent(s);
+    if (!b)
+        return 0;
+
     char *previous = s->model;
     s->model = model ? strdup(model) : NULL;
+    b->set_model(b, s->model);
     if (restart(s, s->id[0] ? s->id : NULL)) {
         free(previous);
         replace(&s->resolved, NULL);
@@ -475,6 +501,7 @@ int session_set_model(struct session *s, const char *model)
     }
     free(s->model);
     s->model = previous;
+    b->set_model(b, s->model);
     return 0;
 }
 
@@ -497,9 +524,7 @@ int session_resume(struct session *s, const char *id)
 
 int session_clear(struct session *s)
 {
-    if (!s->client)
-        return 0;
-    if (!claude_reset(s->client))
+    if (!s->agent || !s->agent->reset(s->agent))
         return 0;
     s->turns = 0;
     s->cost_usd = 0;
@@ -507,7 +532,7 @@ int session_clear(struct session *s)
     replace(&s->last_reply, NULL);
     replace(&s->last_block, NULL);
     /* A cleared conversation gets a new session id from the CLI. */
-    const char *id = claude_session_id(s->client);
+    const char *id = s->agent->session_id(s->agent);
     if (id)
         snprintf(s->id, sizeof s->id, "%s", id);
     return 1;
@@ -559,44 +584,48 @@ static void print_footer(const struct session *s, double elapsed)
 
 int session_turn(struct session *s, const char *text)
 {
-    if (!s->client)
+    if (!s->agent)
         return 0;
 
     replace(&s->last_block, NULL);
+    replace(&s->streamed, NULL);
     s->after_activity = 0;
     s->after_tool = 0;
     double started = now_seconds();
     if (!s->quiet)
         status_begin();
 
-    claude_result meta = {0};
-    char *reply = claude_send_ex(s->client, text, &meta);
+    backend_result meta = {0};
+    char *reply = s->agent->ask_ex(s->agent, text, &meta);
     double elapsed = now_seconds() - started;
     if (!s->quiet)
         status_end();
 
-    const char *id = claude_session_id(s->client);
+    const char *id = s->agent->session_id(s->agent);
     if (id)
         snprintf(s->id, sizeof s->id, "%s", id);
 
     if (!reply) {
-        const char *detail = claude_last_error(s->client);
+        const char *detail = s->agent->last_error(s->agent);
         if (detail)
-            ui_error("claude: %s", detail);
+            ui_error("%s: %s", s->backend, detail);
         else
-            ui_error("the claude process stopped responding");
+            ui_error("the %s process stopped responding", s->backend);
         ui_put("\n");
         return 0;
     }
 
-    /* The result text repeats the last streamed block; only print what the
-     * stream did not already show. */
+    /* The reply repeats what the stream already showed — the last block for the
+     * backends that report one, everything streamed for those that hand back
+     * the whole turn. Print only what neither covered. */
+    int shown = (s->last_block && strcmp(reply, s->last_block) == 0) ||
+                (s->streamed && strcmp(reply, s->streamed) == 0);
     if (s->quiet) {
         if (*reply) {
             ui_put(reply);
             ui_put("\n");
         }
-    } else if (*reply && (!s->last_block || strcmp(reply, s->last_block) != 0)) {
+    } else if (*reply && !shown) {
         if (s->after_activity)
             ui_put("\n");
         md_render(reply, 0);
@@ -641,18 +670,26 @@ const char *session_model(const struct session *s)
 }
 
 const char *session_id(const struct session *s) { return s->id[0] ? s->id : NULL; }
+
+int session_can_resume(const struct session *s)
+{
+    return s->agent && (s->agent->caps & BACKEND_CAP_RESUME);
+}
+
 const char *session_cwd(const struct session *s) { return s->cwd; }
+const char *session_backend(const struct session *s) { return s->backend; }
 const char *session_last_reply(const struct session *s) { return s->last_reply; }
 
-/* The CLI reports "none" when no key env var was in play, which is exactly the
- * case where it fell back to the claude.ai login. */
+/* How the CLI authenticated, or NULL when the backend never says. A CLI that
+ * reports "none" had no key env var in play, which is exactly the case where it
+ * fell back to the subscription login. */
 static const char *auth_description(const struct session *s)
 {
-    const char *source = s->client ? claude_auth_source(s->client) : NULL;
+    const char *source = s->agent ? s->agent->auth_source(s->agent) : NULL;
     if (!source)
-        return "(not started)";
+        return NULL;
     if (strcmp(source, "none") == 0)
-        return "claude.ai subscription";
+        return "subscription login";
     return source;
 }
 
@@ -662,11 +699,17 @@ void session_report(const struct session *s)
     humanize(s->context_tokens, used, sizeof used);
     humanize(s->context_window, window, sizeof window);
 
+    const char *auth = auth_description(s);
+    ui_note("  backend  %s", s->backend);
     ui_note("  model    %s", session_model(s));
-    ui_note("  auth     %s", auth_description(s));
-    ui_note("  config   %s", s->customizations ? "skills, CLAUDE.md, MCP, agents"
-                                               : "safe mode (customizations off)");
-    ui_note("  session  %s", s->id[0] ? s->id : "(not started)");
+    if (auth)
+        ui_note("  auth     %s", auth);
+    /* Only Claude Code is told whether to load the user's own configuration. */
+    if (strcmp(s->backend, "claude") == 0)
+        ui_note("  config   %s", s->customizations ? "skills, CLAUDE.md, MCP, agents"
+                                                   : "safe mode (customizations off)");
+    if (s->id[0])
+        ui_note("  session  %s", s->id);
     /* Keep the report to one row per field even in a narrow terminal.
      * shorten_path already rewrites a $HOME prefix as "~". */
     char scratch[512];
@@ -684,11 +727,11 @@ void session_report(const struct session *s)
     ui_note("  turns    %d", s->turns);
     if (s->context_window > 0)
         ui_note("  context  %s / %s", used, window);
-    ui_note("  cost     $%.4f%s", s->cost_usd,
-            s->client && claude_auth_source(s->client) &&
-                    strcmp(claude_auth_source(s->client), "none") == 0
-                ? "  (list price; the subscription is not billed per token)"
-                : "");
+    if (s->cost_usd > 0 || auth)
+        ui_note("  cost     $%.4f%s", s->cost_usd,
+                auth && strcmp(auth, "subscription login") == 0
+                    ? "  (list price; the subscription is not billed per token)"
+                    : "");
     ui_put("\n");
     ui_flush();
 }
