@@ -147,7 +147,7 @@ diff.
 | `ctrl-c` | Clear the current line, or interrupt while a turn runs |
 | `ctrl-d` | Quit on an empty line, else delete forward |
 | `ctrl-l` | Clear the screen |
-| `ctrl-v` | Paste the clipboard image as a file, inserting its path (macOS) |
+| `ctrl-v` | Paste the clipboard: an image is saved to a file and its path inserted, text inserts as-is (macOS) |
 | `ctrl-a` / `ctrl-e` | Start / end of line |
 | `ctrl-w` / `ctrl-u` / `ctrl-k` | Kill word / to start / to end |
 | `ctrl-y` | Yank |

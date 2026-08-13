@@ -51,8 +51,15 @@ int main(int argc, char **argv)
 
     char path[1024];
     if (!paste_image(path, sizeof path)) {
-        printf("no image on the clipboard\n");
-        return 1;
+        char *text = paste_text();
+        if (!text) {
+            printf("clipboard is empty\n");
+            return 1;
+        }
+        printf("text       %zu bytes: %.60s%s\n", strlen(text), text,
+               strlen(text) > 60 ? "..." : "");
+        free(text);
+        return 0;
     }
 
     struct stat st;

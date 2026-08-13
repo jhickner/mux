@@ -91,3 +91,46 @@ int paste_image(char *out, size_t size)
     return 1;
 #endif
 }
+
+#define CHUNK 4096
+
+char *paste_text(void)
+{
+#ifndef __APPLE__
+    return NULL;
+#else
+    FILE *f = popen("pbpaste 2>/dev/null", "r");
+    if (!f)
+        return NULL;
+
+    char  *buf = NULL;
+    size_t len = 0, cap = 0;
+    for (;;) {
+        if (len + CHUNK + 1 > cap) {
+            size_t want = cap ? cap * 2 : CHUNK * 2 + 1;
+            char  *grown = realloc(buf, want);
+            if (!grown) {
+                free(buf);
+                pclose(f);
+                return NULL;
+            }
+            buf = grown;
+            cap = want;
+        }
+        size_t n = fread(buf + len, 1, CHUNK, f);
+        len += n;
+        if (n < CHUNK)
+            break;
+    }
+    pclose(f);
+
+    if (!buf)
+        return NULL;
+    buf[len] = '\0';
+    if (len == 0) {
+        free(buf);
+        return NULL;
+    }
+    return buf;
+#endif
+}
