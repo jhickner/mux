@@ -452,6 +452,7 @@ Backend *pi_backend_open(const backend_opts *opts) {
     b->start = pi_backend_start;
     b->ask_ex = pi_backend_ask_ex;
     b->set_model = backend_set_model_generic;
+    b->set_permission = backend_set_permission_none;
     b->set_event_cb = pi_backend_set_event_cb;
     b->set_abort_check = pi_backend_set_abort;
     b->session_id = backend_none;

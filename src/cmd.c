@@ -17,6 +17,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/clear", "alias for /new", NULL},
     {"/model", "switch model", "[name]"},
     {"/thinking", "show or hide the model's reasoning", "[on|off]"},
+    {"/permission", "how the CLI gates tool calls", "[mode]"},
     {"/resume", "resume a past conversation", NULL},
     {"/fh", "fork into a horizontal tmux split", NULL},
     {"/fs", "alias for /fh", NULL},
@@ -39,6 +40,18 @@ static const struct pick_item MODELS[] = {
     {"default", "whatever the claude CLI is configured to use"},
 };
 #define MODEL_COUNT ((int)(sizeof MODELS / sizeof *MODELS))
+
+/* Parallel to session_permission_name's table — same order, so the picker's
+ * index is the stored setting. */
+static const struct pick_item PERMISSIONS[] = {
+    {"bypassPermissions", "never refuses a tool call"},
+    {"auto", "approves the safe calls, refuses the rest"},
+    {"acceptEdits", "edits without asking, refuses the rest"},
+    {"dontAsk", "refuses anything that would ask"},
+    {"manual", "refuses everything not pre-allowed"},
+    {"plan", "read-only: research and propose, no changes"},
+};
+#define PERMISSION_COUNT ((int)(sizeof PERMISSIONS / sizeof *PERMISSIONS))
 
 static int is_claude(const struct session *s)
 {
@@ -144,6 +157,46 @@ static void do_model(struct session *s, const char *arg)
         return;
     }
     banner_identity(s);
+    ui_put("\n");
+    ui_flush();
+}
+
+/* No argument opens the picker. Restarts the CLI on the current session id, so
+ * the conversation carries across. The choice is remembered across runs. */
+static void do_permission(struct session *s, const char *arg)
+{
+    if (!is_claude(s)) {
+        ui_note("/permission only applies to claude");
+        ui_put("\n");
+        ui_flush();
+        return;
+    }
+
+    const char *chosen = arg;
+    if (!chosen || !*chosen) {
+        int initial = session_permission_index(session_permission(s));
+        int index = pick("gate tool calls", PERMISSIONS, PERMISSION_COUNT,
+                         initial < 0 ? 0 : initial);
+        if (index < 0)
+            return;
+        chosen = PERMISSIONS[index].label;
+    }
+
+    int index = session_permission_index(chosen);
+    if (index < 0) {
+        ui_error("unknown mode '%s'", chosen);
+        ui_put("\n");
+        ui_flush();
+        return;
+    }
+
+    if (!session_set_permission(s, session_permission_name(index))) {
+        ui_error("could not restart in %s", chosen);
+        ui_put("\n");
+        return;
+    }
+    settings_set_int(SETTING_PERMISSION, index);
+    ui_note("tool calls: %s", PERMISSIONS[index].detail);
     ui_put("\n");
     ui_flush();
 }
@@ -329,6 +382,8 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line)
         do_model(s, arg);
     } else if (!strcmp(name, "/thinking")) {
         do_thinking(s, arg);
+    } else if (!strcmp(name, "/permission")) {
+        do_permission(s, arg);
     } else if (!strcmp(name, "/resume")) {
         cmd_resume(s);
     } else if (fork_target(name, &where)) {

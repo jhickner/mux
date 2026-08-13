@@ -49,6 +49,19 @@ int session_clear(struct session *s);
  * carries over. Returns 0 on failure, leaving the old client in place. */
 int session_set_model(struct session *s, const char *model);
 
+/* How the CLI gates tool calls, claude only. Headless has no way to answer an
+ * approval prompt, so a mode that would ask instead refuses the call and tells
+ * the model — "bypassPermissions" is the one that never refuses. Restarts the
+ * CLI on the current session id like session_set_model. Returns 0 on failure,
+ * leaving the old client in place. */
+int session_set_permission(struct session *s, const char *mode);
+const char *session_permission(const struct session *s);
+
+/* The modes the claude CLI accepts, indexed for the settings file; NULL past
+ * the end. Index 0 is the default. */
+const char *session_permission_name(int index);
+int         session_permission_index(const char *mode);
+
 /* Restart on a past session id, adopting its context. Only the backends that
  * can resume a conversation (claude, codex) carry anything across. */
 int session_resume(struct session *s, const char *id);

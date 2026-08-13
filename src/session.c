@@ -30,6 +30,7 @@ struct session {
     int      quiet;          /* suppress activity, spinner, and footer      */
     int      thinking;       /* show the model's reasoning rows             */
     int      customizations; /* load the user's skills, CLAUDE.md, MCP, ... */
+    char    *permission;     /* --permission-mode; NULL means the default   */
     int      after_activity; /* last thing printed was a tool/thinking row  */
     int      after_tool;     /* ... and specifically a tool call block      */
 };
@@ -440,6 +441,7 @@ void session_free(struct session *s)
     free(s->last_reply);
     free(s->last_block);
     free(s->streamed);
+    free(s->permission);
     free(s);
 }
 
@@ -455,6 +457,7 @@ static Backend *agent(struct session *s)
     o.cwd = s->cwd;
     o.model = s->model;
     o.allow_customizations = s->customizations;
+    o.permission_mode = s->permission;
     s->agent = backend_open_ex(&o);
     if (s->agent) {
         s->agent->set_event_cb(s->agent, on_event, s);
@@ -502,6 +505,53 @@ int session_set_model(struct session *s, const char *model)
     free(s->model);
     s->model = previous;
     b->set_model(b, s->model);
+    return 0;
+}
+
+/* Index 0 is what the CLI gets when nothing is stored. */
+static const char *const PERMISSIONS[] = {
+    "bypassPermissions", "auto", "acceptEdits", "dontAsk", "manual", "plan",
+};
+#define PERMISSION_COUNT ((int)(sizeof PERMISSIONS / sizeof *PERMISSIONS))
+
+const char *session_permission_name(int index)
+{
+    return (index >= 0 && index < PERMISSION_COUNT) ? PERMISSIONS[index] : NULL;
+}
+
+int session_permission_index(const char *mode)
+{
+    for (int i = 0; mode && i < PERMISSION_COUNT; i++)
+        if (strcmp(PERMISSIONS[i], mode) == 0)
+            return i;
+    return -1;
+}
+
+const char *session_permission(const struct session *s)
+{
+    return (s && s->permission) ? s->permission : PERMISSIONS[0];
+}
+
+int session_set_permission(struct session *s, const char *mode)
+{
+    /* Before the first start there is nothing to restart: the mode is read at
+     * open time, so storing it is enough and avoids spawning the CLI twice. */
+    if (!s->agent) {
+        replace(&s->permission, mode);
+        return 1;
+    }
+
+    Backend *b = s->agent;
+    char *previous = s->permission;
+    s->permission = mode ? strdup(mode) : NULL;
+    b->set_permission(b, s->permission);
+    if (restart(s, s->id[0] ? s->id : NULL)) {
+        free(previous);
+        return 1;
+    }
+    free(s->permission);
+    s->permission = previous;
+    b->set_permission(b, s->permission);
     return 0;
 }
 
@@ -710,9 +760,11 @@ void session_report(const struct session *s)
     if (auth)
         ui_note("  auth     %s", auth);
     /* Only Claude Code is told whether to load the user's own configuration. */
-    if (strcmp(s->backend, "claude") == 0)
+    if (strcmp(s->backend, "claude") == 0) {
         ui_note("  config   %s", s->customizations ? "skills, CLAUDE.md, MCP, agents"
                                                    : "safe mode (customizations off)");
+        ui_note("  tools    %s", session_permission(s));
+    }
     if (s->id[0])
         ui_note("  session  %s", s->id);
     /* Keep the report to one row per field even in a narrow terminal.

@@ -30,6 +30,7 @@ typedef struct {
     const char *system;         /* applied to every turn; NULL -> none                */
     const char *cwd;            /* where the agent runs its tools; NULL -> inherit    */
     const char *resume_session; /* continue a prior session (claude, codex)           */
+    const char *permission_mode;/* claude: --permission-mode; NULL -> bypassPermissions*/
     int allow_customizations;   /* claude: load skills, CLAUDE.md, MCP servers, ...   */
 } backend_opts;
 
@@ -88,6 +89,10 @@ struct Backend {
 
     /* Takes effect at the next start(). */
     void (*set_model)(Backend *b, const char *model);
+
+    /* Takes effect at the next start(). Ignored by the drivers with no
+     * permission model of their own. */
+    void (*set_permission)(Backend *b, const char *mode);
 
     /* Per-event sink for a turn, called on the ask() thread as events arrive;
      * the event and its strings are borrowed for the call. Pass NULL to clear. */
@@ -151,7 +156,7 @@ int backend_run_pool(const char *name, const char *model, const char *system,
  * use it too. */
 
 typedef struct {
-    char *model, *system, *cwd, *resume;
+    char *model, *system, *cwd, *resume, *permission;
     int   allow_customizations;
     void (*on_event)(void *ud, const backend_event *ev);
     void *event_ud;
@@ -179,12 +184,13 @@ static void backend_state_init(backend_state *st, const backend_opts *o) {
     st->system = backend_dup(o->system);
     st->cwd    = backend_dup(o->cwd);
     st->resume = backend_dup(o->resume_session);
+    st->permission = backend_dup(o->permission_mode);
     st->allow_customizations = o->allow_customizations;
 }
 
 static void backend_state_free(backend_state *st) {
     free(st->model); free(st->system); free(st->cwd); free(st->resume);
-    free(st->pending);
+    free(st->permission); free(st->pending);
 }
 
 static void backend_emit(backend_state *st, const backend_event *ev) {
@@ -249,6 +255,12 @@ static void backend_emit_str(backend_state *st, const char *kind, const char *te
 static void backend_set_model_generic(Backend *b, const char *model) {
     backend_set(&((backend_state *)b->ctx)->model, model);
 }
+static void backend_set_permission_generic(Backend *b, const char *mode) {
+    backend_set(&((backend_state *)b->ctx)->permission, mode);
+}
+static void backend_set_permission_none(Backend *b, const char *mode) {
+    (void)b; (void)mode;
+}
 static const char *backend_none(Backend *b) { (void)b; return NULL; }
 
 #define CLAUDE_IMPLEMENTATION
@@ -285,7 +297,7 @@ static int backend_claude_start(Backend *b, const char *resume) {
     o.cwd = x->st.cwd;
     o.model = x->st.model;
     o.append_system = x->st.system;
-    o.permission_mode = "bypassPermissions";
+    o.permission_mode = x->st.permission ? x->st.permission : "bypassPermissions";
     o.use_subscription = 1;
     o.allow_customizations = x->st.allow_customizations;
     o.resume_session = resume;
@@ -388,6 +400,7 @@ static Backend *backend_claude_open(const backend_opts *o) {
     b->start = backend_claude_start;
     b->ask_ex = backend_claude_ask_ex;
     b->set_model = backend_set_model_generic;
+    b->set_permission = backend_set_permission_generic;
     b->set_event_cb = backend_claude_set_event_cb;
     b->set_abort_check = backend_claude_set_abort;
     b->session_id = backend_claude_session_id;
@@ -485,6 +498,7 @@ static Backend *backend_codex_open(const backend_opts *o) {
     b->start = backend_codex_start;
     b->ask_ex = backend_codex_ask_ex;
     b->set_model = backend_set_model_generic;
+    b->set_permission = backend_set_permission_none;
     b->set_event_cb = backend_codex_set_event_cb;
     b->set_abort_check = backend_codex_set_abort;
     b->session_id = backend_codex_session_id;
@@ -577,6 +591,7 @@ static Backend *backend_grok_open(const backend_opts *o) {
     b->start = backend_grok_start;
     b->ask_ex = backend_grok_ask_ex;
     b->set_model = backend_set_model_generic;
+    b->set_permission = backend_set_permission_none;
     b->set_event_cb = backend_grok_set_event_cb;
     b->set_abort_check = backend_grok_set_abort;
     b->session_id = backend_grok_session_id;

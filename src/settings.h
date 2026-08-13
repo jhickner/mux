@@ -3,7 +3,8 @@
 #ifndef SETTINGS_H
 #define SETTINGS_H
 
-#define SETTING_THINKING "thinking"
+#define SETTING_THINKING   "thinking"
+#define SETTING_PERMISSION "permission"
 
 /* Read `path`, if it is there. Without this every get returns its fallback and
  * nothing is written back. */
