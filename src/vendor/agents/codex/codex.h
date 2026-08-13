@@ -201,13 +201,13 @@ static int cx_initialize(codex_client *c) {
 
 static int cx_open_thread(codex_client *c, const char *resume) {
     cJSON *p = cJSON_CreateObject();
+    cJSON_AddStringToObject(p, "approvalPolicy", "never");
+    cJSON_AddStringToObject(p, "sandbox", c->sandbox);
     if (resume && *resume) {
         cJSON_AddStringToObject(p, "threadId", resume);
     } else {
         if (c->model) cJSON_AddStringToObject(p, "model", c->model);
         if (c->sys) cJSON_AddStringToObject(p, "developerInstructions", c->sys);
-        cJSON_AddStringToObject(p, "approvalPolicy", "never");
-        cJSON_AddStringToObject(p, "sandbox", c->sandbox);
     }
     int id = cx_request(c, resume && *resume ? "thread/resume" : "thread/start", p);
     cJSON *r = id ? cx_wait_response(c, id) : NULL;

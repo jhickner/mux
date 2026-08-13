@@ -445,7 +445,7 @@ static int backend_codex_start(Backend *b, const char *resume) {
     o.cwd = x->st.cwd;
     o.model = x->st.model;
     o.append_system = x->st.system;
-    o.sandbox = "workspace-write";
+    o.bypass_approvals = 1;
     o.resume_session = resume;
     codex_client *c = codex_start(&o);
     if (!c) return 0;
@@ -571,6 +571,12 @@ static int backend_grok_start(Backend *b, const char *resume) {
     if (!c) return 0;
     grok_set_event_cb(c, backend_grok_event, b);
     grok_set_abort_check(c, x->st.abort);
+    /* A new session stays lazy, but a requested resume must be known-good
+     * before it displaces the client that is currently usable. */
+    if (resume && !grok_connect(c)) {
+        grok_stop(c);
+        return 0;
+    }
     if (x->client) grok_stop(x->client);
     x->client = c;
     backend_set(&x->st.resume, resume);

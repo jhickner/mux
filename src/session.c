@@ -138,8 +138,10 @@ static const char *shorten_path(const struct session *s, const char *value, char
  * one-line summary a backend that reports no structured input handed us. */
 static void tool_argument(const struct session *s, const backend_event *ev, char *out, size_t size)
 {
-    static const char *const KEYS[] = {"command",     "file_path", "path",   "pattern",
-                                       "url",         "query",     "prompt", "description",
+    static const char *const KEYS[] = {"command",          "file_path", "target_file",
+                                       "path",             "target_directory",
+                                       "pattern",          "url",       "query",
+                                       "prompt",           "description",
                                        "notebook_path"};
     char arg[4096] = "";
 
@@ -167,7 +169,8 @@ static void tool_argument(const struct session *s, const backend_event *ev, char
  * own tool vocabulary still gets a diff. Returns 0 when there is no path. */
 static int tool_path(const struct session *s, const char *input_json, char *out, size_t size)
 {
-    static const char *const KEYS[] = {"file_path", "path", "notebook_path"};
+    static const char *const KEYS[] = {"file_path", "target_file", "path",
+                                       "notebook_path"};
     if (!input_json)
         return 0;
 
@@ -811,6 +814,8 @@ int session_clear(struct session *s)
     const char *id = s->agent->session_id(s->agent);
     if (id)
         set_id(s, id);
+    else
+        s->id[0] = '\0';
     return 1;
 }
 

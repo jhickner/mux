@@ -44,6 +44,12 @@ typedef struct {
  * before it has anything to ask. A missing or broken `grok` surfaces there. */
 grok_client *grok_start(const grok_opts *opts);
 
+/* Complete the deferred ACP handshake without sending a prompt. This is useful
+ * for validating a resume before replacing a live client. Returns nonzero once
+ * the requested session is live. New clients normally need not call it because
+ * grok_send performs the handshake itself. */
+int grok_connect(grok_client *c);
+
 /* Send one user turn (plain text) and return the final assistant text (malloc'd,
  * caller frees), or NULL on failure / process death. Blocks until the turn's
  * prompt response, and completes the handshake first when it is still pending.
@@ -617,6 +623,10 @@ static int gk_handshake(grok_client *c) {
 
     c->handshake_failed = 0;
     return 1;
+}
+
+int grok_connect(grok_client *c) {
+    return c && gk_handshake(c);
 }
 
 char *grok_send_ex(grok_client *c, const char *user_text, grok_result *meta) {

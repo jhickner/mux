@@ -134,6 +134,23 @@ static int by_recency(const void *a, const void *b)
     return x->modified < y->modified ? 1 : -1;
 }
 
+/* Keep the newest MAX_SESSIONS without depending on readdir() order. */
+static void keep_recent(struct past_session *list, int *count,
+                        const struct past_session *candidate)
+{
+    if (*count < MAX_SESSIONS) {
+        list[(*count)++] = *candidate;
+        return;
+    }
+
+    int oldest = 0;
+    for (int i = 1; i < *count; i++)
+        if (list[i].modified < list[oldest].modified)
+            oldest = i;
+    if (candidate->modified > list[oldest].modified)
+        list[oldest] = *candidate;
+}
+
 static int finish_list(struct past_session *list, int count, struct past_session **out)
 {
     if (count == 0) {
@@ -168,7 +185,7 @@ static int load_claude(const char *cwd, const char *skip_id, struct past_session
 
     int count = 0;
     struct dirent *entry;
-    while (count < MAX_SESSIONS && (entry = readdir(d))) {
+    while ((entry = readdir(d))) {
         size_t len = strlen(entry->d_name);
         if (len < 7 || strcmp(entry->d_name + len - 6, ".jsonl") != 0)
             continue;
@@ -188,7 +205,8 @@ static int load_claude(const char *cwd, const char *skip_id, struct past_session
         if (stat(path, &st) != 0 || st.st_size == 0)
             continue;
 
-        struct past_session *s = &list[count];
+        struct past_session candidate = {0};
+        struct past_session *s = &candidate;
         /* Our own title first: the CLI only names the sessions it drives itself. */
         if (!title_lookup(id, s->label, sizeof s->label) &&
             !transcript_label(path, s->label, sizeof s->label))
@@ -196,7 +214,7 @@ static int load_claude(const char *cwd, const char *skip_id, struct past_session
         snprintf(s->id, sizeof s->id, "%s", id);
         s->modified = st.st_mtime;
         relative_time(s->modified, s->when, sizeof s->when);
-        count++;
+        keep_recent(list, &count, s);
     }
     closedir(d);
     return finish_list(list, count, out);
@@ -342,7 +360,7 @@ static int load_grok(const char *cwd, const char *skip_id, struct past_session *
 
     int count = 0;
     struct dirent *entry;
-    while (count < MAX_SESSIONS && (entry = readdir(d))) {
+    while ((entry = readdir(d))) {
         if (entry->d_name[0] == '.')
             continue;
         if (strlen(entry->d_name) >= sizeof list[0].id)
@@ -356,14 +374,15 @@ static int load_grok(const char *cwd, const char *skip_id, struct past_session *
         if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode))
             continue;
 
-        struct past_session *s = &list[count];
+        struct past_session candidate = {0};
+        struct past_session *s = &candidate;
         if (!title_lookup(entry->d_name, s->label, sizeof s->label) &&
             !grok_label(path, s->label, sizeof s->label))
             continue;
         snprintf(s->id, sizeof s->id, "%s", entry->d_name);
         s->modified = st.st_mtime;
         relative_time(s->modified, s->when, sizeof s->when);
-        count++;
+        keep_recent(list, &count, s);
     }
     closedir(d);
     return finish_list(list, count, out);
