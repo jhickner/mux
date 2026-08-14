@@ -100,8 +100,8 @@ block in the history above.
 | Command | Effect |
 |---|---|
 | `/new`, `/clear` | Start a fresh conversation |
-| `/model [name]` | Switch model; no argument opens a picker |
-| `/effort [level]` | Set reasoning/thinking effort; no argument opens a backend-specific picker |
+| `/model [name]` | Switch model, and start on it next run; no argument opens a picker |
+| `/effort [level]` | Set reasoning/thinking effort, and start on it next run; no argument opens a backend-specific picker |
 | `/backend <name>` | Continue the conversation with claude, codex, grok, or pi |
 | `/thinking [on\|off]` | Show or hide the ✻ reasoning rows; no argument flips it |
 | `/tools [compact\|full]` | One row per tool call, or full blocks; no argument flips it |
@@ -168,7 +168,7 @@ diff.
 mux [-b backend] [-m model] [-e effort] [-C dir] [-s] [-r] [prompt...]
 
   -b name    agent CLI to drive: claude, codex, grok, pi (default: claude)
-  -m model   model to run (default: the CLI's own)
+  -m model   model to run (default: the last /model pick, else the CLI's own)
   -e effort  reasoning/thinking effort (default: the CLI's own)
   -C dir     working directory for the agent's tools
   -s         safe mode: skip skills, CLAUDE.md, MCP servers, hooks

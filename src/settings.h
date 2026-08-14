@@ -9,6 +9,9 @@
 #define SETTING_STICKY     "sticky"
 #define SETTING_IMAGE_ROWS "image_rows"
 
+/* Longest key a setting can carry, for callers that build one. */
+#define MAX_SETTING_KEY    64
+
 /* Read `path`, if it is there. Without this every get returns its fallback and
  * nothing is written back. */
 void settings_open(const char *path);

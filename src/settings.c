@@ -5,7 +5,7 @@
 #include <string.h>
 
 #define MAX_SETTINGS 64
-#define MAX_KEY      64
+#define MAX_KEY      MAX_SETTING_KEY
 #define MAX_VALUE    128
 
 static struct {

@@ -66,8 +66,8 @@ static void usage(void)
             "usage: " APP " [-b backend] [-m model] [-e effort] [-C dir] [-s] [-r] [prompt...]\n"
             "\n"
             "  -b name    agent CLI to drive: %s (default: claude)\n"
-            "  -m model   model to run (default: the CLI's own)\n"
-            "  -e effort  reasoning/thinking effort (default: the CLI's own)\n"
+            "  -m model   model to run (default: the last /model pick, else the CLI's own)\n"
+            "  -e effort  reasoning/thinking effort (default: the last /effort pick, else the CLI's own)\n"
             "  -C dir     working directory for the agent's tools\n"
             "  -s         safe mode: skip skills, CLAUDE.md, MCP servers, hooks\n"
             "  -r         --resume: pick a past conversation to continue\n"
@@ -181,6 +181,13 @@ int main(int argc, char **argv)
         snprintf(path, sizeof path, "%s/settings", config);
         settings_open(path);
     }
+
+    /* What /model and /effort picked outlives the run it was picked in; -m and
+     * -e are this run's own answer, so they win. */
+    if (!model)
+        model = session_saved_model(backend);
+    if (!effort)
+        effort = session_saved_effort(backend);
 
     ui_init();
     /* Asks tmux for passthrough while nothing has been drawn yet, and settles

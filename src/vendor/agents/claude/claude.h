@@ -334,6 +334,11 @@ static void cl_note_models(claude_client *c, cJSON *response) {
             snprintf(c->model, sizeof c->model, "%s", id);
         return;
     }
+    /* The table lists the CLI's own selectors ("sonnet", "default"); a caller
+     * may equally pass a concrete id, which the table has no entry for. That
+     * value is what the CLI was handed, so it already names the model. */
+    if (strcmp(c->requested, "default") != 0)
+        snprintf(c->model, sizeof c->model, "%s", c->requested);
 }
 
 static void cl_note_effort(claude_client *c, cJSON *ev) {

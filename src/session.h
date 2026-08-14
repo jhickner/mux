@@ -103,6 +103,12 @@ void session_adopt_id(struct session *s, const char *id);
 const char *session_model(const struct session *s);
 const char *session_id(const struct session *s);
 
+/* The model and effort last picked with /model and /effort for this backend, to
+ * start back up on. NULL when none was, or when the pick was the backend's own
+ * default. */
+const char *session_saved_model(const char *backend);
+const char *session_saved_effort(const char *backend);
+
 /* What to call the model on screen: the concrete id the backend resolved where
  * it knows one, so a session that asked for nothing is still named. Never the
  * word the flags use — session_model() stays the answer for those. */

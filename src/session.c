@@ -4,11 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
+#include <time.h>
 
 #include "agenttabs.h"
 #include "filediff.h"
 #include "image.h"
 #include "md.h"
+#include "settings.h"
 #include "status.h"
 #include "title.h"
 #include "toolstyle.h"
@@ -451,6 +453,10 @@ static void print_tool_output(const char *text, enum ui_role role)
 /* The session with a turn in flight, for the hooks the backend polls without a
  * user-data argument. */
 static struct session *live;
+
+static void remember_model(const struct session *s);
+static void remember_choice(const char *what, const char *backend, const char *value);
+static void await_model(struct session *s);
 
 static void on_event(void *ud, const backend_event *ev)
 {
@@ -929,6 +935,9 @@ int session_set_model(struct session *s, const char *model)
     if (restart(s, s->id[0] ? s->id : NULL)) {
         free(previous);
         replace(&s->resolved, NULL);
+        remember_choice("model", s->backend, s->model);
+        await_model(s);
+        remember_model(s);
         return 1;
     }
     free(s->model);
@@ -956,6 +965,7 @@ int session_set_effort(struct session *s, const char *effort)
     if ((b->caps & BACKEND_CAP_LIVE_EFFORT) ||
         restart(s, s->id[0] ? s->id : NULL)) {
         free(previous);
+        remember_choice("effort", s->backend, s->effort);
         return 1;
     }
     free(s->effort);
@@ -1220,6 +1230,7 @@ int session_turn(struct session *s, const char *text)
     agenttabs_finished();
 
     update_title(s);
+    remember_model(s);
     if (!s->quiet)
         print_footer(s, elapsed);
     return 1;
@@ -1249,13 +1260,72 @@ static void model_cache_key(const struct session *s, char *out, size_t n)
              s->model && *s->model ? s->model : "default");
 }
 
+/* And where the choices themselves are kept — one of each per backend, since
+ * neither a model name nor an effort level is portable across them. */
+static void choice_key(const char *what, const char *backend, char *out, size_t n)
+{
+    snprintf(out, n, "%s.%s", what, backend);
+}
+
+/* "default" is stored for the pick that asks for nothing, so that choosing it
+ * back is remembered too rather than reading as "never picked". */
+static const char *saved_choice(const char *what, const char *backend)
+{
+    if (!backend || !*backend)
+        return NULL;
+    char key[MAX_SETTING_KEY];
+    choice_key(what, backend, key, sizeof key);
+    const char *saved = settings_get_str(key, NULL);
+    return saved && strcmp(saved, "default") != 0 ? saved : NULL;
+}
+
+static void remember_choice(const char *what, const char *backend, const char *value)
+{
+    char key[MAX_SETTING_KEY];
+    choice_key(what, backend, key, sizeof key);
+    settings_set_str(key, value && *value ? value : "default");
+}
+
+const char *session_saved_model(const char *backend)
+{
+    return saved_choice("model", backend);
+}
+
+const char *session_saved_effort(const char *backend)
+{
+    return saved_choice("effort", backend);
+}
+
+static const char *backend_model(const struct session *s)
+{
+    if (!s->agent || !s->agent->model)
+        return NULL;
+    const char *got = s->agent->model(s->agent);
+    return got && *got ? got : NULL;
+}
+
 static void remember_model(const struct session *s)
 {
-    if (!s->resolved || !*s->resolved)
+    const char *id = s->resolved && *s->resolved ? s->resolved : backend_model(s);
+    if (!id || !*id)
         return;
     char key[MAX_SETTING_KEY];
     model_cache_key(s, key, sizeof key);
-    settings_set_str(key, s->resolved);
+    settings_set_str(key, id);
+}
+
+/* A model change restarts the CLI, whose handshake answers with the id the new
+ * request resolves to a moment later. Waiting for it here is what lets the
+ * switch be recorded — and named on screen — without a turn having run. */
+static void await_model(struct session *s)
+{
+    if (!s->agent || !s->agent->model)
+        return;
+    double deadline = now_seconds() + 1.5;
+    while (!backend_model(s) && now_seconds() < deadline) {
+        struct timespec nap = {0, 20 * 1000 * 1000};
+        nanosleep(&nap, NULL);
+    }
 }
 
 const char *session_model_label(const struct session *s)
