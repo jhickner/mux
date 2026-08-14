@@ -199,11 +199,16 @@ static const char *head_text(const struct prompt *p)
     return p->live_block ? NULL : status_sticky_offscreen();
 }
 
+/* The mark closing the floating prompt, which the answered turn wears. */
+#define STICKY_DONE " \xe2\x9c\x93" /* ✓ */
+
 /* Cells a "▌ " bar may fill. The floating prompt reserves one more for the
- * ellipsis a clipped last row may carry. */
+ * ellipsis a clipped last row may carry, and two for the mark its last row
+ * ends in, so neither can push the row into a wrap the row count did not
+ * predict. */
 static size_t sticky_budget(int cols)
 {
-    return (size_t)(cols - 3 > 4 ? cols - 3 : 4);
+    return (size_t)(cols - 5 > 4 ? cols - 5 : 4);
 }
 
 /* Rows one bar message occupies when wrapped at `budget` cells. `cap` > 0
@@ -311,8 +316,10 @@ static int rows_above(const struct prompt *p, const char *head, int cols)
 }
 
 /* One "▌ " message, wrapped the way the history echo wraps it so a message
- * reads the same before and after it runs. */
-static void paint_bars(const char *text, size_t budget, enum ui_role role, int cap)
+ * reads the same before and after it runs. `suffix`, when given, closes the
+ * last row in the same color as the message. */
+static void paint_bars(const char *text, size_t budget, enum ui_role role, int cap,
+                       const char *suffix)
 {
     int first = 1, painted = 0;
     while (*text || first) {
@@ -326,6 +333,8 @@ static void paint_bars(const char *text, size_t budget, enum ui_role role, int c
         painted++;
         if (*text && cap && painted == cap)
             ui_put("…");
+        if (suffix && (!*text || (cap && painted >= cap)))
+            ui_put(suffix);
         ui_esc(ui_style(UI_RESET));
         ui_put("\n");
         first = 0;
@@ -335,18 +344,20 @@ static void paint_bars(const char *text, size_t budget, enum ui_role role, int c
 }
 
 /* The floating prompt, then whatever was queued during the last turn: what is
- * waiting to run is dim, the message already answered wears the sticky color.
- * A long floating prompt is clipped to STICKY_LINES. */
+ * waiting to run is dim, the message already answered is green and closed by a
+ * ✓, since this copy is only ever drawn once its turn is done — the turn-time
+ * copy above the spinner keeps the sticky color. A long floating prompt is
+ * clipped to STICKY_LINES. */
 static void paint_above(const struct prompt *p, const char *head, int cols)
 {
     if (head) {
-        paint_bars(head, sticky_budget(cols), UI_STICKY, STICKY_LINES);
+        paint_bars(head, sticky_budget(cols), UI_OK, STICKY_LINES, STICKY_DONE);
         ui_esc("\x1b[K");
         ui_put("\n");
     }
     size_t budget = queued_budget(cols);
     for (int i = 0; i < p->queued_count; i++)
-        paint_bars(p->queued[i], budget, UI_DIM, 0);
+        paint_bars(p->queued[i], budget, UI_DIM, 0, NULL);
 }
 
 /* Cells the gauge reserves in front of the caret, including the space after it.
