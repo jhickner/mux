@@ -18,6 +18,16 @@ static void fail(const char *what)
     failures++;
 }
 
+static int count_bars(const char *s)
+{
+    int n = 0;
+    while (s && (s = strstr(s, UI_BAR))) {
+        n++;
+        s += strlen(UI_BAR);
+    }
+    return n;
+}
+
 static char *slurp_fd(int fd)
 {
     char *buf = NULL;
@@ -111,9 +121,8 @@ static void turn_with_prompt(void)
 }
 
 /* The block carries the prompt only while the feature is on, and only once the
- * echo it copies has scrolled away — never both at once. It shows no more of a
- * message than the screen can spare: one far taller than any terminal comes
- * back clipped, with an ellipsis on the last row shown. */
+ * echo it copies has scrolled away — never both at once. More than STICKY_LINES
+ * comes back clipped, with an ellipsis on the last row shown. */
 static void check_sticky(void)
 {
     status_sticky_set(1);
@@ -151,6 +160,30 @@ static void check_sticky(void)
         fail("floating prompt retained while off");
     status_sticky_set(1);
 
+    status_sticky_prompt("one\ntwo\nthree");
+    free(capture(fill_screen));
+    char *fits = capture(turn_with_prompt);
+    if (!fits)
+        fail("capture a three-line floating prompt");
+    else if (count_bars(fits) != STICKY_LINES)
+        fail("a three-line prompt is not drawn in full");
+    else if (strstr(fits, "…"))
+        fail("a three-line prompt is clipped");
+    free(fits);
+
+    status_sticky_prompt("one\ntwo\nthree\nfour");
+    free(capture(fill_screen));
+    char *over = capture(turn_with_prompt);
+    if (!over)
+        fail("capture a four-line floating prompt");
+    else if (count_bars(over) != STICKY_LINES)
+        fail("a four-line prompt is not clipped to three rows");
+    else if (!strstr(over, "…"))
+        fail("a clipped prompt has no ellipsis");
+    else if (strstr(over, "four"))
+        fail("a clipped prompt still shows the dropped line");
+    free(over);
+
     char long_prompt[8192];
     memset(long_prompt, 'x', sizeof long_prompt - 1);
     long_prompt[sizeof long_prompt - 1] = '\0';
@@ -158,9 +191,11 @@ static void check_sticky(void)
     free(capture(fill_screen));
     char *clipped = capture(turn_with_prompt);
     if (!clipped)
-        fail("capture a clipped floating prompt");
+        fail("capture a wrapped floating prompt");
+    else if (count_bars(clipped) != STICKY_LINES)
+        fail("a wrapping prompt is not clipped to three rows");
     else if (!strstr(clipped, "…"))
-        fail("a prompt taller than the screen allows is not clipped");
+        fail("a wrapping prompt has no ellipsis");
     free(clipped);
     status_sticky_set(0);
 }

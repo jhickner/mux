@@ -188,9 +188,9 @@ static int sticky_gone(void)
 /* The prompt the turn is answering, drawn as the "▌" bar it wears in
  * scrollback and closed by a blank row. It waits until the echo it copies has
  * scrolled away, so the message is never on screen twice. Long messages are
- * clipped to a third of the screen so the block never crowds out the output it
- * floats over; the last row shown ends in an ellipsis. Leaves the cursor at the
- * start of the spinner row and records what it drew for the next erase. */
+ * clipped to STICKY_LINES so the block never crowds out the output it floats
+ * over; the last row shown ends in an ellipsis. Leaves the cursor at the start
+ * of the spinner row and records what it drew for the next erase. */
 static void paint_sticky(void)
 {
     if (!sticky_on || !sticky_text || !*sticky_text || !sticky_gone())
@@ -198,9 +198,7 @@ static void paint_sticky(void)
 
     int cols = ui_columns();
     size_t budget = (size_t)(cols - 3 > 4 ? cols - 3 : 4);
-    int max = tty_rows() / 3;
-    if (max < 1)
-        max = 1;
+    int max = STICKY_LINES;
     if (max > STICKY_ROWS_MAX - 1)
         max = STICKY_ROWS_MAX - 1;
 

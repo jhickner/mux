@@ -50,6 +50,10 @@ void   status_resume(void);
  * with it, leaving the spacing that survives in scrollback to the caller. */
 void   status_gap(int on);
 
+/* Longest the floating prompt is drawn. A longer message is clipped and the
+ * last row shown ends in an ellipsis. */
+#define STICKY_LINES 3
+
 /* The floating prompt: the message the turn is answering, carried at the top of
  * the block so it stays on screen however much output scrolls past. It appears
  * only once the turn's output has carried the echoed original off the top, so

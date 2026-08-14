@@ -89,6 +89,9 @@ int main(void)
 
     /* Tool names, for the backends that report structured input. */
     expect(toolstyle_collapses("Read", "{\"file_path\":\"/tmp/a\"}", NULL), 1, "Read");
+    expect(toolstyle_collapses("web", "{\"query\":\"COLMAP\"}", NULL), 1, "web");
+    expect(toolstyle_collapses("web_fetch", "{\"url\":\"https://example.com\"}", NULL), 1,
+           "web_fetch");
     expect(toolstyle_collapses("Glob", "{\"pattern\":\"**/*.c\"}", NULL), 1, "Glob");
     expect(toolstyle_collapses("Edit", "{\"file_path\":\"/tmp/a\"}", NULL), 0, "Edit");
     expect(toolstyle_collapses("Write", "{\"file_path\":\"/tmp/a\"}", NULL), 0, "Write");

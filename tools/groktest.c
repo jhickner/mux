@@ -7,13 +7,18 @@
 
 static int tool_starts, tool_results, tool_fails;
 static char last_result[256];
+static char last_tool[64];
+static char last_input[256];
 static int last_failed;
 
 static void on_event(void *ud, const grok_event *ev)
 {
     (void)ud;
-    if (ev->kind == GROK_EV_TOOL)
+    if (ev->kind == GROK_EV_TOOL) {
         tool_starts++;
+        snprintf(last_tool, sizeof last_tool, "%s", ev->name ? ev->name : "");
+        snprintf(last_input, sizeof last_input, "%s", ev->input_json ? ev->input_json : "");
+    }
     if (ev->kind == GROK_EV_TOOL_RESULT) {
         tool_results++;
         last_failed = ev->failed;
@@ -115,6 +120,33 @@ static int mock_server(int argc, char **argv)
             } else if (text && strstr(text, "type-only")) {
                 emit_tool("edit-type", "failed", "[]",
                           "{\"type\":\"PermissionDenied\"}");
+            } else if (text && strstr(text, "web-search")) {
+                printf("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\","
+                       "\"params\":{\"update\":{\"sessionUpdate\":\"tool_call\","
+                       "\"toolCallId\":\"ws-1\",\"title\":\"Web search:\","
+                       "\"kind\":\"search\",\"status\":\"in_progress\","
+                       "\"rawInput\":{\"variant\":\"WebSearch\","
+                       "\"backend\":true}}}}\n");
+                printf("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\","
+                       "\"params\":{\"update\":{\"sessionUpdate\":"
+                       "\"tool_call_update\",\"toolCallId\":\"ws-1\","
+                       "\"status\":\"completed\",\"title\":\"Web search:\","
+                       "\"rawOutput\":{\"action\":{\"type\":\"search\","
+                       "\"query\":\"COLMAP Apple Silicon\"}}}}}\n");
+                fflush(stdout);
+            } else if (text && strstr(text, "grep-late")) {
+                printf("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\","
+                       "\"params\":{\"update\":{\"sessionUpdate\":\"tool_call\","
+                       "\"toolCallId\":\"grep-1\",\"title\":\"grep\","
+                       "\"_meta\":{\"x.ai/tool\":{\"name\":\"grep\","
+                       "\"kind\":\"search\"}}}}}\n");
+                printf("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\","
+                       "\"params\":{\"update\":{\"sessionUpdate\":"
+                       "\"tool_call_update\",\"toolCallId\":\"grep-1\","
+                       "\"kind\":\"search\",\"title\":\"monthly|weekly\","
+                       "\"rawInput\":{\"variant\":\"Grep\","
+                       "\"pattern\":\"monthly|weekly\"}}}}\n");
+                fflush(stdout);
             } else {
                 printf("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\","
                        "\"params\":{\"update\":{\"sessionUpdate\":"
@@ -205,6 +237,30 @@ int main(int argc, char **argv)
     if (!last_failed || strcmp(last_result, "PermissionDenied")) {
         fprintf(stderr, "groktest: type-only rawOutput was dropped (%s)\n",
                 last_result);
+        grok_stop(client);
+        return 1;
+    }
+
+    int starts = tool_starts;
+    reply = grok_send(client, "web-search");
+    free(reply);
+    if (tool_starts != starts + 1 || strcmp(last_tool, "web") ||
+        !strstr(last_input, "COLMAP Apple Silicon")) {
+        fprintf(stderr, "groktest: web search was not named/queried "
+                "(starts=%d tool=%s input=%s)\n",
+                tool_starts - starts, last_tool, last_input);
+        grok_stop(client);
+        return 1;
+    }
+
+    starts = tool_starts;
+    reply = grok_send(client, "grep-late");
+    free(reply);
+    if (tool_starts != starts + 1 || strcmp(last_tool, "grep") ||
+        !strstr(last_input, "monthly|weekly")) {
+        fprintf(stderr, "groktest: late grep pattern was dropped "
+                "(starts=%d tool=%s input=%s)\n",
+                tool_starts - starts, last_tool, last_input);
         grok_stop(client);
         return 1;
     }

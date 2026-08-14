@@ -353,9 +353,11 @@ static int cluster_extend(struct session *s, const char *name, const char *arg)
     if (!s->cluster.line || !s->after_collapse || strcmp(s->cluster.tool, name) != 0 ||
         s->cluster.columns != ui_columns())
         return 0;
+    if (!arg || !*arg)
+        return 1;
 
     char row[4096];
-    snprintf(row, sizeof row, "%s, %s", s->cluster.line, arg ? arg : "");
+    snprintf(row, sizeof row, "%s, %s", s->cluster.line, arg);
     if ((int)ui_cells(row) > cluster_budget())
         return 0;
 

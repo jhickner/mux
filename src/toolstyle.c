@@ -29,7 +29,10 @@ static int in_list(const char *const *list, int n, const char *word)
 
 /* Tools whose name settles it: they only look, and what they return is for the
  * model rather than for the reader. */
-static const char *const READ_TOOLS[] = {"read", "glob", "grep", "ls", "notebookread"};
+static const char *const READ_TOOLS[] = {
+    "read", "glob", "grep", "ls", "notebookread",
+    "web", "web_search", "websearch", "web_fetch", "webfetch", "fetch",
+};
 
 /* Tools that hand a command to a shell, which is then judged on its own. */
 static const char *const SHELL_TOOLS[] = {"bash", "shell", "sh", "exec", "run_command",

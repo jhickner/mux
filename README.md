@@ -74,8 +74,7 @@ block in the history above.
   the message it is answering off the top of the screen, a copy of that message
   reappears just above the spinner and stays in view however much more scrolls
   past. It is never on screen twice: the copy waits for the original to go, and
-  after the turn ends it sits above the input. A long one is clipped to a third
-  of the screen
+  after the turn ends it sits above the input. A long one is clipped to 3 lines
 - Interrupt an in-flight turn without losing the session
 - Model switching mid-conversation, carrying context across the restart
 - Resume any past conversation for the current directory

@@ -194,8 +194,16 @@ static const char *head_text(const struct prompt *p)
     return p->live_block ? NULL : status_sticky_offscreen();
 }
 
-/* Rows one bar message occupies when wrapped at `budget` cells. */
-static int wrapped_rows(const char *text, size_t budget)
+/* Cells a "▌ " bar may fill. The floating prompt reserves one more for the
+ * ellipsis a clipped last row may carry. */
+static size_t sticky_budget(int cols)
+{
+    return (size_t)(cols - 3 > 4 ? cols - 3 : 4);
+}
+
+/* Rows one bar message occupies when wrapped at `budget` cells. `cap` > 0
+ * stops after that many rows, matching the floating-prompt clip. */
+static int wrapped_rows(const char *text, size_t budget, int cap)
 {
     int rows = 0, first = 1;
     while (*text || first) {
@@ -204,21 +212,31 @@ static int wrapped_rows(const char *text, size_t budget)
         rows++;
         text += row + skip;
         first = 0;
+        if (cap && rows >= cap)
+            break;
     }
     return rows;
 }
 
 /* The same message as the terminal shows it now: each row it was painted on is
- * re-measured against the current width, since a resize rewraps them. */
-static int reflowed_rows(const char *text, size_t budget, int cols)
+ * re-measured against the current width, since a resize rewraps them. `cap` is
+ * the clip used at paint time; the last of those rows is one cell wider when
+ * an ellipsis was appended. */
+static int reflowed_rows(const char *text, size_t budget, int cols, int cap)
 {
-    int rows = 0, first = 1;
+    int rows = 0, first = 1, painted = 0;
     while (*text || first) {
         size_t skip = 0;
         size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
-        rows += rows_for(2 + ui_cells_n(text, row), cols); /* the "▌ " prefix */
+        int width = 2 + (int)ui_cells_n(text, row); /* the "▌ " prefix */
         text += row + skip;
+        painted++;
+        if (*text && cap && painted == cap)
+            width++;
+        rows += rows_for((size_t)width, cols);
         first = 0;
+        if (cap && painted >= cap)
+            break;
     }
     return rows;
 }
@@ -235,9 +253,10 @@ static int caret_offset(const struct prompt *p, int cols)
     int up = 0;
     size_t budget = queued_budget(p->painted_cols);
     if (p->painted_head)
-        up += reflowed_rows(p->painted_head, budget, cols) + 1; /* and its blank */
+        up += reflowed_rows(p->painted_head, sticky_budget(p->painted_cols),
+                            cols, STICKY_LINES) + 1; /* and its blank */
     for (int i = 0; i < p->queued_count; i++)
-        up += reflowed_rows(p->queued[i], budget, cols);
+        up += reflowed_rows(p->queued[i], budget, cols, 0);
     for (int y = 0; y < p->caret_frame_row && y < p->frame.rows; y++)
         up += rows_for((size_t)row_extent(&p->frame, y), cols);
     return up + p->caret_col / cols;
@@ -279,18 +298,18 @@ static int caret_is_synthetic(const Repl *r)
  * paint_above(). */
 static int rows_above(const struct prompt *p, const char *head, int cols)
 {
+    int rows = head ? wrapped_rows(head, sticky_budget(cols), STICKY_LINES) + 1 : 0;
     size_t budget = queued_budget(cols);
-    int rows = head ? wrapped_rows(head, budget) + 1 : 0;
     for (int i = 0; i < p->queued_count; i++)
-        rows += wrapped_rows(p->queued[i], budget);
+        rows += wrapped_rows(p->queued[i], budget, 0);
     return rows;
 }
 
 /* One "▌ " message, wrapped the way the history echo wraps it so a message
  * reads the same before and after it runs. */
-static void paint_bars(const char *text, size_t budget, enum ui_role role)
+static void paint_bars(const char *text, size_t budget, enum ui_role role, int cap)
 {
-    int first = 1;
+    int first = 1, painted = 0;
     while (*text || first) {
         size_t skip = 0;
         size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
@@ -298,25 +317,31 @@ static void paint_bars(const char *text, size_t budget, enum ui_role role)
         ui_esc(ui_style(role));
         ui_put(UI_BAR " ");
         ui_putn(text, row);
+        text += row + skip;
+        painted++;
+        if (*text && cap && painted == cap)
+            ui_put("…");
         ui_esc(ui_style(UI_RESET));
         ui_put("\n");
-        text += row + skip;
         first = 0;
+        if (cap && painted >= cap)
+            break;
     }
 }
 
 /* The floating prompt, then whatever was queued during the last turn: what is
- * waiting to run is dim, the message already answered wears the sticky color. */
+ * waiting to run is dim, the message already answered wears the sticky color.
+ * A long floating prompt is clipped to STICKY_LINES. */
 static void paint_above(const struct prompt *p, const char *head, int cols)
 {
-    size_t budget = queued_budget(cols);
     if (head) {
-        paint_bars(head, budget, UI_STICKY);
+        paint_bars(head, sticky_budget(cols), UI_STICKY, STICKY_LINES);
         ui_esc("\x1b[K");
         ui_put("\n");
     }
+    size_t budget = queued_budget(cols);
     for (int i = 0; i < p->queued_count; i++)
-        paint_bars(p->queued[i], budget, UI_DIM);
+        paint_bars(p->queued[i], budget, UI_DIM, 0);
 }
 
 /* Cells the gauge reserves in front of the caret, including the space after it.

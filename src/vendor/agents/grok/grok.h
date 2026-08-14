@@ -158,6 +158,7 @@ struct grok_client {
     char  tool_id[GK_TOOL_CAP][GK_TOOL_ID];
     unsigned tool_flags[GK_TOOL_CAP]; /* bit0 announced, bit1 resulted      */
     char *tool_text[GK_TOOL_CAP];     /* reason/output accumulated per call */
+    char  tool_name[GK_TOOL_CAP][64]; /* name resolved across split updates */
     int   n_tools;
 };
 
@@ -233,6 +234,7 @@ static int gk_tool_slot(grok_client *c, const char *id) {
     snprintf(c->tool_id[i], sizeof c->tool_id[i], "%s", id);
     c->tool_flags[i] = 0;
     c->tool_text[i] = NULL;
+    c->tool_name[i][0] = '\0';
     return i;
 }
 
@@ -245,10 +247,34 @@ static void gk_lower_copy(char *dst, size_t n, const char *src) {
     dst[i] = '\0';
 }
 
-/* Prefer the ACP kind (mapped to the names the rest of the stack already
- * styles), then Grok's own tool name, then the title. The first tool_call
- * often has no top-level kind — only `_meta["x.ai/tool"].kind`. */
+static int gk_istarts(const char *s, const char *prefix)
+{
+    if (!s) return 0;
+    for (; *prefix; s++, prefix++) {
+        char a = *s, b = *prefix;
+        if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+        if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
+        if (!a || a != b) return 0;
+    }
+    return 1;
+}
+
+/* ACP kind "search" is shared by workspace grep and Grok's web search.
+ * The variant and title tell them apart; kind is only a fallback. */
 static const char *gk_tool_name(cJSON *u, char *scratch, size_t n) {
+    cJSON *raw = cJSON_GetObjectItem(u, "rawInput");
+    const char *variant = cJSON_GetStringValue(cJSON_GetObjectItem(raw, "variant"));
+    if (variant && *variant) {
+        if (!strcmp(variant, "WebSearch")) return "web";
+        if (!strcmp(variant, "Grep"))      return "grep";
+        if (!strcmp(variant, "WebFetch"))  return "web_fetch";
+        if (!strcmp(variant, "ReadFile"))  return "read";
+        if (!strcmp(variant, "ListDir"))   return "ls";
+        if (!strcmp(variant, "Bash"))      return "bash";
+    }
+    const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(u, "title"));
+    if (title && gk_istarts(title, "web search")) return "web";
+
     cJSON *meta = cJSON_GetObjectItem(u, "_meta");
     cJSON *tool = meta ? cJSON_GetObjectItem(meta, "x.ai/tool") : NULL;
     const char *kind = cJSON_GetStringValue(cJSON_GetObjectItem(u, "kind"));
@@ -257,6 +283,7 @@ static const char *gk_tool_name(cJSON *u, char *scratch, size_t n) {
     if (kind && *kind) {
         if (!strcmp(kind, "execute")) return "bash";
         if (!strcmp(kind, "search"))  return "grep";
+        if (!strcmp(kind, "fetch"))   return "web_fetch";
         return kind;
     }
     if (cJSON_IsString(tool) && tool->valuestring[0]) {
@@ -274,10 +301,11 @@ static const char *gk_tool_name(cJSON *u, char *scratch, size_t n) {
                 return "bash";
             if (!strcmp(scratch, "list_files") || !strcmp(scratch, "list_dir"))
                 return "ls";
+            if (!strcmp(scratch, "web_search") || !strcmp(scratch, "websearch"))
+                return "web";
             return scratch;
         }
     }
-    const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(u, "title"));
     if (title && *title) {
         gk_lower_copy(scratch, n, title);
         char *sp = strchr(scratch, ' ');
@@ -406,10 +434,71 @@ static void gk_keep_reason(grok_client *c, int slot, char *text) {
     c->tool_text[slot] = text;
 }
 
+static const char *const GK_ARG_KEYS[] = {
+    "command", "file_path", "target_file", "path", "target_directory", "directory",
+    "pattern", "url", "query", "prompt", "description", "notebook_path", NULL
+};
+
+static const char *gk_first_string(cJSON *obj, const char *const *keys)
+{
+    if (!cJSON_IsObject(obj)) return NULL;
+    for (int i = 0; keys[i]; i++) {
+        const char *s = cJSON_GetStringValue(cJSON_GetObjectItem(obj, keys[i]));
+        if (s && *s) return s;
+    }
+    return NULL;
+}
+
+static char *gk_wrap_kv(const char *key, const char *value)
+{
+    cJSON *obj = cJSON_CreateObject();
+    cJSON_AddStringToObject(obj, key, value);
+    char *json = cJSON_PrintUnformatted(obj);
+    cJSON_Delete(obj);
+    return json;
+}
+
+static int gk_input_useful(const char *json)
+{
+    if (!json || !*json) return 0;
+    cJSON *obj = cJSON_Parse(json);
+    int ok = gk_first_string(obj, GK_ARG_KEYS) != NULL;
+    cJSON_Delete(obj);
+    return ok;
+}
+
+/* Web search arrives as rawInput {variant, backend} with no query; the
+ * query is on the completed update as rawOutput.action.query. A packet
+ * that is only a variant tag is not worth announcing. */
 static char *gk_input_json(cJSON *u) {
+    cJSON *raw_out = cJSON_GetObjectItem(u, "rawOutput");
+    cJSON *action = cJSON_IsObject(raw_out) ? cJSON_GetObjectItem(raw_out, "action") : NULL;
+    const char *q = cJSON_GetStringValue(cJSON_GetObjectItem(action, "query"));
+    if (!q) q = cJSON_GetStringValue(cJSON_GetObjectItem(raw_out, "query"));
+    if (q && *q) return gk_wrap_kv("query", q);
+
+    cJSON *meta = cJSON_GetObjectItem(u, "_meta");
+    cJSON *tool = meta ? cJSON_GetObjectItem(meta, "x.ai/tool") : NULL;
+    cJSON *tin = cJSON_IsObject(tool) ? cJSON_GetObjectItem(tool, "input") : NULL;
+    if (cJSON_IsObject(tin) && gk_first_string(tin, GK_ARG_KEYS))
+        return cJSON_PrintUnformatted(tin);
+
     cJSON *raw = cJSON_GetObjectItem(u, "rawInput");
-    if (raw && (cJSON_IsObject(raw) || cJSON_IsArray(raw) || cJSON_IsString(raw)))
+    if (cJSON_IsObject(raw) && gk_first_string(raw, GK_ARG_KEYS))
         return cJSON_PrintUnformatted(raw);
+    if (raw && (cJSON_IsArray(raw) || cJSON_IsString(raw)))
+        return cJSON_PrintUnformatted(raw);
+
+    const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(u, "title"));
+    if (title && gk_istarts(title, "web search")) {
+        const char *colon = strchr(title, ':');
+        if (colon) {
+            const char *p = colon + 1;
+            while (*p == ' ') p++;
+            if (*p) return gk_wrap_kv("query", p);
+        }
+    }
+
     cJSON *locs = cJSON_GetObjectItem(u, "locations");
     if (cJSON_IsArray(locs) && cJSON_GetArraySize(locs) > 0) {
         const char *path = cJSON_GetStringValue(
@@ -425,6 +514,30 @@ static char *gk_input_json(cJSON *u) {
     return NULL;
 }
 
+static void gk_keep_name(grok_client *c, int slot, const char *name)
+{
+    if (slot < 0 || !name || !*name) return;
+    if (!c->tool_name[slot][0] || !strcmp(c->tool_name[slot], "tool"))
+        snprintf(c->tool_name[slot], sizeof c->tool_name[slot], "%s", name);
+    else if (!strcmp(c->tool_name[slot], "grep") && !strcmp(name, "web"))
+        snprintf(c->tool_name[slot], sizeof c->tool_name[slot], "%s", name);
+}
+
+/* Title is a last-resort argument. The generic "Web search:" label is not one. */
+static const char *gk_title_arg(const char *title, const char *name)
+{
+    if (!title || !*title) return NULL;
+    if (name && !strcmp(title, name)) return NULL;
+    if (gk_istarts(title, "web search")) {
+        const char *colon = strchr(title, ':');
+        if (!colon) return NULL;
+        const char *p = colon + 1;
+        while (*p == ' ') p++;
+        return *p ? p : NULL;
+    }
+    return title;
+}
+
 static void gk_tool_update(grok_client *c, cJSON *u) {
     const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(u, "toolCallId"));
     int slot = gk_tool_slot(c, id);
@@ -433,25 +546,30 @@ static void gk_tool_update(grok_client *c, cJSON *u) {
     const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(u, "title"));
     const char *status = cJSON_GetStringValue(cJSON_GetObjectItem(u, "status"));
     char *input = gk_input_json(u);
+    gk_keep_name(c, slot, name);
+    if (slot >= 0 && c->tool_name[slot][0])
+        name = c->tool_name[slot];
     int have_shape = (cJSON_GetObjectItem(u, "kind") || title ||
                       cJSON_GetObjectItem(u, "rawInput") ||
                       cJSON_GetObjectItem(u, "_meta"));
+    int useful = gk_input_useful(input);
+    int failed = status && !strcmp(status, "failed");
+    int done = failed || (status && !strcmp(status, "completed"));
 
-    if (slot >= 0 && !(c->tool_flags[slot] & 1) && have_shape) {
+    /* Web search only names the query on the completed update. */
+    if (slot >= 0 && !(c->tool_flags[slot] & 1) && have_shape && (useful || done)) {
         c->tool_flags[slot] |= 1;
         grok_event ev = {
             .kind = GROK_EV_TOOL,
             .name = name,
             .input_json = input,
-            .text = title,
+            .text = useful ? NULL : gk_title_arg(title, name),
         };
         gk_emit(c, &ev);
     }
 
     gk_keep_reason(c, slot, gk_extract_reason(u));
 
-    int failed = status && !strcmp(status, "failed");
-    int done = failed || (status && !strcmp(status, "completed"));
     if (slot >= 0 && done && !(c->tool_flags[slot] & 2)) {
         c->tool_flags[slot] |= 2;
         char *owned = NULL;
