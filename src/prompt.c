@@ -6,7 +6,6 @@
 
 #include "files.h"
 #include "paste.h"
-#include "settings.h"
 #include "status.h"
 #include "tty.h"
 #include "ui.h"
@@ -555,22 +554,6 @@ static void paste_clipboard(struct prompt *p, int live)
     repaint(p);
 }
 
-/* Ctrl-T flips the floating prompt and remembers the choice, the same as
- * /sticky. During a turn the status block repaints itself around the change;
- * idle there is nothing on screen to change, so it says what it did. */
-static void toggle_sticky(struct prompt *p, int live)
-{
-    int on = !status_sticky_enabled();
-    status_sticky_set(on);
-    settings_set_int(SETTING_STICKY, on);
-    if (live)
-        return;
-    erase_block(p);
-    ui_note("floating prompt %s", on ? "on" : "off");
-    ui_put("\n");
-    repaint(p);
-}
-
 enum key_result {
     KEY_OK,      /* the editor consumed it; redraw   */
     KEY_SUBMIT,  /* a complete line is ready to take */
@@ -607,10 +590,6 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         }
         if (ev->cp == 3 && live) /* Ctrl-C */
             return KEY_CANCEL;
-        if (ev->cp == 20) { /* Ctrl-T */
-            toggle_sticky(p, live);
-            return KEY_OK;
-        }
         if (ev->cp == 22) { /* Ctrl-V */
             paste_clipboard(p, live);
             return KEY_OK;

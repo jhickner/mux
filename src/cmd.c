@@ -167,7 +167,6 @@ static void show_help(void)
     help_row("ctrl-c", "clear the prompt line, or interrupt a running turn");
     help_row("ctrl-d", "quit (on an empty prompt)");
     help_row("ctrl-l", "clear the screen");
-    help_row("ctrl-t", "float the prompt above the spinner, on and off");
     ui_put("\n");
     help_heading("skills");
     help_row("", "your skills, CLAUDE.md, MCP servers and agents load by default.");
@@ -351,8 +350,7 @@ static void do_tools(struct session *s, const char *arg)
     ui_flush();
 }
 
-/* No argument flips it; "on"/"off" set it outright. Ctrl-T is the same toggle
- * from the keyboard. */
+/* No argument flips it; "on"/"off" set it outright. */
 static void do_sticky(const char *arg)
 {
     int on;
