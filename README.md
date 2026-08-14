@@ -70,11 +70,12 @@ block in the history above.
   file list where there is one, so ignored files stay out)
 - Type while a turn runs: the prompt stays live under the spinner, and each
   message submitted there is queued and run, in order, once the turn ends
-- Optional floating prompt: `/sticky on` carries the message the turn is
-  answering just above the spinner, so it stays in view however much
-  output scrolls past. When the turn ends it stays above the input as long as
-  the message's own echo has scrolled off the top. A long one is clipped to a
-  third of the screen
+- Optional floating prompt: with `/sticky on`, once a turn's output has carried
+  the message it is answering off the top of the screen, a copy of that message
+  reappears just above the spinner and stays in view however much more scrolls
+  past. It is never on screen twice: the copy waits for the original to go, and
+  after the turn ends it sits above the input. A long one is clipped to a third
+  of the screen
 - Interrupt an in-flight turn without losing the session
 - Model switching mid-conversation, carrying context across the restart
 - Resume any past conversation for the current directory

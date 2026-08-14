@@ -51,8 +51,10 @@ void   status_resume(void);
 void   status_gap(int on);
 
 /* The floating prompt: the message the turn is answering, carried at the top of
- * the block so it stays on screen however much output scrolls past. Off by
- * default; the setting and `/sticky` decide. */
+ * the block so it stays on screen however much output scrolls past. It appears
+ * only once the turn's output has carried the echoed original off the top, so
+ * the message is never shown twice. Off by default; the setting and `/sticky`
+ * decide. */
 void   status_sticky_set(int on);
 int    status_sticky_enabled(void);
 

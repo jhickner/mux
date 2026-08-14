@@ -110,43 +110,52 @@ static void turn_with_prompt(void)
     status_end();
 }
 
-/* The block carries the prompt only while the feature is on, and never more of
- * it than the screen can spare: a message far taller than any terminal comes
+/* The block carries the prompt only while the feature is on, and only once the
+ * echo it copies has scrolled away — never both at once. It shows no more of a
+ * message than the screen can spare: one far taller than any terminal comes
  * back clipped, with an ellipsis on the last row shown. */
 static void check_sticky(void)
 {
-    status_sticky_set(0);
+    status_sticky_set(1);
+    if (!status_sticky_enabled())
+        fail("floating prompt reports itself on");
+
     status_sticky_prompt("summarize notes.txt");
+    char *fresh = capture(turn_with_prompt);
+    if (!fresh)
+        fail("capture with the echo still on screen");
+    else if (strstr(fresh, "summarize notes.txt"))
+        fail("floating prompt drawn while its echo is still on screen");
+    free(fresh);
+    if (status_sticky_offscreen())
+        fail("floating prompt retained while its echo is still on screen");
+
+    free(capture(fill_screen));
+    if (!status_sticky_offscreen())
+        fail("floating prompt dropped once its echo scrolled away");
+    char *on = capture(turn_with_prompt);
+    if (!on)
+        fail("capture with the echo scrolled away");
+    else if (!strstr(on, "summarize notes.txt"))
+        fail("floating prompt missing from the block");
+    free(on);
+
+    status_sticky_set(0);
     char *off = capture(turn_with_prompt);
     if (!off)
         fail("capture with the floating prompt off");
     else if (strstr(off, "summarize notes.txt"))
         fail("floating prompt drawn while off");
     free(off);
-
-    status_sticky_set(1);
-    if (!status_sticky_enabled())
-        fail("floating prompt reports itself on");
-    status_sticky_prompt("summarize notes.txt");
-    char *on = capture(turn_with_prompt);
-    if (!on)
-        fail("capture with the floating prompt on");
-    else if (!strstr(on, "summarize notes.txt"))
-        fail("floating prompt missing from the block");
-    free(on);
-
-    /* Once the turn is over the message is kept for an idle prompt to show,
-     * but only after its echo has been scrolled off the top of the screen. */
     if (status_sticky_offscreen())
-        fail("floating prompt retained while its echo is still on screen");
-    free(capture(fill_screen));
-    if (!status_sticky_offscreen())
-        fail("floating prompt dropped once its echo scrolled away");
+        fail("floating prompt retained while off");
+    status_sticky_set(1);
 
     char long_prompt[8192];
     memset(long_prompt, 'x', sizeof long_prompt - 1);
     long_prompt[sizeof long_prompt - 1] = '\0';
     status_sticky_prompt(long_prompt);
+    free(capture(fill_screen));
     char *clipped = capture(turn_with_prompt);
     if (!clipped)
         fail("capture a clipped floating prompt");

@@ -172,14 +172,28 @@ static void humanize(double seconds, char *out, size_t n)
         snprintf(out, n, "%ldh %ldm", total / 3600, (total % 3600) / 60);
 }
 
+/* Whether output has carried the echoed message off the top of the screen.
+ *
+ * The echo's own blank row and the row the cursor was left on are the two that
+ * never have to scroll; the block below holds the rest of the output that much
+ * further from the bottom, so the count is judged against a bottom raised by
+ * the tallest the block has been. Both terms only ever move one way within a
+ * turn, so this cannot flip back once it is true. */
+static int sticky_gone(void)
+{
+    int gone_at = sticky_screen - 2 - (block_tallest > 0 ? block_tallest - 1 : 0);
+    return ui_scroll_rows() >= (gone_at > 0 ? gone_at : 0);
+}
+
 /* The prompt the turn is answering, drawn as the "▌" bar it wears in
- * scrollback and closed by a blank row. Long messages are clipped to a third of
- * the screen so the block never crowds out the output it floats over; the last
- * row shown ends in an ellipsis. Leaves the cursor at the start of the spinner
- * row and records what it drew for the next erase. */
+ * scrollback and closed by a blank row. It waits until the echo it copies has
+ * scrolled away, so the message is never on screen twice. Long messages are
+ * clipped to a third of the screen so the block never crowds out the output it
+ * floats over; the last row shown ends in an ellipsis. Leaves the cursor at the
+ * start of the spinner row and records what it drew for the next erase. */
 static void paint_sticky(void)
 {
-    if (!sticky_on || !sticky_text || !*sticky_text)
+    if (!sticky_on || !sticky_text || !*sticky_text || !sticky_gone())
         return;
 
     int cols = ui_columns();
@@ -397,13 +411,7 @@ const char *status_sticky_offscreen(void)
 {
     if (!sticky_on || !sticky_text)
         return NULL;
-    /* The echo's own blank row and the row the cursor was left on are the two
-     * that never have to scroll; the block below holds the rest of the output
-     * that much further from the bottom. */
-    int gone_at = sticky_screen - 2 - (block_tallest > 0 ? block_tallest - 1 : 0);
-    if (gone_at < 0)
-        gone_at = 0;
-    return ui_scroll_rows() >= gone_at ? sticky_text : NULL;
+    return sticky_gone() ? sticky_text : NULL;
 }
 
 void status_end(void)
