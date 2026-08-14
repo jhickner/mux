@@ -300,6 +300,7 @@ static void do_backend(struct session *s, const char *arg)
         free(retry);
         ui_error("could not prepare the backend handoff");
         ui_put("\n");
+        ui_flush();
         return;
     }
     if (!session_switch_backend(s, arg)) {
