@@ -1,7 +1,7 @@
 /* title.h — the short name a conversation earns from its first turn.
  *
  * Claude Code writes its own into the transcript as an "ai-title" record; ours
- * live in ~/.config/simple-agent/titles as "id<TAB>title" lines, so a title
+ * live in ~/.config/mux/titles as "id<TAB>title" lines, so a title
  * survives the process that asked for it and shows up in /resume. */
 #ifndef TITLE_H
 #define TITLE_H

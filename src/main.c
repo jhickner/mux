@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include "agenttabs.h"
+#include "app.h"
 #include "banner.h"
 #include "cmd.h"
 #include "image.h"
@@ -19,7 +20,7 @@
 #include "vendor/agents/backend.h"
 #include "vendor/repl.h"
 
-#define APP "simple-agent"
+#define APP APP_NAME
 
 /* The agent CLIs backend.h can drive, as "claude, codex, grok, pi". */
 static void backend_choices(char *out, size_t size)
@@ -46,7 +47,7 @@ static void restore_terminal(void)
     tty_raw_end();
 }
 
-/* ~/.config/simple-agent, created on demand. Returns 0 when HOME is unset. */
+/* ~/.config/<app>, created on demand. Returns 0 when HOME is unset. */
 static int config_dir(char *out, size_t size)
 {
     const char *home = getenv("HOME");

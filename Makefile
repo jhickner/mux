@@ -3,7 +3,7 @@ CFLAGS  ?= -std=gnu11 -O2 -Wall -Wextra
 LDFLAGS ?=
 PREFIX  ?= $(HOME)/.local
 
-BIN     := simple-agent
+BIN     := mux
 # Each tools/*.c builds a binary of the same name at the root, so the list of
 # them to clean up is the directory itself rather than a copy of it kept by hand.
 TOOLS   := $(patsubst tools/%.c,%,$(wildcard tools/*.c))

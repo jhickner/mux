@@ -7,7 +7,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#define APP "simple-agent"
+#include "app.h"
+
+#define APP APP_NAME
 
 /* Kept rather than written to a temp dir: a path in an earlier message stays
  * valid when the conversation is resumed days later. */

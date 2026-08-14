@@ -3,10 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "app.h"
 #include "session.h"
 #include "ui.h"
-
-#define APP_NAME "simple-agent"
 
 /* Model ids are all "claude-"-prefixed here, so the prefix carries no
  * information in the banner. */

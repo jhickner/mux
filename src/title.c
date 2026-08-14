@@ -8,6 +8,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "app.h"
 #include "vendor/agents/backend.h"
 
 #define CLAUDE_TITLE_MODEL "claude-haiku-4-5-20251001"
@@ -21,7 +22,7 @@ static int cache_path(char *out, size_t size)
     if (!home)
         return 0;
     char dir[1024];
-    snprintf(dir, sizeof dir, "%s/.config/simple-agent", home);
+    snprintf(dir, sizeof dir, "%s/" APP_CONFIG, home);
     mkdir(dir, 0700);
     snprintf(out, size, "%s/titles", dir);
     return 1;
@@ -104,7 +105,7 @@ static void ask_and_cache(const char *id, const char *backend, const char *model
     o.model = (!backend || strcmp(backend, "claude") == 0) ? CLAUDE_TITLE_MODEL : model;
     o.cwd = cwd;
     o.system = "Name the conversation without using tools.";
-    o.session_name = "simple-agent title helper";
+    o.session_name = APP_NAME " title helper";
     o.ephemeral = 1;
     o.disable_tools = 1;
     Backend *b = backend_open_ex(&o);

@@ -10,6 +10,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "app.h"
 #include "ui.h"
 
 /* kitty.h writes through term.h's buffered writer. Nothing else in that library
@@ -131,7 +132,7 @@ static int png_dims(const unsigned char *d, size_t n, int *w, int *h)
  * converter into a temporary one. Returns a malloc'd path the caller unlinks. */
 static char *convert_to_png(const char *path)
 {
-    char tmp[] = "/tmp/simple-agent-img-XXXXXX";
+    char tmp[] = "/tmp/" APP_NAME "-img-XXXXXX";
     int fd = mkstemp(tmp);
     if (fd < 0)
         return NULL;

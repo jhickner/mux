@@ -1,4 +1,4 @@
-/* Provider-neutral turns retained by simple-agent for handing a live
+/* Provider-neutral turns retained by mux for handing a live
  * conversation from one backend to another. */
 #ifndef TRANSCRIPT_H
 #define TRANSCRIPT_H

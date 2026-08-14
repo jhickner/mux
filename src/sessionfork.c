@@ -8,11 +8,12 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "app.h"
 #include "session.h"
 #include "ui.h"
 
 /* Bare when found on PATH, absolute once resolved from argv[0]. */
-static char program[4096] = "simple-agent";
+static char program[4096] = APP_NAME;
 
 void sessionfork_set_program(const char *argv0)
 {
@@ -155,7 +156,7 @@ void sessionfork_exit_note(const struct session *s)
         snprintf(flags + n, sizeof flags - n, " -e %s", effort);
 
     char cmd[9000];
-    snprintf(cmd, sizeof cmd, "%ssimple-agent%s --session %s", lead, flags, id);
+    snprintf(cmd, sizeof cmd, "%s" APP_NAME "%s --session %s", lead, flags, id);
 
     ui_bar(ui_style(UI_DIM), "resume this conversation:");
     /* No gutter bar on the command itself: it has to survive a copy-paste. */

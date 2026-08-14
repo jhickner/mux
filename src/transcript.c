@@ -4,6 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "app.h"
+
 static const char INTRO[] =
     "You are continuing a conversation that began in another coding-agent "
     "backend. The transcript below is prior dialogue, not a new request. "
@@ -114,7 +116,7 @@ char *transcript_handoff(const struct transcript *t, size_t max_bytes)
     if (first > 0) {
         char omitted[128];
         snprintf(omitted, sizeof omitted,
-                 "[simple-agent omitted %zu older turn%s to fit the handoff.]\n\n",
+                 "[" APP_NAME " omitted %zu older turn%s to fit the handoff.]\n\n",
                  first, first == 1 ? "" : "s");
         if (!append_text(&out, &length, &capacity, omitted)) {
             free(out);

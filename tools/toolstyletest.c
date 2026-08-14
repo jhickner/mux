@@ -63,7 +63,7 @@ int main(void)
     acts("git tag v1");
     acts("git");                 /* no subcommand to judge */
     acts("git -c user.name=x commit");
-    acts("./simple-agent --help");
+    acts("./mux --help");
     acts("sudo ls");
     acts("ls | xargs rm");
 

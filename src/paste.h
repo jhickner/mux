@@ -5,7 +5,7 @@
 
 #include <stddef.h>
 
-/* Write the clipboard's image as a PNG under ~/.config/simple-agent/pastes and
+/* Write the clipboard's image as a PNG under ~/.config/mux/pastes and
  * put its path in `out`. Returns 0 when the clipboard holds no image, when
  * HOME is unset, or on a platform with no way to ask. */
 int paste_image(char *out, size_t size);

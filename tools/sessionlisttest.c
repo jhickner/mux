@@ -8,7 +8,7 @@
 
 #include "sessionlist.h"
 
-/* sessionlist prefers simple-agent's title cache; these fixtures deliberately
+/* sessionlist prefers mux's title cache; these fixtures deliberately
  * exercise the titles in Grok's own summary files. */
 int title_lookup(const char *id, char *out, size_t size)
 {
@@ -77,7 +77,7 @@ static void check_list(const char *skip_id, int newest, int oldest)
 
 int main(void)
 {
-    char root[] = "/tmp/simple-agent-sessionlist-XXXXXX";
+    char root[] = "/tmp/mux-sessionlist-XXXXXX";
     if (!mkdtemp(root)) {
         fail("temporary directory");
         return 1;

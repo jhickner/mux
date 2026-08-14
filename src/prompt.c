@@ -6,6 +6,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "app.h"
 #include "files.h"
 #include "paste.h"
 #include "status.h"
@@ -604,7 +605,7 @@ static int editor_temp(char *out, size_t size)
         dir = "/tmp";
     if (strchr(dir, '\''))
         return 0;
-    if ((size_t)snprintf(out, size, "%s/simple-agent-XXXXXX", dir) >= size)
+    if ((size_t)snprintf(out, size, "%s/" APP_NAME "-XXXXXX", dir) >= size)
         return 0;
     int fd = mkstemp(out);
     if (fd < 0)

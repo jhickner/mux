@@ -42,7 +42,7 @@ static int check_record(const char *path, const char *status, int with_usage)
 
 int main(void)
 {
-    char root[] = "/tmp/simple-agent-tabs-XXXXXX";
+    char root[] = "/tmp/mux-tabs-XXXXXX";
     if (!mkdtemp(root)) {
         perror("agenttabstest: mkdtemp");
         return 1;

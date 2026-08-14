@@ -1,7 +1,7 @@
 *.o
 *.o.tmp
 *.d
-simple-agent
+mux
 palette
 spintest
 statustest

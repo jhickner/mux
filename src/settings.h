@@ -1,5 +1,5 @@
 /* Settings that outlive a run, one `key=value` line each in
- * ~/.config/simple-agent/settings. */
+ * ~/.config/mux/settings. */
 #ifndef SETTINGS_H
 #define SETTINGS_H
 

@@ -1,4 +1,4 @@
-# simple-agent
+# mux
 
 A REPL interface to a headless coding-agent CLI, driven through `backend.h`:
 `claude` by default, or `codex`, `grok` and `pi` with `-b`. Not a TUI: no
@@ -6,7 +6,7 @@ alternate screen, no full-screen redraw. The conversation is ordinary terminal
 scrollback, and only the input block is repainted in place.
 
 ```
-▌ simple-agent › sonnet-5
+▌ mux › sonnet-5
 ▌ ctrl-d quit · try /help
 
 ▌ list the files here and summarize notes.txt
@@ -85,7 +85,7 @@ block in the history above.
   commands run immediately even with a turn in flight, so a second agent can be
   started while the first is still working
 - Quitting prints the command that reopens the conversation you were in
-- One-shot mode: `simple-agent "question"` prints the answer and exits; piped
+- One-shot mode: `mux "question"` prints the answer and exits; piped
   output is plain text with no spinner or footer
 - Reports its turn status to
   [tmux-agent-tabs](https://github.com/jhickner/tmux-agent-tabs) when that
@@ -165,7 +165,7 @@ diff.
 ## Options
 
 ```
-simple-agent [-b backend] [-m model] [-e effort] [-C dir] [-s] [-r] [prompt...]
+mux [-b backend] [-m model] [-e effort] [-C dir] [-s] [-r] [prompt...]
 
   -b name    agent CLI to drive: claude, codex, grok, pi (default: claude)
   -m model   model to run (default: the CLI's own)
@@ -179,10 +179,10 @@ simple-agent [-b backend] [-m model] [-e effort] [-C dir] [-s] [-r] [prompt...]
 
 ## Files
 
-- `~/.config/simple-agent/history` — prompt history
-- `~/.config/simple-agent/settings` — `key=value` per line; `/thinking`,
+- `~/.config/mux/history` — prompt history
+- `~/.config/mux/settings` — `key=value` per line; `/thinking`,
   `/tools`, `/sticky`, `/image` and `/permission` write here
-- `~/.config/simple-agent/pastes/paste-<timestamp>.png` — images taken off the
+- `~/.config/mux/pastes/paste-<timestamp>.png` — images taken off the
   clipboard by `ctrl-v`
 - `~/.claude/projects/<encoded cwd>/*.jsonl` — Claude Code's transcripts,
   read by `/resume` on `-b claude`
@@ -194,7 +194,7 @@ simple-agent [-b backend] [-m model] [-e effort] [-C dir] [-s] [-r] [prompt...]
 ## Build
 
 ```sh
-make            # -> ./simple-agent
+make            # -> ./mux
 make install    # -> $PREFIX/bin (default ~/.local)
 ```
 
