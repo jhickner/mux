@@ -9,6 +9,7 @@
 #include "app.h"
 #include "banner.h"
 #include "cmd.h"
+#include "hud.h"
 #include "image.h"
 #include "prompt.h"
 #include "session.h"
@@ -76,19 +77,6 @@ static void usage(void)
             "\n"
             "With a prompt on the command line, answer it and exit.\n",
             choices);
-}
-
-/* The context gauge in front of the caret. */
-static const char *context_gauge(void *ud)
-{
-    static char text[40];
-    const char *backend = session_backend(ud);
-    int percent = session_context_percent(ud);
-    if (percent < 0)
-        snprintf(text, sizeof text, "%s", backend);
-    else
-        snprintf(text, sizeof text, "%s %d%%", backend, percent);
-    return text;
 }
 
 /* The agent taking a turn of its own — a background task it started has
@@ -260,14 +248,17 @@ int main(int argc, char **argv)
     status_set_below(prompt_live_paint, prompt_live_offset, prompt);
     prompt_set_live_command(prompt, live_command, session);
     prompt_set_idle(prompt, idle_fd, idle_render, session);
-    prompt_set_status(prompt, context_gauge, session);
+    prompt_set_hud(prompt, hud_paint_idle, session);
+    status_set_hud(hud_paint_busy, session);
+    /* The turn summary lands in the HUD's spinner row instead of scrollback. */
+    session_hold_footer(session, 1);
 
     ui_put("\n");
-    /* cmd_resume() prints the identity row itself when it adopts a session. */
-    if (resume && cmd_resume(session))
-        banner_hints();
-    else
-        banner_print(session);
+    /* The HUD carries the identity above the caret from here on, so the opening
+     * block is the hint row alone. */
+    if (resume)
+        cmd_resume(session);
+    banner_hints();
 
     for (;;) {
         /* Messages queued during the last turn run first, in the order typed. */
@@ -294,6 +285,7 @@ int main(int argc, char **argv)
     /* Both hooks borrow the prompt, so they go first. */
     session_set_typeahead(NULL, NULL);
     status_set_below(NULL, NULL, NULL);
+    status_set_hud(NULL, NULL);
     prompt_free(prompt);
     sessionfork_exit_note(session);
     session_free(session);

@@ -43,6 +43,8 @@ struct session {
     long     context_tokens;
     long     context_window;
     int      quiet;          /* suppress activity, spinner, and footer      */
+    char     footer[384];    /* the last turn's summary row                 */
+    int      hold_footer;    /* keep it for the HUD instead of printing it  */
     int      thinking;       /* show the model's reasoning rows             */
     int      compact;        /* one row per tool call, whatever it does     */
     int      customizations; /* load the user's skills, CLAUDE.md, MCP, ... */
@@ -866,6 +868,7 @@ int session_switch_backend(struct session *s, const char *backend)
     s->turns = 0;
     s->cost_usd = 0;
     s->context_tokens = 0;
+    s->footer[0] = '\0';
     s->context_window = 0;
     if (previous)
         previous->close(previous);
@@ -873,6 +876,13 @@ int session_switch_backend(struct session *s, const char *backend)
 }
 
 void session_set_quiet(struct session *s, int quiet) { s->quiet = quiet; }
+
+void session_hold_footer(struct session *s, int on) { s->hold_footer = on; }
+
+const char *session_footer(const struct session *s)
+{
+    return s->footer[0] ? s->footer : NULL;
+}
 
 void session_set_thinking(struct session *s, int on) { s->thinking = on; }
 
@@ -1034,6 +1044,7 @@ int session_resume(struct session *s, const char *id)
     s->turns = 0;
     s->cost_usd = 0;
     s->context_tokens = 0;
+    s->footer[0] = '\0';
     replace(&s->last_reply, NULL);
     replace(&s->failed_prompt, NULL);
     transcript_clear(&s->transcript);
@@ -1047,6 +1058,7 @@ int session_clear(struct session *s)
     s->turns = 0;
     s->cost_usd = 0;
     s->context_tokens = 0;
+    s->footer[0] = '\0';
     replace(&s->last_reply, NULL);
     replace(&s->failed_prompt, NULL);
     replace(&s->last_block, NULL);
@@ -1083,7 +1095,10 @@ static void update_title(struct session *s)
         status_set_note(s->title);
 }
 
-static void print_footer(const struct session *s, double elapsed)
+/* The turn summary — elapsed, context, cost, name — kept on the session so the
+ * HUD can carry it in the row the spinner just left, and printed into scrollback
+ * only when nothing is holding it there. */
+static void print_footer(struct session *s, double elapsed)
 {
     char used[32], window[32];
     humanize(s->context_tokens, used, sizeof used);
@@ -1123,6 +1138,11 @@ static void print_footer(const struct session *s, double elapsed)
             wrapped = 1;
     }
     #undef APPEND
+
+    snprintf(s->footer, sizeof s->footer, "%s%s%s", line,
+             wrapped ? " · " : "", wrapped ? s->title : "");
+    if (s->hold_footer)
+        return;
 
     ui_esc(ui_style(UI_DIM));
     ui_put(line);

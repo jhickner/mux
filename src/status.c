@@ -26,7 +26,11 @@ static char    note[128]; /* the conversation's name, when it has one */
 static status_paint_fn  below;
 static status_offset_fn below_offset;
 static void            *below_ud;
+static status_hud_fn    hud;
+static void            *hud_ud;
+static int              hud_rows;   /* chrome rows in the block on screen */
 static int              caret_row;  /* rows from the spinner row down to the caret */
+static int              caret_col;  /* and the column it sat at */
 static int              painted;    /* a block is on screen */
 static int              spin_width; /* cells the spinner row occupies */
 static int              gap;        /* asked for a blank row above the spinner */
@@ -92,6 +96,12 @@ void status_set_below(status_paint_fn paint_fn, status_offset_fn offset_fn, void
     below_ud = ud;
 }
 
+void status_set_hud(status_hud_fn paint_fn, void *ud)
+{
+    hud = paint_fn;
+    hud_ud = ud;
+}
+
 /* True while the window is still being dragged or zoomed.
  *
  * The erase walks up from the cursor by rows measured against the width read
@@ -135,6 +145,9 @@ static int rows_above_caret(void)
     int cols = ui_columns();
     int spin = spin_width ? ui_reflow_rows(&spin_width, 1, cols) : 0;
     int head = sticky_rows ? ui_reflow_rows(sticky_widths, sticky_rows, cols) : 0;
+    /* The chrome rows are clipped to the width, so a resize cannot rewrap
+     * them: the count they were painted at still holds. */
+    head += hud_rows;
     if (!below)
         return painted_gap + head + (spin > 0 ? spin - 1 : 0);
     return painted_gap + head + spin +
@@ -154,6 +167,7 @@ static void erase_block(void)
     spin_width = 0;
     painted_gap = 0;
     sticky_rows = 0;
+    hud_rows = 0;
     painted = 0;
 }
 
@@ -237,30 +251,21 @@ static void paint_sticky(void)
 static void block_rows(int below_rows)
 {
     int cols = ui_columns();
-    int rows = painted_gap + below_rows +
+    int rows = painted_gap + below_rows + hud_rows +
                (sticky_rows ? ui_reflow_rows(sticky_widths, sticky_rows, cols) : 0) +
                (spin_width ? ui_reflow_rows(&spin_width, 1, cols) : 0);
     if (rows > block_tallest)
         block_tallest = rows;
 }
 
-static void paint(void)
+/* The spinner row itself, from column 0 of a row already cleared. Records the
+ * cells it filled, which the erase walk measures against. */
+static void paint_spin(void)
 {
     char clock[32], left[64];
     humanize(status_elapsed(), clock, sizeof clock);
     snprintf(left, sizeof left, "%s %s", FRAMES[frame], clock);
 
-    ui_sync_begin();
-    /* The block is redrawn in place, so what it writes scrolls nothing that
-     * outlives it: it stays out of the scrollback count. */
-    ui_scroll_track(0);
-    erase_block();
-    /* Part of the block, not of scrollback: it is erased along with the spinner,
-     * so the permanent spacing between tool rows stays the caller's business. */
-    painted_gap = gap;
-    if (painted_gap)
-        ui_put("\n");
-    paint_sticky();
     ui_esc(ui_style(UI_ACCENT));
     ui_put(left);
     spin_width = (int)ui_cells(left);
@@ -288,6 +293,25 @@ static void paint(void)
         }
     }
     ui_esc(ui_style(UI_RESET));
+}
+
+static void paint(void)
+{
+    ui_sync_begin();
+    /* The block is redrawn in place, so what it writes scrolls nothing that
+     * outlives it: it stays out of the scrollback count. */
+    ui_scroll_track(0);
+    erase_block();
+    /* Part of the block, not of scrollback: it is erased along with the spinner,
+     * so the permanent spacing between tool rows stays the caller's business. */
+    painted_gap = gap;
+    if (painted_gap)
+        ui_put("\n");
+    paint_sticky();
+    /* The chrome the idle prompt carries above its caret, painted here instead
+     * while a turn runs so it keeps its place above the spinner. */
+    hud_rows = hud ? hud(hud_ud, ui_columns()) : 0;
+    paint_spin();
 
     int below_rows = 0;
     if (below) {
@@ -298,6 +322,7 @@ static void paint(void)
         ui_esc("\r");
         move(col, 'C');
         caret_row = 1 + row;
+        caret_col = col;
         below_rows = rows;
         ui_esc("\x1b[?25h"); /* the caret marks where typing lands */
     }
@@ -307,6 +332,40 @@ static void paint(void)
     ui_scroll_track(1);
     ui_sync_end();
     ui_flush();
+}
+
+/* A tick that only moves the spinner on rewrites the spinner's row where it
+ * stands and puts the cursor back, rather than taking the block down and
+ * drawing it again: the chrome above and the prompt below have not changed, and
+ * redrawing them ten times a second is what shows up as flicker. Returns 0 when
+ * the geometry is not certain enough to reach into, leaving the full paint to
+ * the caller. */
+static int paint_spin_only(void)
+{
+    int cols = ui_columns();
+    if (!painted || !below || cols < 24)
+        return 0;
+    /* A wrapped spinner row would put the rows below it somewhere other than
+     * where this counts on finding them. */
+    if (!spin_width || ui_reflow_rows(&spin_width, 1, cols) != 1)
+        return 0;
+
+    int down = 1 + (below_offset ? below_offset(below_ud) : caret_row - 1);
+    ui_sync_begin();
+    ui_scroll_track(0);
+    ui_esc("\x1b[?25l");
+    move(down, 'A');
+    ui_esc("\r\x1b[K");
+    paint_spin();
+    ui_esc("\r");
+    move(down, 'B');
+    move(caret_col, 'C');
+    ui_esc("\x1b[?25h");
+    ui_scroll_track(1);
+    ui_sync_end();
+    ui_flush();
+    dirty = 0;
+    return 1;
 }
 
 void status_begin(void)
@@ -321,6 +380,7 @@ void status_begin(void)
     gap = 0;
     painted_gap = 0;
     sticky_rows = 0;
+    hud_rows = 0;
     block_tallest = 0;
     painted = 0;
     paint();
@@ -336,12 +396,15 @@ void status_tick(void)
     if (!active || !visible || size_changing())
         return;
     double t = now_seconds();
+    int advanced = 0;
     if ((t - frame_at) * 1000.0 >= FRAME_MS) {
         frame = (frame + 1) % FRAME_COUNT;
         frame_at = t;
-        dirty = 1;
+        advanced = 1;
     }
     if (dirty)
+        paint();
+    else if (advanced && !paint_spin_only())
         paint();
 }
 
@@ -423,5 +486,7 @@ void status_end(void)
     active = 0;
     started = 0;
     ui_esc("\x1b[?25h");
-    ui_flush();
+    /* Left unflushed on purpose: the idle prompt redraws the same rows with the
+     * turn summary where the spinner was, and its flush carries this erase out
+     * with it. Flushing here would show the gap in between as a blink. */
 }

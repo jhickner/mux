@@ -25,6 +25,14 @@ void            session_free(struct session *s);
  * output and one-shot runs. */
 void session_set_quiet(struct session *s, int quiet);
 
+/* Keep the turn summary instead of printing it into scrollback: the HUD paints
+ * it in the row the spinner leaves behind. */
+void        session_hold_footer(struct session *s, int on);
+
+/* That summary — elapsed, context, cost, and the conversation's name — or NULL
+ * before the first turn has ended. */
+const char *session_footer(const struct session *s);
+
 /* Show the ✻ rows carrying the model's reasoning as it streams. On by default;
  * only the backends that report reasoning at all are affected. */
 void session_set_thinking(struct session *s, int on);

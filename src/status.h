@@ -24,6 +24,13 @@ typedef int  (*status_offset_fn)(void *ud);
 
 void   status_set_below(status_paint_fn paint, status_offset_fn offset, void *ud);
 
+/* The chrome rows above the spinner — the same ones an idle prompt carries
+ * above its caret, so they hold still as a turn starts and ends. Paints them at
+ * `cols`, each ending in a newline and each exactly one physical row, and
+ * returns the count. NULL for none. */
+typedef int  (*status_hud_fn)(void *ud, int cols);
+void   status_set_hud(status_hud_fn paint, void *ud);
+
 /* Activity phrase after the elapsed time — "working", or "thinking with
  * medium effort". Shown only when the row is wide enough. NULL or ""
  * restores "working". */

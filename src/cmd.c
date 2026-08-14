@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "banner.h"
 #include "pick.h"
 #include "session.h"
 #include "image.h"
@@ -231,7 +230,9 @@ static void do_model(struct session *s, const char *arg)
         ui_put("\n");
         return;
     }
-    banner_identity(s);
+    /* The HUD above the caret already carries the new model, so this only says
+     * that the switch went through. */
+    ui_note("model: %s", chosen);
     ui_put("\n");
     ui_flush();
 }
@@ -312,9 +313,6 @@ static void do_backend(struct session *s, const char *arg)
         return;
     }
 
-    banner_identity(s);
-    ui_bar(ui_style(UI_DIM), "continued \xc2\xb7 %s to %s", from, arg);
-    ui_put("\n");
     ui_flush();
     free(from);
 
@@ -507,7 +505,6 @@ int cmd_resume(struct session *s)
     if (index >= 0) {
         if (session_resume(s, list[index].id)) {
             status_sticky_prompt(NULL); /* a different conversation's message */
-            banner_identity(s);
             ui_bar(ui_style(UI_DIM), "resumed \xc2\xb7 %s", list[index].label);
             ui_put("\n");
             resumed = 1;
@@ -531,7 +528,6 @@ static void do_new(struct session *s)
     }
     /* Nothing is being answered any more, so the floating prompt goes too. */
     status_sticky_prompt(NULL);
-    banner_identity(s);
     ui_bar(ui_style(UI_DIM), "new conversation");
     ui_put("\n");
     ui_flush();

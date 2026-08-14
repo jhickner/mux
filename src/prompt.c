@@ -42,8 +42,9 @@ struct prompt {
     int          queued_count;
     int          queued_cap;
     char        *file_root;    /* project root for @-completion, or NULL */
-    prompt_status_fn status;   /* the gauge in front of the caret, or NULL */
-    void            *status_ud;
+    prompt_hud_fn hud;         /* the chrome rows above the caret, or NULL */
+    void         *hud_ud;
+    int           painted_hud; /* rows of chrome the block on screen carries */
     int        (*idle_fd)(void *ud);   /* output arriving unprompted, or NULL */
     void       (*idle_render)(void *ud);
     void        *idle_ud;
@@ -268,6 +269,7 @@ static int caret_offset(const struct prompt *p, int cols)
                             cols, STICKY_LINES) + 1; /* and its blank */
     for (int i = 0; i < p->queued_count; i++)
         up += reflowed_rows(p->queued[i], budget, cols, 0);
+    up += p->painted_hud; /* clipped to the width, so a resize cannot rewrap them */
     for (int y = 0; y < p->caret_frame_row && y < p->frame.rows; y++)
         up += rows_for((size_t)row_extent(&p->frame, y), cols);
     return up + p->caret_col / cols;
@@ -295,6 +297,7 @@ static void erase_block(struct prompt *p)
     fflush(stdout);
     p->painted_rows = 0;
     p->painted_head = NULL;
+    p->painted_hud = 0;
 }
 
 /* The caret repl.h draws past the end of a row is a placeholder for the real
@@ -361,31 +364,12 @@ static void paint_above(const struct prompt *p, const char *head, int cols)
         paint_bars(p->queued[i], budget, UI_DIM, 0, NULL);
 }
 
-/* Cells the gauge reserves in front of the caret, including the space after it.
- * The editor is rendered inset by this much so its wrapped rows and its
- * dropdown line up under the caret rather than under the gauge. Yields the
- * whole width back rather than squeeze the editor into a narrow terminal. */
-static int status_indent(const struct prompt *p, const char **text, int cols)
-{
-    *text = p->status ? p->status(p->status_ud) : NULL;
-    if (!*text || !**text)
-        return 0;
-    int width = (int)strlen(*text) + 1;
-    if (cols < 20 || width > cols / 4) {
-        *text = NULL;
-        return 0;
-    }
-    return width;
-}
-
 /* Draw the block from the cursor's row down, leaving the cursor at the end of
  * the last row. Reports the height and where the caret belongs within it. */
 static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *caret_col)
 {
     int cols = ui_columns();
-    const char *status = NULL;
-    int indent = status_indent(p, &status, cols);
-    int input_rows = repl_input_rows(&p->repl, cols - indent);
+    int input_rows = repl_input_rows(&p->repl, cols);
     int rows = input_rows + repl_dropdown_rows(&p->repl);
     if (rows < 1)
         rows = 1;
@@ -402,14 +386,22 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
         *caret_row = 0;
         p->painted_cols = cols;
         p->painted_head = NULL;
+        p->painted_hud = 0;
         p->caret_row = p->caret_col = p->caret_frame_row = 0;
         return;
     }
-    repl_render(&p->repl, indent, 0, cols - indent, true, draw_cell, &p->frame);
-    for (int x = 0; status && status[x]; x++)
-        draw_cell(&p->frame, x, 0, (unsigned char)status[x], REPL_STYLE_DIM);
+    repl_render(&p->repl, 0, 0, cols, true, draw_cell, &p->frame);
 
     int synthetic = caret_is_synthetic(&p->repl);
+
+    paint_above(p, head, cols);
+    /* Painted rather than measured: the rows are clipped to the width, so their
+     * count is the same whatever the terminal does to it. While a turn runs the
+     * chrome belongs above the spinner, which paints it there instead. */
+    p->painted_hud = p->hud && !p->live_block ? p->hud(p->hud_ud, cols) : 0;
+    above += p->painted_hud;
+    *rows_out += p->painted_hud;
+    *caret_row = above;
 
     *caret_row += p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
     *caret_col = p->frame.have_cursor ? p->frame.cursor_x : 0;
@@ -421,8 +413,6 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
     p->caret_row = *caret_row;
     p->caret_col = *caret_col;
     p->caret_frame_row = p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
-
-    paint_above(p, head, cols);
 
     for (int y = 0; y < rows; y++) {
         ui_esc("\x1b[K");
@@ -436,7 +426,7 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
             /* The line being edited wears a caret; it becomes the "▌" block only
              * once it is submitted into the history above. repl.h prefixes the
              * first row with "> " and continuation rows with two spaces. */
-            if (c->style == REPL_STYLE_PROMPT && x == indent && cp == '>') {
+            if (c->style == REPL_STYLE_PROMPT && x == 0 && cp == '>') {
                 cp = 0x276F; /* ❯ */
                 seq = ui_style(UI_ACCENT);
             }
@@ -464,6 +454,9 @@ static void repaint(struct prompt *p)
     int rows = 1, caret_row = 0, caret_col = 0;
 
     p->live_block = 0;
+    /* One frame for the erase and the redraw: without it a terminal is free to
+     * show the block half-taken-down, which a tall one makes obvious. */
+    ui_sync_begin();
     /* Redrawn in place, so it scrolls nothing that outlives it. */
     ui_scroll_track(0);
     goto_origin(p);
@@ -484,6 +477,7 @@ static void repaint(struct prompt *p)
     }
     ui_esc("\x1b[?25h");
     ui_scroll_track(1);
+    ui_sync_end();
     fflush(stdout);
 
     p->painted_rows = rows;
@@ -991,10 +985,10 @@ static int recall_queued(struct prompt *p)
     return 1;
 }
 
-void prompt_set_status(struct prompt *p, prompt_status_fn fn, void *ud)
+void prompt_set_hud(struct prompt *p, prompt_hud_fn fn, void *ud)
 {
-    p->status = fn;
-    p->status_ud = ud;
+    p->hud = fn;
+    p->hud_ud = ud;
 }
 
 void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud)

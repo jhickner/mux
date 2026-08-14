@@ -6,7 +6,6 @@ alternate screen, no full-screen redraw. The conversation is ordinary terminal
 scrollback, and only the input block is repainted in place.
 
 ```
-▌ mux › sonnet-5
 ▌ ctrl-d quit · try /help
 
 ▌ list the files here and summarize notes.txt
@@ -23,13 +22,19 @@ The directory holds one file, notes.txt:
 • beta
 • gamma
 
-6s · 87.7k / 1.0M (8%) · $0.0583
+▌ mux › claude › opus-5[1m] › medium
+▌ ~/working/mux on  master (4363d72) +98 -7 [!?] · 8%
 
+6s · 87.7k / 1.0M (8%) · $0.0583
 ❯
 ```
 
 The line being edited wears a `❯` caret; once submitted it is redrawn as a `▌`
-block in the history above.
+block in the history above. Two chrome rows ride above the caret and repaint
+with it: what is running, and where — path, branch, short HEAD, lines changed
+against it, `[!]` for uncommitted changes and `[?]` for untracked files, and the
+context used. Below them sits the last turn's summary, in the row the spinner
+occupies while a turn runs.
 
 ## Features
 
@@ -54,8 +59,8 @@ block in the history above.
 - A failed tool prints `failed: <reason>` in red, even when the call would otherwise collapse
 - What the agent says starts at column 0; everything it does is indented, so a
   reply is never mistaken for a tool block
-- Per-turn footer: elapsed time, context used against the model's window, and
-  cumulative cost
+- Per-turn summary in the input block, where the spinner was: elapsed time,
+  context used against the model's window, and cumulative cost
 - Markdown rendering: headings, bullets, ordered lists, fenced code, quotes,
   rules, inline code, bold, italic, links
 - Inline images: a markdown image alone on a line — `![alt](/abs/path.png)` —
