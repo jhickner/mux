@@ -44,7 +44,7 @@ typedef enum {
     BACKEND_EV_ASSISTANT,   /* text: an assistant text block                    */
     BACKEND_EV_THINKING,    /* text: a reasoning block                          */
     BACKEND_EV_TOOL,        /* name, plus input_json or arg: a tool invocation  */
-    BACKEND_EV_TOOL_RESULT, /* text: output; diff: optional authoritative patch */
+    BACKEND_EV_TOOL_RESULT, /* text: output; diff: optional patch; failed: error */
     BACKEND_EV_INIT,        /* name: the model the CLI resolved                 */
 } backend_event_kind;
 
@@ -58,6 +58,7 @@ typedef struct {
                                for the drivers that have no input_json          */
     const char *diff;       /* authoritative unified patch for a tool result;
                                NULL when the driver does not report one         */
+    int failed;             /* TOOL_RESULT: the tool did not succeed            */
 } backend_event;
 
 /* Accounting for one turn, zeroed before each. Token counts are that turn's;
@@ -298,7 +299,8 @@ typedef struct { backend_state st; claude_client *client; claude_result live; } 
 
 static void backend_claude_event(void *ud, const claude_event *e) {
     backend_claude *x = ((Backend *)ud)->ctx;
-    backend_event ev = { .text = e->text, .name = e->name, .input_json = e->input_json };
+    backend_event ev = { .text = e->text, .name = e->name, .input_json = e->input_json,
+                         .failed = e->failed };
     switch (e->kind) {
     case CLAUDE_EV_ASSISTANT:   ev.kind = BACKEND_EV_ASSISTANT;   break;
     case CLAUDE_EV_THINKING:    ev.kind = BACKEND_EV_THINKING;    break;
@@ -485,6 +487,7 @@ static void backend_codex_event(void *ud, const codex_event *cev) {
             ev.kind = BACKEND_EV_TOOL_RESULT;
             ev.text = cev->text;
             ev.diff = cev->diff;
+            ev.failed = cev->failed;
         } else {
             return;
         }
@@ -649,7 +652,8 @@ static void backend_grok_event(void *ud, const grok_event *e) {
         return;
     }
     case GROK_EV_TOOL_RESULT: {
-        backend_event ev = { .kind = BACKEND_EV_TOOL_RESULT, .text = e->text };
+        backend_event ev = { .kind = BACKEND_EV_TOOL_RESULT, .text = e->text,
+                             .failed = e->failed };
         backend_flush(&x->st);
         backend_emit(&x->st, &ev);
         return;

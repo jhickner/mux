@@ -51,6 +51,7 @@ block in the history above.
   dimmed row with no output preview, and a run of them to the same tool is
   listed on a single row. Anything that acts keeps its full block
 - `/tools compact` gives every call that one-row treatment, whatever it does
+- A failed tool prints `failed: <reason>` in red, even when the call would otherwise collapse
 - What the agent says starts at column 0; everything it does is indented, so a
   reply is never mistaken for a tool block
 - Per-turn footer: elapsed time, context used against the model's window, and
