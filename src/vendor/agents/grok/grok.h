@@ -77,7 +77,7 @@ typedef enum {
     GROK_EV_ASSISTANT,   /* text: an assistant text chunk                      */
     GROK_EV_THINKING,    /* text: a reasoning chunk                            */
     GROK_EV_TOOL,        /* name + input_json: a tool the model invoked        */
-    GROK_EV_TOOL_RESULT, /* text: the tool's output                            */
+    GROK_EV_TOOL_RESULT, /* text: the tool's output; failed: status was failed */
 } grok_event_kind;
 
 typedef struct {
@@ -85,6 +85,7 @@ typedef struct {
     const char *text;       /* NULL unless the kind documents it */
     const char *name;       /* tool name, for TOOL               */
     const char *input_json; /* tool input as compact JSON, TOOL  */
+    int failed;             /* TOOL_RESULT: status was "failed"  */
 } grok_event;
 
 /* Per-event callback. Runs on the grok_send thread; the event and its strings
@@ -156,6 +157,7 @@ struct grok_client {
     size_t len, cap;
     char  tool_id[GK_TOOL_CAP][GK_TOOL_ID];
     unsigned tool_flags[GK_TOOL_CAP]; /* bit0 announced, bit1 resulted      */
+    char *tool_text[GK_TOOL_CAP];     /* reason/output accumulated per call */
     int   n_tools;
 };
 
@@ -214,6 +216,10 @@ int grok_interrupt(grok_client *c) {
 }
 
 static void gk_reset_tools(grok_client *c) {
+    for (int i = 0; i < c->n_tools; i++) {
+        free(c->tool_text[i]);
+        c->tool_text[i] = NULL;
+    }
     c->n_tools = 0;
     memset(c->tool_flags, 0, sizeof c->tool_flags);
 }
@@ -226,6 +232,7 @@ static int gk_tool_slot(grok_client *c, const char *id) {
     int i = c->n_tools++;
     snprintf(c->tool_id[i], sizeof c->tool_id[i], "%s", id);
     c->tool_flags[i] = 0;
+    c->tool_text[i] = NULL;
     return i;
 }
 
@@ -296,8 +303,10 @@ static void gk_append(char **dst, const char *src) {
     gk_concat(dst, src);
 }
 
-/* Flatten a tool_call content[] array into plain text. */
-static char *gk_content_text(cJSON *content) {
+/* Flatten a tool_call content[] array into plain text. Diff items contribute
+ * only their path; a failed result skips them so a path is not mistaken for
+ * the error. */
+static char *gk_content_text(cJSON *content, int paths) {
     if (!cJSON_IsArray(content)) return NULL;
     char *out = NULL;
     cJSON *item;
@@ -307,7 +316,9 @@ static char *gk_content_text(cJSON *content) {
             cJSON *inner = cJSON_GetObjectItem(item, "content");
             const char *txt = inner ? cJSON_GetStringValue(cJSON_GetObjectItem(inner, "text")) : NULL;
             gk_append(&out, txt);
-        } else if (type && !strcmp(type, "diff")) {
+        } else if (type && !strcmp(type, "text")) {
+            gk_append(&out, cJSON_GetStringValue(cJSON_GetObjectItem(item, "text")));
+        } else if (paths && type && !strcmp(type, "diff")) {
             const char *path = cJSON_GetStringValue(cJSON_GetObjectItem(item, "path"));
             if (path) gk_append(&out, path);
         }
@@ -315,15 +326,84 @@ static char *gk_content_text(cJSON *content) {
     return out;
 }
 
+static const char *gk_str(cJSON *obj, const char *key) {
+    const char *s = cJSON_GetStringValue(cJSON_GetObjectItem(obj, key));
+    return (s && *s) ? s : NULL;
+}
+
+/* A string, or the message/error/text of an object. */
+static char *gk_dup_reason(cJSON *v) {
+    if (!v) return NULL;
+    if (cJSON_IsString(v) && v->valuestring && *v->valuestring)
+        return strdup(v->valuestring);
+    if (!cJSON_IsObject(v)) return NULL;
+    const char *s = gk_str(v, "message");
+    if (!s) s = gk_str(v, "error");
+    if (!s) s = gk_str(v, "text");
+    return s ? strdup(s) : NULL;
+}
+
+/* Grok parks the reason on rawOutput.message, or under a variant key
+ * ({"type":"NotFound","NotFound":"…"} / FileReadError:{message}). */
+static char *gk_mine_reason(cJSON *raw) {
+    char *got = gk_dup_reason(raw);
+    if (got) return got;
+    if (!cJSON_IsObject(raw)) return NULL;
+
+    static const char *keys[] = {
+        "message", "error", "output_for_prompt", "output", "content", "text", "result", NULL
+    };
+    for (int i = 0; keys[i]; i++) {
+        got = gk_dup_reason(cJSON_GetObjectItem(raw, keys[i]));
+        if (got) return got;
+    }
+    cJSON *child;
+    cJSON_ArrayForEach(child, raw) {
+        if (!child->string || !strcmp(child->string, "type")) continue;
+        got = gk_dup_reason(child);
+        if (got) return got;
+    }
+    /* A variant with only its discriminant still names the failure. */
+    const char *typ = gk_str(raw, "type");
+    return typ ? strdup(typ) : NULL;
+}
+
 static char *gk_raw_text(cJSON *raw) {
     if (!raw) return NULL;
+    char *mined = gk_mine_reason(raw);
+    if (mined) return mined;
     if (cJSON_IsString(raw)) return strdup(raw->valuestring ? raw->valuestring : "");
-    const char *keys[] = { "output_for_prompt", "output", "content", "text", "result", NULL };
-    for (int i = 0; keys[i]; i++) {
-        const char *s = cJSON_GetStringValue(cJSON_GetObjectItem(raw, keys[i]));
-        if (s && *s) return strdup(s);
-    }
     return cJSON_PrintUnformatted(raw);
+}
+
+/* Text this update actually carries — never the word "failed", and never a
+ * diff path. A later status-only packet must not wipe an earlier reason. */
+static char *gk_extract_reason(cJSON *u) {
+    char *text = gk_content_text(cJSON_GetObjectItem(u, "content"), 0);
+    if (text && *text) return text;
+    free(text);
+    text = gk_raw_text(cJSON_GetObjectItem(u, "rawOutput"));
+    if (text && *text) return text;
+    free(text);
+
+    cJSON *meta = cJSON_GetObjectItem(u, "_meta");
+    cJSON *tool = meta ? cJSON_GetObjectItem(meta, "x.ai/tool") : NULL;
+    text = gk_dup_reason(tool);
+    if (text && *text) return text;
+    free(text);
+
+    const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(u, "title"));
+    if (title && strchr(title, ' ')) return strdup(title);
+    return NULL;
+}
+
+static void gk_keep_reason(grok_client *c, int slot, char *text) {
+    if (slot < 0 || !text || !*text) {
+        free(text);
+        return;
+    }
+    free(c->tool_text[slot]);
+    c->tool_text[slot] = text;
 }
 
 static char *gk_input_json(cJSON *u) {
@@ -368,14 +448,27 @@ static void gk_tool_update(grok_client *c, cJSON *u) {
         gk_emit(c, &ev);
     }
 
-    int done = status && (!strcmp(status, "completed") || !strcmp(status, "failed"));
+    gk_keep_reason(c, slot, gk_extract_reason(u));
+
+    int failed = status && !strcmp(status, "failed");
+    int done = failed || (status && !strcmp(status, "completed"));
     if (slot >= 0 && done && !(c->tool_flags[slot] & 2)) {
         c->tool_flags[slot] |= 2;
-        char *text = gk_content_text(cJSON_GetObjectItem(u, "content"));
-        if (!text) text = gk_raw_text(cJSON_GetObjectItem(u, "rawOutput"));
-        grok_event ev = { .kind = GROK_EV_TOOL_RESULT, .text = text ? text : "" };
+        char *owned = NULL;
+        const char *text = c->tool_text[slot];
+        if (!failed && (!text || !*text)) {
+            owned = gk_content_text(cJSON_GetObjectItem(u, "content"), 1);
+            if (!owned) owned = gk_raw_text(cJSON_GetObjectItem(u, "rawOutput"));
+            text = owned;
+        }
+        if (!text || !*text) text = failed ? "failed" : "";
+        grok_event ev = {
+            .kind = GROK_EV_TOOL_RESULT,
+            .text = text,
+            .failed = failed,
+        };
         gk_emit(c, &ev);
-        free(text);
+        free(owned);
     }
     free(input);
 }
@@ -717,6 +810,7 @@ void grok_stop(grok_client *c) {
         }
     }
     if (c->out_fd >= 0) close(c->out_fd);
+    gk_reset_tools(c);
     free(c->cwd);
     free(c->sys);
     free(c->resume);

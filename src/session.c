@@ -388,7 +388,7 @@ static void cluster_paint(struct session *s)
  * whatever is left. */
 #define TOOL_PREVIEW_ROWS 3
 
-static void print_tool_output(const char *text)
+static void print_tool_output(const char *text, enum ui_role role)
 {
     if (!text || !*text)
         return;
@@ -415,7 +415,7 @@ static void print_tool_output(const char *text)
             size_t skip = 0;
             size_t fit = ui_wrap_row(clipped, (size_t)budget, &skip);
             ui_put("    ");
-            ui_esc(ui_style(UI_DIM));
+            ui_esc(ui_style(role));
             ui_putn(clipped, fit);
             if (clipped[fit])
                 ui_put("…");
@@ -530,12 +530,32 @@ static void on_event(void *ud, const backend_event *ev)
     }
 
     case BACKEND_EV_TOOL_RESULT:
+        if (ev->failed) {
+            status_pause();
+            cluster_forget(s);
+            filediff_clear();
+            {
+                const char *why = ev->text && *ev->text ? ev->text : NULL;
+                if (!why || !strcmp(why, "failed")) {
+                    print_tool_output("failed", UI_ERROR);
+                } else {
+                    char line[4096];
+                    snprintf(line, sizeof line, "failed: %s", why);
+                    print_tool_output(line, UI_ERROR);
+                }
+            }
+            status_resume();
+            s->after_activity = 1;
+            s->after_tool = 1;
+            s->after_collapse = 0;
+            break;
+        }
         /* A collapsed call has already said everything it is going to; leaving
          * the row untouched is also what keeps the next one able to rewrite it. */
         if (!s->after_collapse) {
             status_pause();
             /* A tool that changed the file speaks for itself; one that did not
-             * (a read, a failed edit) still needs its own output shown. */
+             * still needs its own output shown. */
             int drew;
             if (ev->diff) {
                 drew = filediff_render_patch(ev->diff);
@@ -544,7 +564,7 @@ static void on_event(void *ud, const backend_event *ev)
                 drew = filediff_render();
             }
             if (!drew)
-                print_tool_output(ev->text);
+                print_tool_output(ev->text, UI_DIM);
             status_resume();
         }
         s->after_activity = 1;

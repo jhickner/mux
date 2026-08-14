@@ -85,6 +85,7 @@ typedef struct {
     const char *name;       /* tool name, for CODEX_EV_TOOL           */
     const char *input_json; /* compact tool input, for CODEX_EV_TOOL  */
     const char *diff;       /* unified patch, for a file-change result */
+    int failed;             /* TOOL_RESULT: status was not completed   */
 } codex_event;
 
 void codex_set_event_cb(codex_client *c,
@@ -820,9 +821,18 @@ static void cx_item_event(codex_client *c, cJSON *params, int started,
                 cJSON_GetObjectItemCaseSensitive(item, "aggregatedOutput"));
             const char *status = cJSON_GetStringValue(
                 cJSON_GetObjectItemCaseSensitive(item, "status"));
+            const char *err = cJSON_GetStringValue(
+                cJSON_GetObjectItemCaseSensitive(item, "error"));
+            if (!err) err = cJSON_GetStringValue(
+                cJSON_GetObjectItemCaseSensitive(item, "message"));
+            int failed = status && strcmp(status, "completed") != 0;
+            const char *text = out ? out : (err ? err : NULL);
+            if (!text && failed) text = (status && strcmp(status, "failed")) ? status : "failed";
+            if (!text) text = "";
             codex_event ev = {
                 .kind = CODEX_EV_TOOL_RESULT,
-                .text = out ? out : (status && strcmp(status, "completed") ? status : ""),
+                .text = text,
+                .failed = failed,
             };
             cx_emit(c, &ev);
         }
@@ -840,12 +850,20 @@ static void cx_item_event(codex_client *c, cJSON *params, int started,
         } else {
             const char *status = cJSON_GetStringValue(
                 cJSON_GetObjectItemCaseSensitive(item, "status"));
+            const char *err = cJSON_GetStringValue(
+                cJSON_GetObjectItemCaseSensitive(item, "error"));
+            if (!err) err = cJSON_GetStringValue(
+                cJSON_GetObjectItemCaseSensitive(item, "message"));
             int completed = status && !strcmp(status, "completed");
             char *diff = completed ? cx_file_diff(changes) : NULL;
+            const char *text = "";
+            if (!completed)
+                text = err ? err : ((status && strcmp(status, "failed")) ? status : "failed");
             codex_event ev = {
                 .kind = CODEX_EV_TOOL_RESULT,
-                .text = completed ? "" : (status ? status : "failed"),
+                .text = text,
                 .diff = diff,
+                .failed = !completed,
             };
             cx_emit(c, &ev);
             free(diff);

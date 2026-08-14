@@ -86,6 +86,7 @@ typedef struct {
     const char *text;       /* assistant/thinking text, or tool result */
     const char *name;       /* tool name, for PI_EV_TOOL              */
     const char *input_json; /* tool arguments, for PI_EV_TOOL         */
+    int failed;             /* TOOL_RESULT: isError was set           */
 } pi_event;
 
 /* Per-event callback while pi_send is running. */
@@ -291,9 +292,16 @@ static void pi_consume_event(pi_client *c, cJSON *ev, char **acc, int *settled) 
         pi_emit(c, &out);
         free(input);
     } else if (!strcmp(type->valuestring, "tool_execution_end")) {
-        const char *text = pi_text(cJSON_GetObjectItemCaseSensitive(ev, "result"));
+        cJSON *result = cJSON_GetObjectItemCaseSensitive(ev, "result");
+        const char *text = pi_text(result);
+        if (!text) text = cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(result, "error"));
+        if (!text) text = cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(ev, "error"));
+        int failed = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(ev, "isError"));
         pi_event out = { .kind = PI_EV_TOOL_RESULT,
-                         .text = text ? text : "(result)" };
+                         .text = text ? text : (failed ? "failed" : "(result)"),
+                         .failed = failed };
         pi_emit(c, &out);
     }
 }
@@ -552,6 +560,7 @@ static void pi_backend_event(void *ud, const pi_event *pev) {
         } else if (pev->kind == PI_EV_TOOL_RESULT) {
             ev.kind = BACKEND_EV_TOOL_RESULT;
             ev.text = pev->text;
+            ev.failed = pev->failed;
         } else {
             return;
         }

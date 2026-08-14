@@ -126,6 +126,7 @@ typedef struct {
     const char *text;       /* NULL unless the kind documents it */
     const char *name;       /* tool name, or model name for INIT */
     const char *input_json; /* tool input as compact JSON, for TOOL */
+    int failed;             /* TOOL_RESULT: the tool reported is_error */
 } claude_event;
 
 /* Register a callback invoked for each interesting stream event during a turn.
@@ -500,7 +501,8 @@ static void cl_emit(claude_client *c, cJSON *ev, const char *type) {
         } else if (strcmp(type, "user") == 0 && strcmp(bt, "tool_result") == 0) {
             const char *t = cl_tool_result_text(blk);
             out.kind = CLAUDE_EV_TOOL_RESULT;
-            out.text = t ? t : "(result)";
+            out.failed = cJSON_IsTrue(cJSON_GetObjectItem(blk, "is_error"));
+            out.text = t ? t : (out.failed ? "failed" : "(result)");
             cl_sink(c, &out);
         }
     }
