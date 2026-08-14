@@ -260,9 +260,132 @@ static int path_score(const char *path, const char *token)
     return s < 0 ? 0 : s;
 }
 
+/* ---------- paths outside the index ---------- */
+
+/* True for a token that names a place the project index does not cover: "~"
+ * (home), "/" (absolute), "." or ".." (relative to the working directory). */
+static int is_external(const char *t)
+{
+    if (t[0] == '~' || t[0] == '/')
+        return 1;
+    if (t[0] != '.')
+        return 0;
+    if (t[1] == '/' || t[1] == '\0')
+        return 1;
+    return t[1] == '.' && (t[2] == '/' || t[2] == '\0');
+}
+
+/* Split `token` into the directory prefix to list and the partial name being
+ * matched inside it. `prefix` keeps the form typed (minus a "~" expanded to
+ * $HOME) so accepting a candidate leaves a path the agent can open; `dir` is
+ * that prefix made absolute for opendir(). Returns 0 when it cannot resolve. */
+static int split_external(const char *token, const char *root, char *prefix, size_t prefix_sz,
+                          char *dir, size_t dir_sz, char *base, size_t base_sz)
+{
+    const char *slash = strrchr(token, '/');
+    char        pre[4096];
+    if (slash) {
+        size_t n = (size_t)(slash - token) + 1;
+        if (n >= sizeof pre || strlen(slash + 1) >= base_sz)
+            return 0;
+        memcpy(pre, token, n);
+        pre[n] = '\0';
+        snprintf(base, base_sz, "%s", slash + 1);
+    } else {
+        /* A bare "~", "." or ".." names the directory itself. */
+        snprintf(pre, sizeof pre, "%s/", token);
+        base[0] = '\0';
+    }
+
+    if (pre[0] == '~') {
+        const char *home = getenv("HOME");
+        if (!home || !*home)
+            return 0;
+        if (snprintf(prefix, prefix_sz, "%s%s", home, pre + 1) >= (int)prefix_sz)
+            return 0;
+    } else if (snprintf(prefix, prefix_sz, "%s", pre) >= (int)prefix_sz) {
+        return 0;
+    }
+
+    if (prefix[0] == '/')
+        return snprintf(dir, dir_sz, "%s", prefix) < (int)dir_sz;
+    return snprintf(dir, dir_sz, "%s/%s", root, prefix) < (int)dir_sz;
+}
+
+static int cmp_name(const void *a, const void *b)
+{
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/* List one directory, fuzzy-matched against `base`, in place of the index. */
+static int complete_external(const char *token, const char *root, ReplCandidate *out, int max)
+{
+    char prefix[4096], dir[4096], base[REPL_CAND_TEXT];
+    if (!split_external(token, root, prefix, sizeof prefix, dir, sizeof dir, base, sizeof base))
+        return 0;
+    DIR *d = opendir(dir);
+    if (!d)
+        return 0;
+
+    char        *names[TOP_MAX * 8];
+    int          count = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) && count < (int)(sizeof names / sizeof *names)) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
+            continue;
+        if (e->d_name[0] == '.' && base[0] != '.') /* hidden until asked for */
+            continue;
+        char full[4096];
+        snprintf(full, sizeof full, "%s/%s", dir, e->d_name);
+        int isdir = e->d_type == DT_DIR;
+        if (e->d_type == DT_UNKNOWN) {
+            struct stat st;
+            isdir = stat(full, &st) == 0 && S_ISDIR(st.st_mode);
+        }
+        char entry[REPL_CAND_TEXT];
+        if (snprintf(entry, sizeof entry, "%s%s", e->d_name, isdir ? "/" : "") >= (int)sizeof entry)
+            continue;
+        char *dup = strdup(entry);
+        if (dup)
+            names[count++] = dup;
+    }
+    closedir(d);
+    qsort(names, (size_t)count, sizeof *names, cmp_name);
+
+    int cap = max < TOP_MAX ? max : TOP_MAX;
+    int idx[TOP_MAX], score[TOP_MAX], n = 0;
+    for (int i = 0; i < count && cap > 0; i++) {
+        int sc = base[0] ? fuzzy(names[i], base) : 0;
+        if (sc < 0)
+            continue;
+        if (n == cap) {
+            if (sc <= score[cap - 1])
+                continue;
+            n = cap - 1;
+        }
+        int j = n++;
+        while (j > 0 && score[j - 1] < sc) {
+            score[j] = score[j - 1];
+            idx[j] = idx[j - 1];
+            j--;
+        }
+        score[j] = sc;
+        idx[j] = i;
+    }
+    for (int k = 0; k < n; k++) {
+        snprintf(out[k].text, REPL_CAND_TEXT, "%s%s", prefix, names[idx[k]]);
+        out[k].desc[0] = '\0';
+    }
+    for (int i = 0; i < count; i++)
+        free(names[i]);
+    return n;
+}
+
 int files_complete(void *ctx, const char *token, ReplCandidate *out, int max)
 {
     const char *root = ctx ? ctx : ".";
+    if (is_external(token))
+        return complete_external(token, root, out, max);
     time_t now = time(NULL);
     if (!IDX.root || strcmp(IDX.root, root) != 0 || now - IDX.built > INDEX_TTL)
         index_build(&IDX, root);

@@ -103,6 +103,15 @@ void session_adopt_id(struct session *s, const char *id);
 const char *session_model(const struct session *s);
 const char *session_id(const struct session *s);
 
+/* What to call the model on screen: the concrete id the backend resolved where
+ * it knows one, so a session that asked for nothing is still named. Never the
+ * word the flags use — session_model() stays the answer for those. */
+const char *session_model_label(const struct session *s);
+
+/* The effort level actually in force — requested, else whatever the backend
+ * resolved — or NULL when there is none to show. */
+const char *session_effort_label(const struct session *s);
+
 /* Whether this backend can pick a conversation back up from its session id, as
  * session_resume() and forking both need. */
 int session_can_resume(const struct session *s);

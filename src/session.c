@@ -1241,6 +1241,52 @@ const char *session_effort(const struct session *s)
     return s->effort && *s->effort ? s->effort : "default";
 }
 
+/* Where the id a backend resolved for this model request is remembered between
+ * runs, so the banner can name the model without waiting on a handshake. */
+static void model_cache_key(const struct session *s, char *out, size_t n)
+{
+    snprintf(out, n, "model.%s.%s", s->backend,
+             s->model && *s->model ? s->model : "default");
+}
+
+static void remember_model(const struct session *s)
+{
+    if (!s->resolved || !*s->resolved)
+        return;
+    char key[MAX_SETTING_KEY];
+    model_cache_key(s, key, sizeof key);
+    settings_set_str(key, s->resolved);
+}
+
+const char *session_model_label(const struct session *s)
+{
+    if (s->resolved && *s->resolved)
+        return s->resolved;
+    /* The backend has this as soon as its own startup handshake lands, which is
+     * usually after the banner has been drawn — hence the remembered id. */
+    if (s->agent && s->agent->model) {
+        const char *got = s->agent->model(s->agent);
+        if (got && *got)
+            return got;
+    }
+    char key[MAX_SETTING_KEY];
+    model_cache_key(s, key, sizeof key);
+    const char *cached = settings_get_str(key, NULL);
+    if (cached)
+        return cached;
+    if (s->model && *s->model)
+        return s->model;
+    return "default";
+}
+
+const char *session_effort_label(const struct session *s)
+{
+    if (!session_can_set_effort(s))
+        return NULL;
+    const char *effort = spin_effort(s);
+    return effort_is_off(effort) || !strcmp(effort, "default") ? NULL : effort;
+}
+
 int session_can_set_effort(const struct session *s)
 {
     return s->agent && (s->agent->caps & BACKEND_CAP_EFFORT);

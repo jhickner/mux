@@ -87,8 +87,9 @@ char *claude_send_ex(claude_client *c, const char *user_text, claude_result *met
  * selects "auto", Claude's model-default mode. */
 int claude_set_effort(claude_client *c, const char *effort);
 
-/* The model the CLI resolved at startup (from its `system`/`init` event), or
- * NULL until the first turn has been sent. */
+/* The model the CLI resolved: taken from the startup handshake's model table,
+ * then from each turn's `system`/`init` event. Never waits, so it is NULL until
+ * the handshake this client is already running has answered. */
 const char *claude_model(claude_client *c);
 
 /* The effort level in force: `--effort` if one was passed, else the
@@ -225,6 +226,7 @@ struct claude_client {
     void (*on_event)(void *ud, const claude_event *ev);
     void *on_event_ud;
     char  session_id[128];
+    char  requested[128];     /* --model value, or the settings.json default */
     char  model[128];
     char  effort[32];
     char  auth[64];
@@ -259,33 +261,35 @@ const char *claude_effort(claude_client *c) {
     return (c && c->effort[0]) ? c->effort : NULL;
 }
 
-/* `--effort` wins; otherwise take effortLevel from the user's settings, then
- * a project overlay. Stream events may replace this with the resolved level. */
-static void cl_read_effort_file(claude_client *c, const char *path) {
+/* Copy one top-level string setting out of a settings.json, leaving `out`
+ * untouched when the file, the parse or the key is missing. */
+static void cl_read_setting(const char *path, const char *key, char *out, size_t n) {
     FILE *f = fopen(path, "r");
     if (!f) return;
     if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return; }
-    long n = ftell(f);
-    if (n <= 0 || n > 1 << 20) { fclose(f); return; }
+    long len = ftell(f);
+    if (len <= 0 || len > 1 << 20) { fclose(f); return; }
     rewind(f);
-    char *buf = malloc((size_t)n + 1);
+    char *buf = malloc((size_t)len + 1);
     if (!buf) { fclose(f); return; }
-    size_t got = fread(buf, 1, (size_t)n, f);
+    size_t got = fread(buf, 1, (size_t)len, f);
     fclose(f);
     buf[got] = '\0';
     cJSON *j = cJSON_Parse(buf);
     free(buf);
     if (!j) return;
-    const char *level = cJSON_GetStringValue(
-        cJSON_GetObjectItemCaseSensitive(j, "effortLevel"));
-    if (level && *level)
-        snprintf(c->effort, sizeof c->effort, "%s", level);
+    const char *val = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(j, key));
+    if (val && *val)
+        snprintf(out, n, "%s", val);
     cJSON_Delete(j);
 }
 
-static void cl_seed_effort(claude_client *c, const claude_opts *o) {
-    if (o->effort && *o->effort) {
-        snprintf(c->effort, sizeof c->effort, "%s", o->effort);
+/* The flag wins; otherwise take the setting from the user's settings, then a
+ * project overlay. */
+static void cl_seed_setting(const claude_opts *o, const char *flag,
+                            const char *key, char *out, size_t n) {
+    if (flag && *flag) {
+        snprintf(out, n, "%s", flag);
         return;
     }
     if (!o->allow_customizations) return;
@@ -293,11 +297,42 @@ static void cl_seed_effort(claude_client *c, const claude_opts *o) {
     char path[512];
     if (home && *home) {
         snprintf(path, sizeof path, "%s/.claude/settings.json", home);
-        cl_read_effort_file(c, path);
+        cl_read_setting(path, key, out, n);
     }
     if (o->cwd && *o->cwd) {
         snprintf(path, sizeof path, "%s/.claude/settings.json", o->cwd);
-        cl_read_effort_file(c, path);
+        cl_read_setting(path, key, out, n);
+    }
+}
+
+/* Stream events may replace the effort with the level the CLI resolved. */
+static void cl_seed_effort(claude_client *c, const claude_opts *o) {
+    cl_seed_setting(o, o->effort, "effortLevel", c->effort, sizeof c->effort);
+}
+
+/* The model as it was asked for — an alias like "sonnet", or "default" when
+ * nothing selects one. The handshake's model table turns it into an id. */
+static void cl_seed_model(claude_client *c, const claude_opts *o) {
+    cl_seed_setting(o, o->model, "model", c->requested, sizeof c->requested);
+    if (!c->requested[0])
+        snprintf(c->requested, sizeof c->requested, "default");
+}
+
+/* The initialize response lists every selectable model with the id it resolves
+ * to, which is what names the one in force before any turn has run. */
+static void cl_note_models(claude_client *c, cJSON *response) {
+    cJSON *models = cJSON_GetObjectItemCaseSensitive(response, "models");
+    if (!cJSON_IsArray(models)) return;
+    cJSON *m;
+    cJSON_ArrayForEach(m, models) {
+        const char *value = cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(m, "value"));
+        if (!value || strcmp(value, c->requested) != 0) continue;
+        const char *id = cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(m, "resolvedModel"));
+        if (id && *id)
+            snprintf(c->model, sizeof c->model, "%s", id);
+        return;
     }
 }
 
@@ -440,6 +475,7 @@ claude_client *claude_start(const claude_opts *opts) {
     c->out_fd = out_pipe[0];
     c->err_fd = err_pipe[0];
     cl_seed_effort(c, &o);
+    cl_seed_model(c, &o);
     /* Never block the parent on the child's diagnostics. */
     fcntl(c->err_fd, F_SETFL, O_NONBLOCK);
     atomic_init(&c->warm_state, 0);
@@ -767,6 +803,8 @@ static void *cl_warm(void *arg) {
             const char *subtype = cJSON_GetStringValue(
                 cJSON_GetObjectItemCaseSensitive(response, "subtype"));
             ok = subtype && !strcmp(subtype, "success");
+            cJSON *inner = cJSON_GetObjectItemCaseSensitive(response, "response");
+            if (ok && inner) cl_note_models(c, inner);
             cJSON_Delete(ev);
             break;
         }

@@ -255,6 +255,7 @@ int main(int argc, char **argv)
     prompt_set_idle(prompt, idle_fd, idle_render, session);
     prompt_set_status(prompt, context_gauge, session);
 
+    ui_put("\n");
     /* cmd_resume() prints the identity row itself when it adopts a session. */
     if (resume && cmd_resume(session))
         banner_hints();
