@@ -144,6 +144,7 @@ diff.
 |---|---|
 | `enter` | Submit, or queue the message when a turn is running |
 | `ctrl-j` | Insert a newline |
+| `ctrl-g` | Edit the prompt in `$EDITOR` |
 | `tab` | Accept the completion |
 | `@` | Open the file picker; keep typing to filter, `tab` or `enter` to take it |
 | `up` / `down` | Browse history; with a message queued, `up` recalls it for editing |

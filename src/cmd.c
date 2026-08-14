@@ -159,6 +159,7 @@ static void show_help(void)
     help_heading("shortcuts");
     help_row("enter", "submit prompt, or queue it while a turn is running");
     help_row("ctrl-j", "insert a newline");
+    help_row("ctrl-g", "edit the prompt in $EDITOR");
     help_row("tab", "accept the completion");
     help_row("@", "complete a file path from the working directory");
     help_row("up / down", "browse history");
