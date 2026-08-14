@@ -81,11 +81,13 @@ static void usage(void)
 /* The context gauge in front of the caret. */
 static const char *context_gauge(void *ud)
 {
-    static char text[8];
+    static char text[40];
+    const char *backend = session_backend(ud);
     int percent = session_context_percent(ud);
     if (percent < 0)
-        return NULL;
-    snprintf(text, sizeof text, "%d%%", percent);
+        snprintf(text, sizeof text, "%s", backend);
+    else
+        snprintf(text, sizeof text, "%s %d%%", backend, percent);
     return text;
 }
 
