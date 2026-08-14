@@ -32,6 +32,7 @@ typedef struct {
     const char *append_system;  /* thread developer instructions; NULL -> none */
     int bypass_approvals;       /* danger-full-access, only if externally sandboxed */
     int skip_git_repo_check;    /* retained for source compatibility; unused  */
+    int ephemeral;              /* nonzero: do not materialize the thread on disk */
 } codex_opts;
 
 /* Spawn app-server and initialize/start its thread in the background. Returns
@@ -129,7 +130,7 @@ struct codex_client {
     void (*on_event)(void *ud, const codex_event *ev);
     void *on_event_ud;
     char *model, *effort, *sandbox, *sys, *resume;
-    int effort_changed;
+    int effort_changed, ephemeral;
     char session_id[128];
     char resolved[32];         /* config or stream effort when none was set */
     long context_tokens, context_window;
@@ -406,6 +407,7 @@ static int cx_open_thread(codex_client *c, const char *resume) {
     } else {
         if (c->model) cJSON_AddStringToObject(p, "model", c->model);
         if (c->sys) cJSON_AddStringToObject(p, "developerInstructions", c->sys);
+        if (c->ephemeral) cJSON_AddBoolToObject(p, "ephemeral", 1);
     }
     int id = cx_request(c, resume && *resume ? "thread/resume" : "thread/start", p);
     cJSON *r = id ? cx_wait_response(c, id) : NULL;
@@ -449,6 +451,7 @@ codex_client *codex_start(const codex_opts *opts) {
     if (!c) return NULL;
     c->in_fd = c->out_fd = -1; c->next_id = 1;
     c->model = cx_dup(o.model); c->effort = cx_dup(o.effort);
+    c->ephemeral = o.ephemeral;
     c->sys = cx_dup(o.append_system);
     cx_seed_effort(c, o.cwd);
     c->resume = cx_dup(o.resume_session);

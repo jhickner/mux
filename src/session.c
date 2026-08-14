@@ -599,7 +599,8 @@ static void name_poll(struct session *s)
     if (!s->named) {
         if (!s->prompt)
             return;
-        title_request(s->id, s->cwd, s->prompt, s->last_reply);
+        const char *model = s->resolved && *s->resolved ? s->resolved : s->model;
+        title_request(s->id, s->backend, model, s->cwd, s->prompt, s->last_reply);
         s->named = 1;
         s->retitle = 0;
         s->named_at = now_seconds();

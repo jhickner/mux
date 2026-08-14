@@ -99,7 +99,8 @@ static int mock_server(void)
         } else if (method && !strcmp(method, "thread/start")) {
             cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
             if (!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(
-                    params, "experimentalRawEvents"))) {
+                    params, "experimentalRawEvents")) ||
+                !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(params, "ephemeral"))) {
                 respond(id, "{}");
                 cJSON_Delete(msg);
                 continue;
@@ -201,7 +202,7 @@ int main(int argc, char **argv)
     if (argc > 1 && !strcmp(argv[1], "app-server"))
         return mock_server();
 
-    codex_opts opts = { .cli_path = argv[0], .effort = "high" };
+    codex_opts opts = { .cli_path = argv[0], .effort = "high", .ephemeral = 1 };
     long started = milliseconds();
     codex_client *client = codex_start(&opts);
     if (!client) {

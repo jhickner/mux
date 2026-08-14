@@ -31,8 +31,29 @@ static long milliseconds(void)
     return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
 }
 
-static int mock_cli(void)
+static int has_arg(int argc, char **argv, const char *value)
 {
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], value))
+            return 1;
+    return 0;
+}
+
+static int has_option(int argc, char **argv, const char *option, const char *value)
+{
+    for (int i = 1; i + 1 < argc; i++)
+        if (!strcmp(argv[i], option) && !strcmp(argv[i + 1], value))
+            return 1;
+    return 0;
+}
+
+static int mock_cli(int argc, char **argv)
+{
+    if (!has_arg(argc, argv, "--no-session-persistence") ||
+        !has_option(argc, argv, "--name", "title helper") ||
+        !has_option(argc, argv, "--tools", ""))
+        return 2;
+
     char *line = NULL;
     size_t cap = 0;
     int effort_changes = 0;
@@ -74,9 +95,14 @@ static int mock_cli(void)
 int main(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "--print"))
-        return mock_cli();
+        return mock_cli(argc, argv);
 
-    claude_opts opts = { .cli_path = argv[0] };
+    claude_opts opts = {
+        .cli_path = argv[0],
+        .session_name = "title helper",
+        .tools = "",
+        .no_session_persistence = 1,
+    };
     long started = milliseconds();
     claude_client *client = claude_start(&opts);
     if (!client) {

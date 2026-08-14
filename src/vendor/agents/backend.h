@@ -32,6 +32,9 @@ typedef struct {
     const char *cwd;            /* where the agent runs its tools; NULL -> inherit    */
     const char *resume_session; /* continue a prior session (claude, codex, grok, pi) */
     const char *permission_mode;/* claude: --permission-mode; NULL -> bypassPermissions*/
+    const char *session_name;   /* optional display name; currently used by claude     */
+    int ephemeral;              /* do not persist this helper conversation             */
+    int disable_tools;          /* helper needs text generation, not machine access    */
     int allow_customizations;   /* claude: load skills, CLAUDE.md, MCP servers, ...   */
 } backend_opts;
 
@@ -188,8 +191,8 @@ int backend_run_pool(const char *name, const char *model, const char *system,
  * use it too. */
 
 typedef struct {
-    char *model, *effort, *system, *cwd, *resume, *permission;
-    int   allow_customizations;
+    char *model, *effort, *system, *cwd, *resume, *permission, *session_name;
+    int   allow_customizations, ephemeral, disable_tools;
     void (*on_event)(void *ud, const backend_event *ev);
     void *event_ud;
     int (*abort)(void);
@@ -214,12 +217,15 @@ static void backend_state_init(backend_state *st, const backend_opts *o) {
     st->cwd    = backend_dup(o->cwd);
     st->resume = backend_dup(o->resume_session);
     st->permission = backend_dup(o->permission_mode);
+    st->session_name = backend_dup(o->session_name);
+    st->ephemeral = o->ephemeral;
+    st->disable_tools = o->disable_tools;
     st->allow_customizations = o->allow_customizations;
 }
 
 static void backend_state_free(backend_state *st) {
     free(st->model); free(st->effort); free(st->system); free(st->cwd); free(st->resume);
-    free(st->permission); free(st->pending);
+    free(st->permission); free(st->session_name); free(st->pending);
 }
 
 static void backend_emit(backend_state *st, const backend_event *ev) {
@@ -315,6 +321,9 @@ static int backend_claude_start(Backend *b, const char *resume) {
     o.use_subscription = 1;
     o.allow_customizations = x->st.allow_customizations;
     o.resume_session = resume;
+    o.session_name = x->st.session_name;
+    o.no_session_persistence = x->st.ephemeral;
+    if (x->st.disable_tools) o.tools = "";
     claude_client *c = claude_start(&o);
     if (!c) return 0;
     claude_set_event_cb(c, backend_claude_event, b);
@@ -492,6 +501,7 @@ static int backend_codex_start(Backend *b, const char *resume) {
     o.append_system = x->st.system;
     o.bypass_approvals = 1;
     o.resume_session = resume;
+    o.ephemeral = x->st.ephemeral;
     codex_client *c = codex_start(&o);
     if (!c) return 0;
     codex_set_event_cb(c, backend_codex_event, b);
@@ -655,6 +665,7 @@ static int backend_grok_start(Backend *b, const char *resume) {
     o.append_system = x->st.system;
     o.reasoning_effort = x->st.effort ? x->st.effort : getenv("GROK_EFFORT");
     o.resume_session = resume;
+    o.no_session = x->st.ephemeral;
     grok_client *c = grok_start(&o);
     if (!c) return 0;
     grok_set_event_cb(c, backend_grok_event, b);

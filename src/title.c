@@ -8,9 +8,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "vendor/agents/claude/claude.h"
+#include "vendor/agents/backend.h"
 
-#define TITLE_MODEL "claude-haiku-4-5-20251001"
+#define CLAUDE_TITLE_MODEL "claude-haiku-4-5-20251001"
 #define TITLE_MAX   80
 /* Enough of the turn to name it by; the rest is repetition for this purpose. */
 #define EXCERPT     1200
@@ -89,7 +89,8 @@ static void write_cache(const char *id, const char *title)
     close(fd);
 }
 
-static void ask_and_cache(const char *id, const char *cwd, const char *prompt, const char *reply)
+static void ask_and_cache(const char *id, const char *backend, const char *model,
+                          const char *cwd, const char *prompt, const char *reply)
 {
     char text[2 * EXCERPT + 256];
     snprintf(text, sizeof text,
@@ -98,22 +99,26 @@ static void ask_and_cache(const char *id, const char *cwd, const char *prompt, c
              "Asked:\n%.*s\n\nAnswered:\n%.*s\n",
              EXCERPT, prompt ? prompt : "", EXCERPT, reply ? reply : "");
 
-    claude_opts o = {0};
-    o.model = TITLE_MODEL;
+    backend_opts o = {0};
+    o.name = backend;
+    o.model = (!backend || strcmp(backend, "claude") == 0) ? CLAUDE_TITLE_MODEL : model;
     o.cwd = cwd;
-    o.tools = ""; /* naming a conversation needs nothing from the machine */
-    o.use_subscription = 1;
-    claude_client *c = claude_start(&o);
-    if (!c)
+    o.system = "Name the conversation without using tools.";
+    o.session_name = "simple-agent title helper";
+    o.ephemeral = 1;
+    o.disable_tools = 1;
+    Backend *b = backend_open_ex(&o);
+    if (!b)
         return;
-    char *answer = claude_send(c, text);
+    char *answer = b->ask(b, text);
     if (answer && tidy(answer))
         write_cache(id, answer);
     free(answer);
-    claude_stop(c);
+    b->close(b);
 }
 
-void title_request(const char *id, const char *cwd, const char *prompt, const char *reply)
+void title_request(const char *id, const char *backend, const char *model,
+                   const char *cwd, const char *prompt, const char *reply)
 {
     if (!id || !*id)
         return;
@@ -134,7 +139,7 @@ void title_request(const char *id, const char *cwd, const char *prompt, const ch
                 if (null > STDERR_FILENO)
                     close(null);
             }
-            ask_and_cache(id, cwd, prompt, reply);
+            ask_and_cache(id, backend, model, cwd, prompt, reply);
         }
         _exit(0);
     }

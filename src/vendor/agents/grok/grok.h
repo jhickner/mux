@@ -36,6 +36,7 @@ typedef struct {
     const char *reasoning_effort;/* --reasoning-effort low|medium|high; NULL    */
     const char *append_system;   /* prepended to each user turn; NULL -> none   */
     const char *resume_session;  /* ACP session/resume this id; NULL -> new     */
+    int no_session;              /* nonzero: ask Grok not to persist the session */
 } grok_opts;
 
 /* Spawn a persistent `grok agent stdio` process. Returns NULL only on a local
@@ -145,6 +146,7 @@ struct grok_client {
     char *cwd;                /* session/new working directory copy         */
     char *sys;                /* append_system copy, prepended to each turn */
     char *resume;             /* session/resume this id; NULL -> session/new */
+    int   no_session;         /* use an ephemeral session/new                */
     int   handshake_failed;   /* the deferred handshake was tried and lost  */
     int   next_id;            /* JSON-RPC request id counter                */
     int   abort_latched;      /* ESC arrived before a session was live      */
@@ -581,6 +583,7 @@ grok_client *grok_start(const grok_opts *opts) {
     c->cwd = (o.cwd && *o.cwd) ? strdup(o.cwd) : NULL;
     c->sys = (o.append_system && *o.append_system) ? strdup(o.append_system) : NULL;
     c->resume = (o.resume_session && *o.resume_session) ? strdup(o.resume_session) : NULL;
+    c->no_session = o.no_session;
 
     return c;
 }
@@ -621,6 +624,8 @@ static int gk_handshake(grok_client *c) {
     cJSON_AddItemToObject(sp, "mcpServers", cJSON_CreateArray());
     cJSON *meta = cJSON_AddObjectToObject(sp, "_meta");
     cJSON_AddBoolToObject(meta, "yoloMode", 1);
+    if (c->no_session)
+        cJSON_AddBoolToObject(meta, "x.ai/persist", 0);
     if (!gk_write(c, sn) || !gk_await(c, c->next_id, NULL, c->session_id, sizeof c->session_id, 0))
         return 0;
     c->next_id++;

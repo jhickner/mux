@@ -39,6 +39,7 @@ typedef struct {
     const char *resume_session;/* --session id; NULL -> a fresh conversation   */
     int no_session;            /* nonzero -> pass --no-session. Also the
                                   default when opts is NULL.                   */
+    int no_tools;              /* nonzero -> pass --no-tools                   */
 } pi_opts;
 
 /* Start a persistent `pi --mode rpc` process. Returns NULL only on a local
@@ -385,6 +386,7 @@ pi_client *pi_start(const pi_opts *opts) {
         } else if (o.no_session || !opts) {
             argv[n++] = "--no-session";
         }
+        if (o.no_tools) argv[n++] = "--no-tools";
         argv[n++] = "--no-extensions";
         argv[n++] = "--no-skills";
         argv[n++] = "--no-prompt-templates";
@@ -565,7 +567,8 @@ static int pi_backend_start(Backend *b, const char *resume) {
     o.effort = cx->st.effort;
     o.append_system = cx->st.system;
     o.resume_session = resume;
-    o.no_session = 0;
+    o.no_session = cx->st.ephemeral;
+    o.no_tools = cx->st.disable_tools;
     pi_client *c = pi_start(&o);
     if (!c) return 0;
     pi_set_event_cb(c, pi_backend_event, b);

@@ -35,12 +35,14 @@ typedef struct {
     const char *permission_mode; /* --permission-mode (e.g. "bypassPermissions")  */
     const char *resume_session;  /* --resume <id> to continue a prior session     */
     const char *append_system;   /* --append-system-prompt text; NULL -> none     */
+    const char *session_name;    /* --name value; NULL -> let Claude name it      */
     const char *tools;           /* --tools value; NULL -> flag omitted (all tools);
                                     "" -> disable every built-in tool; else a list
                                     like "Bash,Read". Empty string is meaningful,
                                     so NULL (not "") is the "unset" sentinel.       */
     int use_subscription;        /* nonzero: unset ANTHROPIC_API_KEY in the child
                                     so the CLI uses your claude.ai login           */
+    int no_session_persistence;  /* nonzero: pass --no-session-persistence         */
     int allow_customizations;    /* nonzero: drop --safe-mode, so the CLI loads the
                                     user's skills, CLAUDE.md, plugins, hooks, MCP
                                     servers, custom commands and agents. Zero (the
@@ -370,6 +372,8 @@ claude_client *claude_start(const claude_opts *opts) {
         argv[n++] = "--output-format"; argv[n++] = "stream-json";
         argv[n++] = "--verbose";
         if (!o.allow_customizations) argv[n++] = "--safe-mode";
+        if (o.no_session_persistence) argv[n++] = "--no-session-persistence";
+        if (o.session_name && *o.session_name) { argv[n++] = "--name"; argv[n++] = o.session_name; }
         if (o.model && *o.model)           { argv[n++] = "--model";           argv[n++] = o.model; }
         if (o.effort && *o.effort)         { argv[n++] = "--effort";          argv[n++] = o.effort; }
         if (o.permission_mode && *o.permission_mode) { argv[n++] = "--permission-mode"; argv[n++] = o.permission_mode; }

@@ -37,11 +37,16 @@ static void respond(const char *id, const char *command)
 
 static int mock_server(int argc, char **argv)
 {
-    int startup_effort = 0;
+    int startup_effort = 0, no_session = 0, no_tools = 0;
     for (int i = 1; i + 1 < argc; i++)
         if (!strcmp(argv[i], "--thinking") && !strcmp(argv[i + 1], "high"))
             startup_effort = 1;
-    if (!startup_effort)
+    for (int i = 1; i < argc; i++)
+        if (!strcmp(argv[i], "--no-session"))
+            no_session = 1;
+        else if (!strcmp(argv[i], "--no-tools"))
+            no_tools = 1;
+    if (!startup_effort || !no_session || !no_tools)
         return 2;
 
     char *line = NULL;
@@ -107,7 +112,9 @@ int main(int argc, char **argv)
     if (argc > 1 && !strcmp(argv[1], "--mode"))
         return mock_server(argc, argv);
 
-    pi_opts opts = { .cli_path = argv[0], .effort = "high", .no_session = 1 };
+    pi_opts opts = {
+        .cli_path = argv[0], .effort = "high", .no_session = 1, .no_tools = 1,
+    };
     pi_client *client = pi_start(&opts);
     if (!client) {
         fprintf(stderr, "pitest: could not start mock RPC process\n");
