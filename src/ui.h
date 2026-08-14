@@ -13,6 +13,7 @@ enum ui_role {
     UI_ACCENT,  /* the caret, and the user's words once submitted */
     UI_TEXT,    /* the user's words while being typed */
     UI_STICKY,  /* the floating copy of the prompt the turn is answering */
+    UI_BRAND,   /* mux's own voice: the gutter bars it draws, and tool tags */
     UI_CHROME,  /* application frame */
     UI_DIM,     /* asides and footers */
     UI_BODY,    /* the assistant's prose */

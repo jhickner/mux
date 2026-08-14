@@ -19,9 +19,10 @@ static const struct {
     const char *attr;
     int         slot;
 } ROLES[UI_RESET] = {
-    [UI_ACCENT]  = { NULL, COLOR_BASE12 },
+    [UI_ACCENT]  = { NULL, COLOR_BASE9 },
     [UI_TEXT]    = { NULL, COLOR_UI_TYPED },
     [UI_STICKY]  = { NULL, COLOR_BASE9 },
+    [UI_BRAND]   = { NULL, COLOR_BASE12 },
     [UI_CHROME]  = { NULL, COLOR_UI_BORDER_FLOAT },
     [UI_DIM]     = { NULL, COLOR_UI_DIM },
     [UI_BODY]    = { NULL, COLOR_BASE5 },
@@ -33,7 +34,7 @@ static const struct {
     [UI_ERROR]   = { NULL, COLOR_UI_MSG_ERROR },
     [UI_OK]      = { NULL, COLOR_BASE11 },
     [UI_THINKING] = { "3", COLOR_BASE14 },
-    [UI_TOOL]    = { NULL, COLOR_BASE10 },
+    [UI_TOOL]    = { NULL, COLOR_BASE12 },
 };
 
 static char styles[UI_RESET][32];
@@ -296,7 +297,7 @@ void ui_wrapped(const char *text, int indent, const char *style)
 
 void ui_bar(const char *style, const char *fmt, ...)
 {
-    ui_esc(ui_style(UI_CHROME));
+    ui_esc(ui_style(UI_BRAND));
     ui_put(UI_BAR);
     ui_esc(ui_style(UI_RESET));
     ui_put(" ");

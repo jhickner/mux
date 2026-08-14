@@ -266,7 +266,7 @@ static void paint_spin(void)
     humanize(status_elapsed(), clock, sizeof clock);
     snprintf(left, sizeof left, "%s %s", FRAMES[frame], clock);
 
-    ui_esc(ui_style(UI_ACCENT));
+    ui_esc(ui_style(UI_BRAND));
     ui_put(left);
     spin_width = (int)ui_cells(left);
     /* Keep a column clear at the margin: a row filled to the edge leaves the

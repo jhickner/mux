@@ -76,7 +76,7 @@ static void row_identity(const struct session *s, int cols)
              effort ? SEP : "", effort ? effort : "");
 
     struct seg segs[] = {
-        {UI_BAR " ", UI_CHROME},
+        {UI_BAR " ", UI_BRAND},
         {APP_NAME,   UI_BOLD},
         {tail,       UI_DIM},
     };
@@ -119,7 +119,7 @@ static void row_location(const struct session *s, int cols)
         snprintf(ctx, sizeof ctx, " \xc2\xb7 %d%%", percent);
 
     struct seg segs[] = {
-        {UI_BAR " ",              UI_CHROME},
+        {UI_BAR " ",              UI_BRAND},
         {path,                    UI_CHROME},
         {where,                   UI_DIM},
         {added,                   UI_OK},
