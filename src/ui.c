@@ -34,7 +34,6 @@ static const struct {
     [UI_OK]      = { NULL, COLOR_BASE11 },
     [UI_THINKING] = { "3", COLOR_BASE14 },
     [UI_TOOL]    = { NULL, COLOR_BASE10 },
-    [UI_TOOLDIM] = { "2",  COLOR_BASE10 },
 };
 
 static char styles[UI_RESET][32];

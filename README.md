@@ -48,7 +48,7 @@ block in the history above.
   with the same blank-line spacing as tool calls, which `/thinking` hides for good
 - A call that only reads — a file read, or a shell command built entirely of
   read-only parts, including the reporting halves of `git` — collapses to one
-  dimmed row with no output preview, and a run of them to the same tool is
+  compact row with no output preview, and a run of them to the same tool is
   listed on a single row. Anything that acts keeps its full block
 - `/tools compact` gives every call that one-row treatment, whatever it does
 - A failed tool prints `failed: <reason>` in red, even when the call would otherwise collapse

@@ -1,4 +1,4 @@
-/* Checks which tool calls collapse to a dim row. Pure: the interesting cases
+/* Checks which tool calls collapse to one row. Pure: the interesting cases
  * are shell commands that must not be mistaken for reads, and those are cheaper
  * to state here than to provoke out of a live model. */
 #include <stdio.h>

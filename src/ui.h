@@ -14,7 +14,7 @@ enum ui_role {
     UI_TEXT,    /* the user's words while being typed */
     UI_STICKY,  /* the floating copy of the prompt the turn is answering */
     UI_CHROME,  /* application frame */
-    UI_DIM,     /* asides, footers, collapsed tool activity */
+    UI_DIM,     /* asides and footers */
     UI_BODY,    /* the assistant's prose */
     UI_BOLD,    /* the accents within it: emphasis and code */
     UI_ITALIC,
@@ -25,7 +25,6 @@ enum ui_role {
     UI_OK,
     UI_THINKING,/* the model's reasoning rows */
     UI_TOOL,    /* the [name] tag on a tool call */
-    UI_TOOLDIM, /* ... and on a collapsed one, where the whole row recedes */
     UI_RESET,
 };
 

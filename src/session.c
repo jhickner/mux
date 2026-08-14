@@ -39,7 +39,7 @@ struct session {
     long     context_window;
     int      quiet;          /* suppress activity, spinner, and footer      */
     int      thinking;       /* show the model's reasoning rows             */
-    int      compact;        /* one dim row per tool call, whatever it does */
+    int      compact;        /* one row per tool call, whatever it does     */
     int      customizations; /* load the user's skills, CLAUDE.md, MCP, ... */
     char    *permission;     /* --permission-mode; NULL means the default   */
     int      after_activity; /* last thing printed was a tool/thinking row  */
@@ -299,9 +299,9 @@ static void print_tool_call(const char *name, const char *arg)
 /* ---------- collapsed tool rows ---------- */
 
 /* A call that only looks at the workspace is worth a row, not a block: the tag
- * and its argument dimmed, no output preview, and a run of calls to the same
- * tool listed together on one row. Compact mode puts every call here, whatever
- * it does.
+ * and its argument use the normal tool-call colors, with no output preview, and
+ * a run of calls to the same tool listed together on one row. Compact mode puts
+ * every call here, whatever it does.
  *
  * The row grows by being written again over itself. That works because every
  * print here happens with the status block lifted, which leaves the cursor at
@@ -375,9 +375,9 @@ static void cluster_paint(struct session *s)
     if (s->cluster.onscreen)
         ui_esc("\x1b[1A\r\x1b[K");
     pad(TOOL_INDENT);
-    ui_esc(ui_style(UI_TOOLDIM));
+    ui_esc(ui_style(UI_TOOL));
     ui_putn(s->cluster.line, tag);
-    ui_esc(ui_style(UI_DIM));
+    ui_esc(ui_style(UI_RESET));
     ui_put(s->cluster.line + tag);
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");

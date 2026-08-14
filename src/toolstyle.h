@@ -1,6 +1,6 @@
 /* How much of a tool call to show. A call that only looks at the workspace —
  * a read, or a shell command built entirely out of read-only pieces — is worth
- * one dim row and no output preview; anything that acts gets the full block.
+ * one row and no output preview; anything that acts gets the full block.
  *
  * The judgement is made from the tool's own name and input rather than from a
  * backend's vocabulary, so a driver that names its tools differently still
