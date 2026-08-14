@@ -6,6 +6,8 @@
 
 #include "files.h"
 #include "paste.h"
+#include "settings.h"
+#include "status.h"
 #include "tty.h"
 #include "ui.h"
 
@@ -40,6 +42,10 @@ struct prompt {
     char        *file_root;    /* project root for @-completion, or NULL */
     prompt_status_fn status;   /* the gauge in front of the caret, or NULL */
     void            *status_ud;
+    int          live_block;   /* the block on screen is the turn-time one */
+    const char  *painted_head; /* the floating prompt the block on screen carries.
+                                * status.c owns the text and only replaces it
+                                * between turns, when no block is painted */
 };
 
 /* ---------- history ---------- */
@@ -181,6 +187,43 @@ static int rows_for(size_t cells, int cols)
     return cells ? (int)((cells - 1) / (size_t)cols) + 1 : 1;
 }
 
+/* The floating prompt carried above an idle editor: the message the last turn
+ * answered, once its echo has scrolled off the top. The turn-time block sits
+ * under the spinner, which floats it there itself. */
+static const char *head_text(const struct prompt *p)
+{
+    return p->live_block ? NULL : status_sticky_offscreen();
+}
+
+/* Rows one bar message occupies when wrapped at `budget` cells. */
+static int wrapped_rows(const char *text, size_t budget)
+{
+    int rows = 0, first = 1;
+    while (*text || first) {
+        size_t skip = 0;
+        size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
+        rows++;
+        text += row + skip;
+        first = 0;
+    }
+    return rows;
+}
+
+/* The same message as the terminal shows it now: each row it was painted on is
+ * re-measured against the current width, since a resize rewraps them. */
+static int reflowed_rows(const char *text, size_t budget, int cols)
+{
+    int rows = 0, first = 1;
+    while (*text || first) {
+        size_t skip = 0;
+        size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
+        rows += rows_for(2 + ui_cells_n(text, row), cols); /* the "▌ " prefix */
+        text += row + skip;
+        first = 0;
+    }
+    return rows;
+}
+
 /* Rows from the top of the painted block down to the caret, as the terminal
  * shows them now. A resize rewraps what is on screen, so any painted row that
  * no longer fits sits on more rows than it did when it was drawn; walking up by
@@ -192,17 +235,10 @@ static int caret_offset(const struct prompt *p, int cols)
 
     int up = 0;
     size_t budget = queued_budget(p->painted_cols);
-    for (int i = 0; i < p->queued_count; i++) {
-        const char *text = p->queued[i];
-        int first = 1;
-        while (*text || first) {
-            size_t skip = 0;
-            size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
-            up += rows_for(2 + ui_cells_n(text, row), cols); /* the "▌ " prefix */
-            text += row + skip;
-            first = 0;
-        }
-    }
+    if (p->painted_head)
+        up += reflowed_rows(p->painted_head, budget, cols) + 1; /* and its blank */
+    for (int i = 0; i < p->queued_count; i++)
+        up += reflowed_rows(p->queued[i], budget, cols);
     for (int y = 0; y < p->caret_frame_row && y < p->frame.rows; y++)
         up += rows_for((size_t)row_extent(&p->frame, y), cols);
     return up + p->caret_col / cols;
@@ -229,6 +265,7 @@ static void erase_block(struct prompt *p)
     ui_esc("\x1b[J");
     fflush(stdout);
     p->painted_rows = 0;
+    p->painted_head = NULL;
 }
 
 /* The caret repl.h draws past the end of a row is a placeholder for the real
@@ -238,48 +275,49 @@ static int caret_is_synthetic(const Repl *r)
     return r->cursor >= r->len || r->buf[r->cursor] == '\n';
 }
 
-/* Rows the queued messages occupy once wrapped, which the block height depends
- * on. Must agree with paint_queued(). */
-static int queued_rows(const struct prompt *p, int cols)
+/* Rows above the editor — the floating prompt with its blank row, then the
+ * queued messages — which the block height depends on. Must agree with
+ * paint_above(). */
+static int rows_above(const struct prompt *p, const char *head, int cols)
 {
     size_t budget = queued_budget(cols);
-    int rows = 0;
-    for (int i = 0; i < p->queued_count; i++) {
-        const char *text = p->queued[i];
-        int first = 1;
-        while (*text || first) {
-            size_t skip = 0;
-            size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
-            rows++;
-            text += row + skip;
-            first = 0;
-        }
-    }
+    int rows = head ? wrapped_rows(head, budget) + 1 : 0;
+    for (int i = 0; i < p->queued_count; i++)
+        rows += wrapped_rows(p->queued[i], budget);
     return rows;
 }
 
-/* Messages queued during a turn, shown above the input as dim bars so the user
- * can see what is waiting to run. Wrapped the same way the history echo wraps
- * them, so a long message reads the same before and after it runs. */
-static void paint_queued(const struct prompt *p, int cols)
+/* One "▌ " message, wrapped the way the history echo wraps it so a message
+ * reads the same before and after it runs. */
+static void paint_bars(const char *text, size_t budget, enum ui_role role)
+{
+    int first = 1;
+    while (*text || first) {
+        size_t skip = 0;
+        size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
+        ui_esc("\x1b[K");
+        ui_esc(ui_style(role));
+        ui_put(UI_BAR " ");
+        ui_putn(text, row);
+        ui_esc(ui_style(UI_RESET));
+        ui_put("\n");
+        text += row + skip;
+        first = 0;
+    }
+}
+
+/* The floating prompt, then whatever was queued during the last turn: what is
+ * waiting to run is dim, the message already answered wears the sticky color. */
+static void paint_above(const struct prompt *p, const char *head, int cols)
 {
     size_t budget = queued_budget(cols);
-    for (int i = 0; i < p->queued_count; i++) {
-        const char *text = p->queued[i];
-        int first = 1;
-        while (*text || first) {
-            size_t skip = 0;
-            size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
-            ui_esc("\x1b[K");
-            ui_esc(ui_style(UI_DIM));
-            ui_put(UI_BAR " ");
-            ui_putn(text, row);
-            ui_esc(ui_style(UI_RESET));
-            ui_put("\n");
-            text += row + skip;
-            first = 0;
-        }
+    if (head) {
+        paint_bars(head, budget, UI_STICKY);
+        ui_esc("\x1b[K");
+        ui_put("\n");
     }
+    for (int i = 0; i < p->queued_count; i++)
+        paint_bars(p->queued[i], budget, UI_DIM);
 }
 
 /* Cells the gauge reserves in front of the caret, including the space after it.
@@ -311,7 +349,8 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
     if (rows < 1)
         rows = 1;
 
-    int above = queued_rows(p, cols);
+    const char *head = head_text(p);
+    int above = rows_above(p, head, cols);
     *rows_out = rows + above;
     *caret_row = above;
     *caret_col = 0;
@@ -321,6 +360,7 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
         *rows_out = 1;
         *caret_row = 0;
         p->painted_cols = cols;
+        p->painted_head = NULL;
         p->caret_row = p->caret_col = p->caret_frame_row = 0;
         return;
     }
@@ -336,11 +376,12 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
     /* Kept so the next erase can re-measure the block against a width that may
      * have changed under it. */
     p->painted_cols = cols;
+    p->painted_head = head;
     p->caret_row = *caret_row;
     p->caret_col = *caret_col;
     p->caret_frame_row = p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
 
-    paint_queued(p, cols);
+    paint_above(p, head, cols);
 
     for (int y = 0; y < rows; y++) {
         ui_esc("\x1b[K");
@@ -381,6 +422,9 @@ static void repaint(struct prompt *p)
 {
     int rows = 1, caret_row = 0, caret_col = 0;
 
+    p->live_block = 0;
+    /* Redrawn in place, so it scrolls nothing that outlives it. */
+    ui_scroll_track(0);
     goto_origin(p);
     ui_esc("\x1b[?25l"); /* hide while the block redraws */
     paint_block(p, &rows, &caret_row, &caret_col);
@@ -398,6 +442,7 @@ static void repaint(struct prompt *p)
         ui_esc(esc);
     }
     ui_esc("\x1b[?25h");
+    ui_scroll_track(1);
     fflush(stdout);
 
     p->painted_rows = rows;
@@ -510,6 +555,22 @@ static void paste_clipboard(struct prompt *p, int live)
     repaint(p);
 }
 
+/* Ctrl-T flips the floating prompt and remembers the choice, the same as
+ * /sticky. During a turn the status block repaints itself around the change;
+ * idle there is nothing on screen to change, so it says what it did. */
+static void toggle_sticky(struct prompt *p, int live)
+{
+    int on = !status_sticky_enabled();
+    status_sticky_set(on);
+    settings_set_int(SETTING_STICKY, on);
+    if (live)
+        return;
+    erase_block(p);
+    ui_note("floating prompt %s", on ? "on" : "off");
+    ui_put("\n");
+    repaint(p);
+}
+
 enum key_result {
     KEY_OK,      /* the editor consumed it; redraw   */
     KEY_SUBMIT,  /* a complete line is ready to take */
@@ -546,6 +607,10 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         }
         if (ev->cp == 3 && live) /* Ctrl-C */
             return KEY_CANCEL;
+        if (ev->cp == 20) { /* Ctrl-T */
+            toggle_sticky(p, live);
+            return KEY_OK;
+        }
         if (ev->cp == 22) { /* Ctrl-V */
             paste_clipboard(p, live);
             return KEY_OK;
@@ -553,7 +618,7 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         if (ev->cp == 12) { /* Ctrl-L */
             if (live)
                 return KEY_OK;
-            ui_sticky_end();
+            status_sticky_erased();
             p->painted_rows = 0;
             p->caret_row = 0;
             ui_esc("\x1b[2J\x1b[H");
@@ -636,7 +701,6 @@ char *prompt_read(struct prompt *p)
 
     int resizing = 0;
     for (;;) {
-        ui_sticky_sync();
         tty_event ev;
         /* Once the size stops changing, one repaint puts the block back. */
         if (!tty_read(&ev, resizing ? TTY_RESIZE_SETTLE_MS : -1)) {
@@ -754,8 +818,10 @@ int prompt_live_key(void *ud, tty_event *ev)
 
 void prompt_live_paint(void *ud, int *rows, int *caret_row, int *caret_col)
 {
-    paint_block(ud, rows, caret_row, caret_col);
-    ((struct prompt *)ud)->painted_rows = *rows;
+    struct prompt *p = ud;
+    p->live_block = 1;
+    paint_block(p, rows, caret_row, caret_col);
+    p->painted_rows = *rows;
 }
 
 int prompt_live_offset(void *ud)

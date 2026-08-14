@@ -1,5 +1,6 @@
-/* The activity indicator shown while a turn is in flight: a spinner row, plus
- * whatever rows the live input block adds below it. It owns the bottom of the
+/* The activity indicator shown while a turn is in flight: a spinner row, the
+ * optional floating prompt above it, plus whatever rows the live input block
+ * adds below it. It owns the bottom of the
  * terminal, so anything printed during the turn must be bracketed by
  * status_pause()/status_resume() to lift the block out of the way. */
 #ifndef STATUS_H
@@ -48,6 +49,25 @@ void   status_resume(void);
  * tool rows printed just before it. The row belongs to the block and is erased
  * with it, leaving the spacing that survives in scrollback to the caller. */
 void   status_gap(int on);
+
+/* The floating prompt: the message the turn is answering, carried at the top of
+ * the block so it stays on screen however much output scrolls past. Off by
+ * default; the setting and `/sticky` decide. */
+void   status_sticky_set(int on);
+int    status_sticky_enabled(void);
+
+/* The message the next turn answers, set once its echo has been printed and
+ * before the turn starts. NULL clears it. */
+void   status_sticky_prompt(const char *text);
+
+/* That message once the turn's output has carried its echo off the top of the
+ * screen, so an idle prompt can go on showing it; NULL while the echo is still
+ * up there, or when the feature is off. */
+const char *status_sticky_offscreen(void);
+
+/* The screen was wiped, which takes the echo with it however little had
+ * scrolled. */
+void   status_sticky_erased(void);
 
 /* Seconds since status_begin(), or 0 if no turn is in flight. */
 double status_elapsed(void);

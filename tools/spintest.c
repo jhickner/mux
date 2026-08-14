@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "prompt.h"
 #include "status.h"
 #include "tty.h"
 #include "ui.h"
@@ -32,12 +33,23 @@ int main(void)
     status_set_below(below, NULL, NULL);
 
     int chunk = getenv("CHUNK") ? atoi(getenv("CHUNK")) : 12;
+    int chunks = getenv("CHUNKS") ? atoi(getenv("CHUNKS")) : 0; /* end after n */
+    int sent = 0;
     int fill = getenv("FILL") ? atoi(getenv("FILL")) : 6;
     for (int i = 0; i < fill; i++) {
         ui_printf("transcript line %d: some text that may be long enough to wrap "
                   "when the terminal gets narrower than it was\n", i);
     }
     ui_flush();
+
+    /* One turn as the app runs it: the message is echoed into scrollback, then
+     * carried above the spinner, and the idle prompt takes it over at the end. */
+    const char *sticky = getenv("STICKY");
+    if (sticky && *sticky) {
+        status_sticky_set(1);
+        prompt_echo_message(sticky);
+        status_sticky_prompt(sticky);
+    }
 
     status_begin();
     for (int i = 0; i < 1600; i++) { /* the drivers poll about every 20ms */
@@ -55,12 +67,23 @@ int main(void)
                       "long enough to rewrap on a narrow terminal\n\n", i);
             ui_flush();
             status_resume();
+            if (chunks && ++sent >= chunks)
+                goto done;
         }
         status_tick();
         usleep(20000);
     }
 done:
     status_end();
+    status_set_below(NULL, NULL, NULL);
+
+    /* The idle prompt, which retains the message once its echo has scrolled
+     * away. Reads until ctrl-d. */
+    struct prompt *p = prompt_new(NULL, 0);
+    if (p) {
+        free(prompt_read(p));
+        prompt_free(p);
+    }
     tty_raw_end();
     return 0;
 }
