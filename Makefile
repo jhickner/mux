@@ -23,8 +23,8 @@ $(BIN): $(OBJ)
 palette: tools/palette.c src/vendor/colors.h
 	$(CC) $(CFLAGS) -Isrc/vendor -o $@ tools/palette.c
 
-spintest: tools/spintest.c src/status.o src/tty.o src/ui.o src/vendor/impl.o src/vendor/cJSON.o
-	$(CC) $(CFLAGS) -Isrc -o $@ $^
+spintest: tools/spintest.c src/status.o src/prompt.o src/files.o src/paste.o src/settings.o src/tty.o src/ui.o src/vendor/impl.o src/vendor/cJSON.o
+	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
 
 statustest: tools/statustest.c src/status.o src/tty.o src/ui.o src/vendor/impl.o src/vendor/cJSON.o
 	$(CC) $(CFLAGS) -Isrc -o $@ $^

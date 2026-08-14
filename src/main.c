@@ -42,7 +42,6 @@ static int backend_known(const char *name)
 
 static void restore_terminal(void)
 {
-    ui_sticky_set(0);
     ui_cursor_restore();
     tty_raw_end();
 }
@@ -228,7 +227,7 @@ int main(int argc, char **argv)
     atexit(restore_terminal);
     ui_raw(1);
     ui_cursor_plain();
-    ui_sticky_set(settings_get_int(SETTING_STICKY, 0));
+    status_sticky_set(settings_get_int(SETTING_STICKY, 0));
 
     struct prompt *prompt = prompt_new(CMD_TABLE, CMD_COUNT);
     if (!prompt) {
@@ -271,7 +270,7 @@ int main(int argc, char **argv)
             break;
         }
         if (r == CMD_NOT_A_COMMAND) {
-            ui_sticky_begin(line);
+            status_sticky_prompt(line);
             if (!session_turn(session, line)) {
                 free(line);
                 break;
@@ -283,7 +282,6 @@ int main(int argc, char **argv)
     /* Both hooks borrow the prompt, so they go first. */
     session_set_typeahead(NULL, NULL);
     status_set_below(NULL, NULL, NULL);
-    ui_sticky_end();
     prompt_free(prompt);
     sessionfork_exit_note(session);
     session_free(session);

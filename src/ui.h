@@ -12,6 +12,7 @@
 enum ui_role {
     UI_ACCENT,  /* the caret, and the user's words once submitted */
     UI_TEXT,    /* the user's words while being typed */
+    UI_STICKY,  /* the floating copy of the prompt the turn is answering */
     UI_CHROME,  /* application frame */
     UI_DIM,     /* asides, footers, collapsed tool activity */
     UI_BODY,    /* the assistant's prose */
@@ -49,22 +50,19 @@ void ui_flush(void);
 /* Emit a control sequence verbatim, exempt from newline translation. */
 void ui_esc(const char *s);
 
+/* How far output has pushed the screen up since the mark, in rows — what a line
+ * feed adds, plus the rows a long line wraps onto. Blocks that are repainted in
+ * place scroll nothing in the end, so they bracket their drawing with
+ * ui_scroll_track(0) and are left out of the count. */
+void ui_scroll_mark(void);
+int  ui_scroll_rows(void);
+void ui_scroll_track(int on);
+
 /* Synchronized output (DECSET 2026): brackets a repaint so the terminal presents
  * it as one frame. Without it an erase and the redraw that follows can be shown
  * separately, which is what a resize turns into visible tearing. */
 void ui_sync_begin(void);
 void ui_sync_end(void);
-
-/* Optional sticky user-message header. begin() is called after a submitted
- * message has been echoed; normal scrolling continues until that block reaches
- * row one, then subsequent output scrolls in the rows beneath it. */
-void ui_sticky_set(int on);
-int  ui_sticky_enabled(void);
-void ui_sticky_begin(const char *text);
-void ui_sticky_end(void);
-/* Apply a pending tmux copy-mode transition. Safe to call often; it only does
- * work after the pane-local hook has reported a change. */
-void ui_sticky_sync(void);
 
 /* Physical rows that `count` logical rows of the given cell widths occupy at
  * `cols`. A row is re-wrapped by the terminal when the window narrows, so this

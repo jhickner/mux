@@ -35,6 +35,7 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
     if (v->rows > 0)
         printf("\x1b[%dA\r", v->rows);
     fputs("\x1b[?25l", stdout);
+    ui_scroll_track(0); /* redrawn in place, and erased when the pick is over */
 
     int columns = ui_columns();
     int rows = 0;
@@ -90,6 +91,7 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
     }
 
     fputs("\x1b[J\x1b[?25h", stdout);
+    ui_scroll_track(1);
     fflush(stdout);
     v->rows = rows;
 }

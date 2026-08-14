@@ -1,6 +1,7 @@
 #include "status.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 
@@ -31,6 +32,18 @@ static int              spin_width; /* cells the spinner row occupies */
 static int              gap;        /* asked for a blank row above the spinner */
 static int              painted_gap;/* ... and whether the block on screen has one */
 static int              dirty;      /* the block on screen is out of date */
+
+/* The floating prompt above the spinner. Its rows are remembered by the cells
+ * they occupy, not by their count: a resize rewraps them on screen, and the
+ * erase has to walk up by what is there now. */
+#define STICKY_ROWS_MAX 16
+static int   sticky_on;
+static char *sticky_text;
+static int   sticky_widths[STICKY_ROWS_MAX];
+static int   sticky_rows;   /* rows of prompt in the block on screen, with its
+                             * trailing blank; 0 when none is painted */
+static int   sticky_screen;  /* rows the screen had when the message was echoed */
+static int   block_tallest;  /* the tallest the block has been this turn */
 
 /* Set when a resize arrives, cleared once the size has been quiet again. */
 static unsigned resize_epoch;
@@ -121,9 +134,11 @@ static int rows_above_caret(void)
 {
     int cols = ui_columns();
     int spin = spin_width ? ui_reflow_rows(&spin_width, 1, cols) : 0;
+    int head = sticky_rows ? ui_reflow_rows(sticky_widths, sticky_rows, cols) : 0;
     if (!below)
-        return painted_gap + (spin > 0 ? spin - 1 : 0);
-    return painted_gap + spin + (below_offset ? below_offset(below_ud) : caret_row - 1);
+        return painted_gap + head + (spin > 0 ? spin - 1 : 0);
+    return painted_gap + head + spin +
+           (below_offset ? below_offset(below_ud) : caret_row - 1);
 }
 
 /* Wipe the spinner row and everything the block painted below it, leaving the
@@ -138,6 +153,7 @@ static void erase_block(void)
     caret_row = 0;
     spin_width = 0;
     painted_gap = 0;
+    sticky_rows = 0;
     painted = 0;
 }
 
@@ -156,6 +172,66 @@ static void humanize(double seconds, char *out, size_t n)
         snprintf(out, n, "%ldh %ldm", total / 3600, (total % 3600) / 60);
 }
 
+/* The prompt the turn is answering, drawn as the "▌" bar it wears in
+ * scrollback and closed by a blank row. Long messages are clipped to a third of
+ * the screen so the block never crowds out the output it floats over; the last
+ * row shown ends in an ellipsis. Leaves the cursor at the start of the spinner
+ * row and records what it drew for the next erase. */
+static void paint_sticky(void)
+{
+    if (!sticky_on || !sticky_text || !*sticky_text)
+        return;
+
+    int cols = ui_columns();
+    size_t budget = (size_t)(cols - 3 > 4 ? cols - 3 : 4);
+    int max = tty_rows() / 3;
+    if (max < 1)
+        max = 1;
+    if (max > STICKY_ROWS_MAX - 1)
+        max = STICKY_ROWS_MAX - 1;
+
+    const char *p = sticky_text;
+    while (*p && sticky_rows < max) {
+        size_t skip = 0;
+        size_t row = ui_wrap_row(p, budget, &skip);
+        int width = 2 + (int)ui_cells_n(p, row);
+        ui_esc("\x1b[K");
+        ui_esc(ui_style(UI_STICKY));
+        ui_put(UI_BAR " ");
+        ui_putn(p, row);
+        p += row + skip;
+        if (*p && sticky_rows + 1 == max) {
+            ui_put("…");
+            width++;
+        }
+        ui_esc(ui_style(UI_RESET));
+        ui_put("\n");
+        sticky_widths[sticky_rows++] = width;
+    }
+    ui_esc("\x1b[K");
+    ui_put("\n");
+    sticky_widths[sticky_rows++] = 0; /* the blank row closing the block */
+}
+
+/* Rows the block just painted covers, kept as the tallest of the turn.
+ *
+ * The block sits below the output, between it and the bottom of the screen, so
+ * those rows are headroom the output never gets: the screen starts scrolling
+ * that much sooner. What the block draws is left out of the scrollback count —
+ * it is erased and redrawn in place — so the count has to be judged against a
+ * bottom raised by this much. The tallest is the one that counts, since a block
+ * that grew pushed the ceiling down and a later, shorter one does not lift it
+ * back. */
+static void block_rows(int below_rows)
+{
+    int cols = ui_columns();
+    int rows = painted_gap + below_rows +
+               (sticky_rows ? ui_reflow_rows(sticky_widths, sticky_rows, cols) : 0) +
+               (spin_width ? ui_reflow_rows(&spin_width, 1, cols) : 0);
+    if (rows > block_tallest)
+        block_tallest = rows;
+}
+
 static void paint(void)
 {
     char clock[32], left[64];
@@ -163,12 +239,16 @@ static void paint(void)
     snprintf(left, sizeof left, "%s %s", FRAMES[frame], clock);
 
     ui_sync_begin();
+    /* The block is redrawn in place, so what it writes scrolls nothing that
+     * outlives it: it stays out of the scrollback count. */
+    ui_scroll_track(0);
     erase_block();
     /* Part of the block, not of scrollback: it is erased along with the spinner,
      * so the permanent spacing between tool rows stays the caller's business. */
     painted_gap = gap;
     if (painted_gap)
         ui_put("\n");
+    paint_sticky();
     ui_esc(ui_style(UI_ACCENT));
     ui_put(left);
     spin_width = (int)ui_cells(left);
@@ -197,6 +277,7 @@ static void paint(void)
     }
     ui_esc(ui_style(UI_RESET));
 
+    int below_rows = 0;
     if (below) {
         int rows = 1, row = 0, col = 0;
         ui_put("\n");
@@ -205,10 +286,13 @@ static void paint(void)
         ui_esc("\r");
         move(col, 'C');
         caret_row = 1 + row;
+        below_rows = rows;
         ui_esc("\x1b[?25h"); /* the caret marks where typing lands */
     }
+    block_rows(below_rows);
     painted = 1;
     dirty = 0;
+    ui_scroll_track(1);
     ui_sync_end();
     ui_flush();
 }
@@ -224,6 +308,8 @@ void status_begin(void)
     spin_width = 0;
     gap = 0;
     painted_gap = 0;
+    sticky_rows = 0;
+    block_tallest = 0;
     painted = 0;
     paint();
 }
@@ -275,6 +361,49 @@ void status_gap(int on)
     gap = on;
     if (active && visible && !size_changing())
         paint();
+}
+
+void status_sticky_set(int on)
+{
+    on = on ? 1 : 0;
+    if (sticky_on == on)
+        return;
+    sticky_on = on;
+    if (active && visible && !size_changing())
+        paint();
+}
+
+int status_sticky_enabled(void) { return sticky_on; }
+
+/* Called with the message already echoed and the cursor on the row below it.
+ * However far down the screen that leaves it, the output needed to carry the
+ * echo off the top comes to the same thing: the rows between the cursor and the
+ * bottom, which scroll nothing, and then one row per row of the echo above it.
+ * That is the height of the screen, less the echo's own blank row and the row
+ * the cursor sits on. */
+void status_sticky_prompt(const char *text)
+{
+    free(sticky_text);
+    sticky_text = text && *text ? strdup(text) : NULL;
+    dirty = 1;
+
+    sticky_screen = tty_rows();
+    ui_scroll_mark();
+}
+
+void status_sticky_erased(void) { sticky_screen = 0; }
+
+const char *status_sticky_offscreen(void)
+{
+    if (!sticky_on || !sticky_text)
+        return NULL;
+    /* The echo's own blank row and the row the cursor was left on are the two
+     * that never have to scroll; the block below holds the rest of the output
+     * that much further from the bottom. */
+    int gone_at = sticky_screen - 2 - (block_tallest > 0 ? block_tallest - 1 : 0);
+    if (gone_at < 0)
+        gone_at = 0;
+    return ui_scroll_rows() >= gone_at ? sticky_text : NULL;
 }
 
 void status_end(void)

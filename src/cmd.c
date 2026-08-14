@@ -11,6 +11,7 @@
 #include "sessionfork.h"
 #include "sessionlist.h"
 #include "settings.h"
+#include "status.h"
 #include "ui.h"
 
 const ReplCommand CMD_TABLE[] = {
@@ -20,7 +21,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/effort", "set reasoning/thinking effort", "[level]"},
     {"/thinking", "show or hide the model's reasoning", "[on|off]"},
     {"/tools", "how much of each tool call to show", "[compact|full]"},
-    {"/sticky", "keep the latest prompt at the top", "[on|off]"},
+    {"/sticky", "float the prompt above the spinner", "[on|off]"},
     {"/image", "tallest an inline image may be drawn", "[rows]"},
     {"/permission", "how the CLI gates tool calls", "[mode]"},
     {"/resume", "resume a past conversation", NULL},
@@ -166,6 +167,7 @@ static void show_help(void)
     help_row("ctrl-c", "clear the prompt line, or interrupt a running turn");
     help_row("ctrl-d", "quit (on an empty prompt)");
     help_row("ctrl-l", "clear the screen");
+    help_row("ctrl-t", "float the prompt above the spinner, on and off");
     ui_put("\n");
     help_heading("skills");
     help_row("", "your skills, CLAUDE.md, MCP servers and agents load by default.");
@@ -349,13 +351,13 @@ static void do_tools(struct session *s, const char *arg)
     ui_flush();
 }
 
-/* No argument flips it; "on"/"off" set it outright. The terminal margin is
- * released immediately when the feature is switched off. */
+/* No argument flips it; "on"/"off" set it outright. Ctrl-T is the same toggle
+ * from the keyboard. */
 static void do_sticky(const char *arg)
 {
     int on;
     if (!arg || !*arg)
-        on = !ui_sticky_enabled();
+        on = !status_sticky_enabled();
     else if (!strcmp(arg, "on"))
         on = 1;
     else if (!strcmp(arg, "off"))
@@ -367,9 +369,9 @@ static void do_sticky(const char *arg)
         return;
     }
 
-    ui_sticky_set(on);
+    status_sticky_set(on);
     settings_set_int(SETTING_STICKY, on);
-    ui_note("sticky prompt %s", on ? "on" : "off");
+    ui_note("floating prompt %s", on ? "on" : "off");
     ui_put("\n");
     ui_flush();
 }
@@ -436,6 +438,7 @@ int cmd_resume(struct session *s)
     int index = pick("resume which conversation", items, count, 0);
     if (index >= 0) {
         if (session_resume(s, list[index].id)) {
+            status_sticky_prompt(NULL); /* a different conversation's message */
             banner_identity(s);
             ui_bar(ui_style(UI_DIM), "resumed \xc2\xb7 %s", list[index].label);
             ui_put("\n");
@@ -458,6 +461,8 @@ static void do_new(struct session *s)
         ui_put("\n");
         return;
     }
+    /* Nothing is being answered any more, so the floating prompt goes too. */
+    status_sticky_prompt(NULL);
     banner_identity(s);
     ui_bar(ui_style(UI_DIM), "new conversation");
     ui_put("\n");
