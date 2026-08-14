@@ -4,6 +4,9 @@ LDFLAGS ?=
 PREFIX  ?= $(HOME)/.local
 
 BIN     := simple-agent
+# Each tools/*.c builds a binary of the same name at the root, so the list of
+# them to clean up is the directory itself rather than a copy of it kept by hand.
+TOOLS   := $(patsubst tools/%.c,%,$(wildcard tools/*.c))
 SRC     := $(wildcard src/*.c) $(wildcard src/vendor/*.c)
 OBJ     := $(SRC:.c=.o)
 DEP     := $(OBJ:.o=.d)
@@ -19,6 +22,10 @@ $(BIN): $(OBJ)
 	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -MMD -MP -c -o $@ $<
 
 -include $(DEP)
+
+# The harnesses under tools/, built only when asked for: the default target is
+# the app alone, and `check` builds just the ones that test themselves.
+tests: $(TOOLS)
 
 palette: tools/palette.c src/vendor/colors.h
 	$(CC) $(CFLAGS) -Isrc/vendor -o $@ tools/palette.c
@@ -79,6 +86,6 @@ install: $(BIN)
 	install -m 755 $(BIN) $(PREFIX)/bin/$(BIN)
 
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN) palette spintest statustest reflowtest toolstyletest sessionlisttest claudetest codextest groktest filedifftest pitest agenttabstest imagetest pastetest src/*.o.tmp src/vendor/*.o.tmp
+	rm -f $(OBJ) $(DEP) $(BIN) $(TOOLS) src/*.o.tmp src/vendor/*.o.tmp
 
-.PHONY: all install clean check
+.PHONY: all install clean check tests
