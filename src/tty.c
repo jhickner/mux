@@ -90,18 +90,48 @@ void tty_raw_end(void)
     in_raw = 0;
 }
 
+static int  (*watch_fd)(void *ud);
+static void (*watch_ready)(void *ud);
+static void *watch_ud;
+
+void tty_watch(int (*fd)(void *ud), void (*ready)(void *ud), void *ud)
+{
+    watch_fd = fd;
+    watch_ready = ready;
+    watch_ud = ud;
+}
+
 /* Block up to timeout_ms for readable stdin. Returns 1 readable, 0 timeout,
  * -1 on error/EOF-ish failure. */
 static int wait_readable(int timeout_ms)
 {
-    fd_set fds;
-    FD_ZERO(&fds);
-    FD_SET(STDIN_FILENO, &fds);
-    struct timeval tv = {timeout_ms / 1000, (timeout_ms % 1000) * 1000};
-    int r = select(STDIN_FILENO + 1, &fds, NULL, NULL, timeout_ms < 0 ? NULL : &tv);
-    if (r < 0)
-        return errno == EINTR ? 0 : -1;
-    return r > 0 ? 1 : 0;
+    for (;;) {
+        int extra = watch_fd ? watch_fd(watch_ud) : -1;
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(STDIN_FILENO, &fds);
+        int last = STDIN_FILENO;
+        if (extra >= 0) {
+            FD_SET(extra, &fds);
+            if (extra > last)
+                last = extra;
+        }
+        struct timeval tv = {timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+        int r = select(last + 1, &fds, NULL, NULL, timeout_ms < 0 ? NULL : &tv);
+        if (r < 0)
+            return errno == EINTR ? 0 : -1;
+        if (r == 0)
+            return 0;
+        if (FD_ISSET(STDIN_FILENO, &fds))
+            return 1;
+        if (extra < 0 || !FD_ISSET(extra, &fds))
+            return 0;
+        watch_ready(watch_ud);
+        /* A bounded wait has no room to restart its clock, so the caller gets a
+         * timeout and repaints; an open-ended one goes back to waiting. */
+        if (timeout_ms >= 0)
+            return 0;
+    }
 }
 
 /* Refill the byte buffer. Returns bytes available, 0 on timeout, -1 on EOF. */

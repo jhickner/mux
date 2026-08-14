@@ -90,6 +90,11 @@ static const char *context_gauge(void *ud)
     return text;
 }
 
+/* The agent taking a turn of its own — a background task it started has
+ * finished — while the prompt waits for a key. */
+static int idle_fd(void *ud)      { return session_idle_fd(ud); }
+static void idle_render(void *ud) { session_idle_pump(ud); }
+
 /* A command submitted while a turn is streaming. The spinner and the live
  * prompt block are lifted out of the way so the command's own output lands in
  * scrollback rather than being overwritten. */
@@ -246,6 +251,7 @@ int main(int argc, char **argv)
     session_set_typeahead(prompt_live_key, prompt);
     status_set_below(prompt_live_paint, prompt_live_offset, prompt);
     prompt_set_live_command(prompt, live_command, session);
+    prompt_set_idle(prompt, idle_fd, idle_render, session);
     prompt_set_status(prompt, context_gauge, session);
 
     /* cmd_resume() prints the identity row itself when it adopts a session. */

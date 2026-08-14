@@ -148,6 +148,26 @@ int claude_interrupt(claude_client *c);
  * doubles as a UI tick: it is called roughly every 80ms. */
 void claude_set_abort_check(claude_client *c, int (*cb)(void));
 
+/* The CLI runs turns of its own between sends: a finished background task or
+ * subagent wakes the model with no prompt from here. Their events sit unread in
+ * the pipe until the next send, which is both a lost display and a stream the
+ * next send has to clear before it can trust what it reads.
+ *
+ * A front end that waits for input on a select() can watch claude_idle_fd() and
+ * call claude_idle_pump() when it becomes readable, so those turns are shown as
+ * they happen. Both are for the gap between sends only: the fd must never be
+ * read directly, and the pump must not be called from the abort predicate or
+ * any other point with a turn in flight.
+ *
+ * claude_idle_fd() returns -1 until the client is ready, and again once the
+ * process is gone, so a caller can just ask before each wait. */
+int claude_idle_fd(claude_client *c);
+
+/* Consume whatever is readable now, dispatching events to the callback set by
+ * claude_set_event_cb(). Never blocks. Returns nonzero while such a turn is
+ * still open, so a caller can tell "more is coming" from "that was all". */
+int claude_idle_pump(claude_client *c);
+
 /* The tail of anything the CLI wrote to stderr, or NULL if it has been quiet.
  * The child's stderr is captured rather than passed through, so a warning cannot
  * corrupt a caller that is painting its own terminal display. */
@@ -184,6 +204,15 @@ void claude_stop(claude_client *c);
  * without being felt as lag. */
 #define CL_TICK_MS 20
 
+/* How long a stray turn may go silent before the client stops waiting it out
+ * and sends anyway. Generous, because the silence is usually the model running
+ * a slow tool; the fallback is only the misalignment this already avoided. */
+#define CL_STRAY_QUIET_TICKS (60000 / CL_TICK_MS)
+
+/* How long a task notification has to produce the turn it announces before the
+ * client decides none is coming. Only the CLI's own dispatch latency, so short. */
+#define CL_NOTIFY_WAIT_TICKS (2000 / CL_TICK_MS)
+
 struct claude_client {
     pid_t pid;
     int   in_fd;              /* write user turns here (child stdin)   */
@@ -200,6 +229,8 @@ struct claude_client {
     char  effort[32];
     char  auth[64];
     claude_result *meta;      /* filled from the in-flight turn's result event */
+    int   turn_open;          /* an init has arrived with no result yet        */
+    int   notified;           /* a task notification is owed a turn            */
     char *buf;                /* line-assembly buffer for out_fd       */
     size_t len, cap;
     pthread_t warm_thread;
@@ -589,6 +620,17 @@ static int cl_handle_line(claude_client *c, const char *line, char **out) {
     cJSON *type = cJSON_GetObjectItemCaseSensitive(ev, "type");
     const char *ts = (type && cJSON_IsString(type)) ? type->valuestring : "";
     if (strcmp(ts, "system") == 0) {
+        /* Every turn opens with an init and closes with a result, whether this
+         * client asked for it or the CLI started it on its own. A finished
+         * background task announces its turn with a notification first, so a
+         * notification arriving between turns says one more turn is coming. */
+        const char *sub = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "subtype"));
+        if (sub && strcmp(sub, "init") == 0) {
+            c->turn_open = 1;
+            c->notified = 0;
+        } else if (sub && strcmp(sub, "task_notification") == 0 && !c->turn_open) {
+            c->notified = 1;
+        }
         const char *auth = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "apiKeySource"));
         if (auth && *auth)
             snprintf(c->auth, sizeof c->auth, "%s", auth);
@@ -603,6 +645,7 @@ static int cl_handle_line(claude_client *c, const char *line, char **out) {
     if ((c->verbose || c->on_event) && *ts) cl_emit(c, ev, ts);
     int is_result = strcmp(ts, "result") == 0;
     if (is_result) {
+        c->turn_open = 0;
         cl_fill_result(c, ev);
         cJSON *res = cJSON_GetObjectItemCaseSensitive(ev, "result");
         const char *text = (res && cJSON_IsString(res)) ? res->valuestring : "";
@@ -730,9 +773,117 @@ int claude_interrupt(claude_client *c) {
     return cl_write_json(c, msg);
 }
 
+/* Wait up to timeout_ms for the child and append whatever arrives to the line
+ * buffer. Returns 1 when bytes were added, 0 on timeout, -1 once the process is
+ * gone or the buffer cannot grow — either way the buffer is dropped. */
+static int cl_fill(claude_client *c, int timeout_ms) {
+    struct pollfd pfds[2] = { { c->out_fd, POLLIN, 0 }, { c->err_fd, POLLIN, 0 } };
+    int pr = poll(pfds, 2, timeout_ms);
+    if (pr < 0) {
+        if (errno == EINTR) return 0;
+        c->len = 0;
+        return -1;
+    }
+    if (pfds[1].revents) cl_drain_stderr(c);     /* keep the pipe from filling */
+    if (!(pfds[0].revents & (POLLIN | POLLHUP))) return 0;
+
+    char tmp[8192];
+    ssize_t r = read(c->out_fd, tmp, sizeof tmp);
+    if (r <= 0) { c->len = 0; return -1; }       /* EOF / error: process gone */
+    if (c->len + (size_t)r + 1 > c->cap) {
+        size_t nc = (c->len + (size_t)r + 1) * 2;
+        char *nb = realloc(c->buf, nc);
+        if (!nb) { c->len = 0; return -1; }
+        c->buf = nb; c->cap = nc;
+    }
+    memcpy(c->buf + c->len, tmp, (size_t)r);
+    c->len += (size_t)r;
+    c->buf[c->len] = '\0';
+    return 1;
+}
+
+/* Handle the complete lines sitting in the buffer, stopping after a turn's
+ * result (its text lands in *out, untouched otherwise) so the bytes of any
+ * following turn stay queued. Returns how many lines were handled. */
+static int cl_scan_lines(claude_client *c, char **out) {
+    if (!c->buf || !c->len) return 0;
+    int lines = 0;
+    char *start = c->buf, *nl;
+    while ((nl = memchr(start, '\n', c->len - (size_t)(start - c->buf)))) {
+        *nl = '\0';
+        lines++;
+        int done = cl_handle_line(c, start, out);
+        start = nl + 1;
+        if (done) break;
+    }
+    size_t consumed = (size_t)(start - c->buf);
+    if (consumed) { memmove(c->buf, start, c->len - consumed); c->len -= consumed; }
+    return lines;
+}
+
+/* Consume any turn the CLI ran on its own — a finished background task or
+ * subagent wakes the model with no send from here, and its events sit in the
+ * pipe until someone reads them. Taking that turn's result as the answer to the
+ * next send shifts every reply by one turn and returns before the caller's
+ * spinner can appear, so the stream is cleared first. The stray turn's figures
+ * belong to no caller: c->meta stays out of it. */
+static void cl_drain_stray(claude_client *c) {
+    claude_result *saved = c->meta;
+    c->meta = NULL;
+    int interrupted = 0, quiet = 0;
+    for (;;) {
+        char *stray = NULL;
+        int lines = cl_scan_lines(c, &stray);
+        free(stray);
+        if (lines) { quiet = 0; continue; }  /* keep going while the buffer has more */
+
+        /* Waiting out an announced turn as well as an open one closes the gap
+         * where a notification has landed but its turn has not started yet —
+         * returning in that gap would leave the stray turn to collide with the
+         * send this drain is clearing the way for. */
+        int waiting = c->turn_open || c->notified;
+        if (c->turn_open && c->abort && !interrupted && c->abort()) {
+            interrupted = 1;
+            claude_interrupt(c);
+        }
+        int r = cl_fill(c, waiting ? CL_TICK_MS : 0);
+        if (r < 0) break;                        /* process gone */
+        if (r > 0) { quiet = 0; continue; }
+        if (!waiting) break;                     /* no turn open or owed: clean */
+        if (++quiet > (c->turn_open ? CL_STRAY_QUIET_TICKS : CL_NOTIFY_WAIT_TICKS))
+            break;
+    }
+    /* An announcement that never produced a turn must not arm the next drain. */
+    if (!c->turn_open) c->notified = 0;
+    c->meta = saved;
+}
+
+int claude_idle_fd(claude_client *c) {
+    if (!c || c->pid <= 0) return -1;
+    /* The warm thread is the only stdout reader until it publishes readiness. */
+    if (atomic_load_explicit(&c->warm_state, memory_order_acquire) != 1) return -1;
+    return c->out_fd;
+}
+
+int claude_idle_pump(claude_client *c) {
+    if (claude_idle_fd(c) < 0) return 0;
+    claude_result *saved = c->meta;
+    c->meta = NULL;                   /* these turns are nobody's accounting */
+    for (;;) {
+        char *stray = NULL;
+        int lines = cl_scan_lines(c, &stray);
+        free(stray);                  /* the events carried the text already */
+        if (lines) continue;          /* a result stops the scan mid-buffer */
+        if (cl_fill(c, 0) <= 0) break;
+    }
+    c->meta = saved;
+    return c->turn_open || c->notified;
+}
+
 static char *cl_send(claude_client *c, const char *user_text, int content_block) {
     if (!c || !user_text) return NULL;
     if (!cl_await_ready(c)) return NULL;
+    cl_drain_stray(c);
 
     /* Frame the user turn as one JSONL line (cJSON handles all escaping). */
     cJSON *msg = cJSON_CreateObject();
@@ -752,7 +903,6 @@ static char *cl_send(claude_client *c, const char *user_text, int content_block)
 
     /* Read events until this turn's result. */
     char *result = NULL;
-    char tmp[8192];
     int interrupted = 0;
     for (;;) {
         /* Abort mid-turn: ask the CLI to abandon the turn, then keep reading to
@@ -765,42 +915,9 @@ static char *cl_send(claude_client *c, const char *user_text, int content_block)
         /* The abort predicate doubles as a UI tick, and a caller that echoes
          * typing from it cannot answer a keystroke sooner than this timeout, so
          * it is set by what feels immediate rather than by the spinner. */
-        struct pollfd pfds[2] = { { c->out_fd, POLLIN, 0 }, { c->err_fd, POLLIN, 0 } };
-        int pr = poll(pfds, 2, CL_TICK_MS);
-        if (pr < 0) { if (errno == EINTR) continue; c->len = 0; break; }
-        if (pfds[1].revents) cl_drain_stderr(c);     /* keep the pipe from filling */
-        if (!(pfds[0].revents & (POLLIN | POLLHUP))) continue;
-        ssize_t r = read(c->out_fd, tmp, sizeof tmp);
-        if (r <= 0) { c->len = 0; break; }           /* EOF / error: process gone */
-
-        /* append to line buffer */
-        if (c->len + (size_t)r + 1 > c->cap) {
-            size_t nc = (c->len + (size_t)r + 1) * 2;
-            char *nb = realloc(c->buf, nc);
-            if (!nb) { c->len = 0; break; }
-            c->buf = nb; c->cap = nc;
-        }
-        memcpy(c->buf + c->len, tmp, (size_t)r);
-        c->len += (size_t)r;
-        c->buf[c->len] = '\0';
-
-        /* process complete lines */
-        char *start = c->buf, *nl;
-        while ((nl = memchr(start, '\n', c->len - (size_t)(start - c->buf)))) {
-            *nl = '\0';
-            if (cl_handle_line(c, start, &result)) {
-                /* keep any bytes after this line for next time */
-                size_t consumed = (size_t)(nl + 1 - c->buf);
-                size_t rest = c->len - consumed;
-                memmove(c->buf, c->buf + consumed, rest);
-                c->len = rest;
-                return result;
-            }
-            start = nl + 1;
-        }
-        /* shift the unfinished tail to the front */
-        size_t consumed = (size_t)(start - c->buf);
-        if (consumed) { memmove(c->buf, start, c->len - consumed); c->len -= consumed; }
+        if (cl_fill(c, CL_TICK_MS) < 0) break;
+        cl_scan_lines(c, &result);
+        if (result) return result;
     }
     return result;   /* NULL unless a result slipped in just before EOF */
 }

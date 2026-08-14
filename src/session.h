@@ -48,6 +48,15 @@ int session_start(struct session *s);
  * when the process has died and the caller should stop. */
 int session_turn(struct session *s, const char *text);
 
+/* The agent can take a turn with nobody having asked — a background task it
+ * started finishes and wakes it. session_idle_fd() is readable when such a turn
+ * has output waiting, or -1 when this backend has no such turns or is not up
+ * yet; session_idle_pump() prints what has arrived, the same way a turn's own
+ * activity is printed. Only for use between turns, with the caller's own
+ * display out of the way. */
+int  session_idle_fd(const struct session *s);
+void session_idle_pump(struct session *s);
+
 /* Drop the conversation context, keeping the process alive. */
 int session_clear(struct session *s);
 

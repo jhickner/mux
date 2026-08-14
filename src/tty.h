@@ -43,6 +43,13 @@ void tty_raw_end(void);
  * filled, or 0 on timeout. */
 int  tty_read(tty_event *ev, int timeout_ms);
 
+/* Watch one more fd while waiting for a key. `fd` is asked for the descriptor
+ * before each wait — it may return -1 when there is nothing to watch — and
+ * `ready` is called when that descriptor becomes readable, before any key is
+ * reported. A `ready` that prints must leave the screen as it found it: the
+ * wait resumes around it. Pass NULL to stop watching. */
+void tty_watch(int (*fd)(void *ud), void (*ready)(void *ud), void *ud);
+
 /* Nonzero while the terminal is in raw mode. */
 int  tty_is_raw(void);
 

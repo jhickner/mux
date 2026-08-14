@@ -50,6 +50,14 @@ void prompt_set_status(struct prompt *p, prompt_status_fn fn, void *ud);
 typedef int (*prompt_live_fn)(void *ud, const char *line);
 void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud);
 
+/* Output that can arrive while the prompt is waiting for a key, rather than in
+ * answer to anything typed: `fd` names a descriptor to watch (-1 when there is
+ * none just now) and `render` prints what arrived. The prompt block is taken
+ * down for the call and put back after, so `render` prints into scrollback as
+ * if nothing were on screen. Only in effect inside prompt_read(). */
+void prompt_set_idle(struct prompt *p, int (*fd)(void *ud),
+                     void (*render)(void *ud), void *ud);
+
 /* The oldest message queued during a turn, or NULL when none is waiting. The
  * caller owns it and is responsible for echoing it. */
 char *prompt_take_queued(struct prompt *p);

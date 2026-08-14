@@ -579,6 +579,34 @@ static void on_event(void *ud, const backend_event *ev)
     ui_flush();
 }
 
+int session_idle_fd(const struct session *s)
+{
+    if (!s || !s->agent || !s->agent->idle_fd || s->quiet)
+        return -1;
+    return s->agent->idle_fd(s->agent);
+}
+
+void session_idle_pump(struct session *s)
+{
+    if (!s || !s->agent || !s->agent->idle_pump || s->quiet)
+        return;
+    /* on_event prints only for the turn in flight, and this is a turn nobody
+     * asked for: name it live for the pump so it reaches the screen.
+     *
+     * A collapsed tool row is rewritten in place as the cluster grows, and each
+     * pump hands the screen back to the caller's display in between, so the row
+     * a cluster would rewrite is no longer the one under the cursor. Starting
+     * every pump clean costs a merged row and keeps the rewrites off scrollback
+     * that has already moved on. */
+    cluster_forget(s);
+    s->after_activity = 0;
+    s->after_tool = 0;
+    s->after_collapse = 0;
+    live = s;
+    s->agent->idle_pump(s->agent);
+    live = NULL;
+}
+
 /* Where keys typed during a turn go. The abort predicate the backend polls
  * takes no argument, so the hook lives here rather than on the session. */
 static session_key_fn typeahead;

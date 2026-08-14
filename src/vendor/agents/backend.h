@@ -139,6 +139,16 @@ struct Backend {
      * that keeps its input live can pick up a keystroke. */
     void (*set_abort_check)(Backend *b, int (*cb)(void));
 
+    /* Some agents run turns between sends — a finished background task wakes
+     * the model with no prompt. idle_fd() is an fd that becomes readable when
+     * such a turn produces output (-1 while there is nothing to watch, so it is
+     * asked again before each wait) and idle_pump() consumes what is there,
+     * reporting it through the event sink. Both are for the gap between turns:
+     * calling the pump with a turn in flight would steal that turn's stream.
+     * NULL for a driver whose agent only speaks when spoken to. */
+    int  (*idle_fd)(Backend *b);
+    void (*idle_pump)(Backend *b);
+
     /* NULL until known, or when the driver never reports it. */
     const char *(*session_id)(Backend *b);
     const char *(*model)(Backend *b);       /* the model the CLI resolved       */
@@ -403,6 +413,15 @@ static int backend_claude_set_effort(Backend *b, const char *effort) {
     return 1;
 }
 
+static int backend_claude_idle_fd(Backend *b) {
+    backend_claude *x = b->ctx;
+    return x->client ? claude_idle_fd(x->client) : -1;
+}
+static void backend_claude_idle_pump(Backend *b) {
+    backend_claude *x = b->ctx;
+    if (x->client) claude_idle_pump(x->client);
+}
+
 static const char *backend_claude_session_id(Backend *b) {
     backend_claude *x = b->ctx;
     return x->client ? claude_session_id(x->client) : NULL;
@@ -453,6 +472,8 @@ static Backend *backend_claude_open(const backend_opts *o) {
     b->set_permission = backend_set_permission_generic;
     b->set_event_cb = backend_claude_set_event_cb;
     b->set_abort_check = backend_claude_set_abort;
+    b->idle_fd = backend_claude_idle_fd;
+    b->idle_pump = backend_claude_idle_pump;
     b->session_id = backend_claude_session_id;
     b->model = backend_claude_model;
     b->effort = backend_claude_effort;

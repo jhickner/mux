@@ -43,6 +43,9 @@ struct prompt {
     char        *file_root;    /* project root for @-completion, or NULL */
     prompt_status_fn status;   /* the gauge in front of the caret, or NULL */
     void            *status_ud;
+    int        (*idle_fd)(void *ud);   /* output arriving unprompted, or NULL */
+    void       (*idle_render)(void *ud);
+    void        *idle_ud;
     int          live_block;   /* the block on screen is the turn-time one */
     const char  *painted_head; /* the floating prompt the block on screen carries.
                                 * status.c owns the text and only replaces it
@@ -843,7 +846,37 @@ static char *take_line(struct prompt *p)
     return out;
 }
 
-char *prompt_read(struct prompt *p)
+void prompt_set_idle(struct prompt *p, int (*fd)(void *ud),
+                     void (*render)(void *ud), void *ud)
+{
+    p->idle_fd = fd;
+    p->idle_render = render;
+    p->idle_ud = ud;
+}
+
+/* The watch hooks tty_read installs for the wait inside prompt_read. The prompt
+ * being read is the one on screen, so it can be reached from a static. */
+static struct prompt *waiting;
+
+static int idle_fd_hook(void *ud)
+{
+    (void)ud;
+    return waiting && waiting->idle_fd ? waiting->idle_fd(waiting->idle_ud) : -1;
+}
+
+/* Print what arrived where the block is, not on top of it. */
+static void idle_ready_hook(void *ud)
+{
+    (void)ud;
+    struct prompt *p = waiting;
+    if (!p || !p->idle_render)
+        return;
+    erase_block(p);
+    p->idle_render(p->idle_ud);
+    repaint(p);
+}
+
+static char *read_loop(struct prompt *p)
 {
     /* Whatever was typed during the last turn but never submitted carries over,
      * so the block is repainted rather than reset. */
@@ -886,6 +919,18 @@ char *prompt_read(struct prompt *p)
             continue;
         }
     }
+}
+
+char *prompt_read(struct prompt *p)
+{
+    /* Unprompted output is only welcome while this wait owns the screen: a turn
+     * reads its own stream, and the pump would take it out from under it. */
+    waiting = p;
+    tty_watch(p->idle_fd ? idle_fd_hook : NULL, idle_ready_hook, NULL);
+    char *out = read_loop(p);
+    tty_watch(NULL, NULL, NULL);
+    waiting = NULL;
+    return out;
 }
 
 /* ---------- the prompt while a turn runs ---------- */
