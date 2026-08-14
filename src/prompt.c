@@ -636,6 +636,7 @@ char *prompt_read(struct prompt *p)
 
     int resizing = 0;
     for (;;) {
+        ui_sticky_sync();
         tty_event ev;
         /* Once the size stops changing, one repaint puts the block back. */
         if (!tty_read(&ev, resizing ? TTY_RESIZE_SETTLE_MS : -1)) {

@@ -675,6 +675,7 @@ static void set_spin_word(const struct session *s)
  * costs — hence the short poll timeouts in the drivers. */
 static int abort_check(void)
 {
+    ui_sticky_sync();
     name_poll(live);
     quota_poll(live);
     if (live)

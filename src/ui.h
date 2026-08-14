@@ -62,6 +62,9 @@ void ui_sticky_set(int on);
 int  ui_sticky_enabled(void);
 void ui_sticky_begin(const char *text);
 void ui_sticky_end(void);
+/* Apply a pending tmux copy-mode transition. Safe to call often; it only does
+ * work after the pane-local hook has reported a change. */
+void ui_sticky_sync(void);
 
 /* Physical rows that `count` logical rows of the given cell widths occupy at
  * `cols`. A row is re-wrapped by the terminal when the window narrows, so this

@@ -71,7 +71,9 @@ block in the history above.
 - Type while a turn runs: the prompt stays live under the spinner, and each
   message submitted there is queued and run, in order, once the turn ends
 - Optional sticky context: `/sticky on` keeps the latest submitted prompt at
-  the top once normal scrolling carries it there; later output scrolls beneath it
+  the top once normal scrolling carries it there; later output scrolls beneath
+  it. In tmux, the header gets out of the way in scrollback and returns on
+  reaching the bottom
 - Interrupt an in-flight turn without losing the session
 - Model switching mid-conversation, carrying context across the restart
 - Resume any past conversation for the current directory
