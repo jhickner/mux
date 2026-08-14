@@ -230,7 +230,9 @@ struct claude_client {
     char  auth[64];
     claude_result *meta;      /* filled from the in-flight turn's result event */
     int   turn_open;          /* an init has arrived with no result yet        */
-    int   notified;           /* a task notification is owed a turn            */
+    int   notified;           /* task notifications still owed a turn each     */
+    int   awaiting;           /* a send is out and has not been given its turn */
+    int   turn_mine;          /* the open turn answers this client's send      */
     char *buf;                /* line-assembly buffer for out_fd       */
     size_t len, cap;
     pthread_t warm_thread;
@@ -622,14 +624,26 @@ static int cl_handle_line(claude_client *c, const char *line, char **out) {
     if (strcmp(ts, "system") == 0) {
         /* Every turn opens with an init and closes with a result, whether this
          * client asked for it or the CLI started it on its own. A finished
-         * background task announces its turn with a notification first, so a
-         * notification arriving between turns says one more turn is coming. */
+         * background task announces its turn with a notification first, so each
+         * notification arriving between turns says one more turn is coming.
+         *
+         * Turns run one at a time and in the order they were asked for, so an
+         * init can be attributed as it arrives: announced turns come first, and
+         * the send waiting for a turn takes the first one nobody announced. */
         const char *sub = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "subtype"));
         if (sub && strcmp(sub, "init") == 0) {
             c->turn_open = 1;
-            c->notified = 0;
+            if (c->notified > 0) {
+                c->notified--;
+                c->turn_mine = 0;
+            } else if (c->awaiting) {
+                c->awaiting = 0;
+                c->turn_mine = 1;
+            } else {
+                c->turn_mine = 0;
+            }
         } else if (sub && strcmp(sub, "task_notification") == 0 && !c->turn_open) {
-            c->notified = 1;
+            c->notified++;
         }
         const char *auth = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "apiKeySource"));
         if (auth && *auth)
@@ -645,11 +659,20 @@ static int cl_handle_line(claude_client *c, const char *line, char **out) {
     if ((c->verbose || c->on_event) && *ts) cl_emit(c, ev, ts);
     int is_result = strcmp(ts, "result") == 0;
     if (is_result) {
+        /* Attributed when the turn opened; a result that never had an init of
+         * its own answers whoever is waiting, since nothing announced it. */
+        int mine = c->turn_open ? c->turn_mine : c->awaiting;
         c->turn_open = 0;
-        cl_fill_result(c, ev);
-        cJSON *res = cJSON_GetObjectItemCaseSensitive(ev, "result");
-        const char *text = (res && cJSON_IsString(res)) ? res->valuestring : "";
-        *out = strdup(text ? text : "");
+        c->turn_mine = 0;
+        /* A turn the CLI ran on its own answers nobody here: its text is not a
+         * reply to hand back, and its figures are not the caller's accounting. */
+        if (mine) {
+            c->awaiting = 0;
+            cl_fill_result(c, ev);
+            cJSON *res = cJSON_GetObjectItemCaseSensitive(ev, "result");
+            const char *text = (res && cJSON_IsString(res)) ? res->valuestring : "";
+            *out = strdup(text ? text : "");
+        }
     }
     cJSON_Delete(ev);
     return is_result;
@@ -899,11 +922,14 @@ static char *cl_send(claude_client *c, const char *user_text, int content_block)
     } else {
         cJSON_AddStringToObject(inner, "content", user_text);
     }
-    if (!cl_write_json(c, msg)) return NULL;
+    c->awaiting = 1;
+    if (!cl_write_json(c, msg)) { c->awaiting = 0; return NULL; }
 
-    /* Read events until this turn's result. */
+    /* Read events until this turn's result. Turns the CLI started on its own
+     * still stream through the event callback, but their results are not this
+     * send's answer, so the loop reads past them. */
     char *result = NULL;
-    int interrupted = 0;
+    int interrupted = 0, quiet = 0;
     for (;;) {
         /* Abort mid-turn: ask the CLI to abandon the turn, then keep reading to
          * its result event so the stream stays aligned for the next send. */
@@ -915,10 +941,23 @@ static char *cl_send(claude_client *c, const char *user_text, int content_block)
         /* The abort predicate doubles as a UI tick, and a caller that echoes
          * typing from it cannot answer a keystroke sooner than this timeout, so
          * it is set by what feels immediate rather than by the spinner. */
-        if (cl_fill(c, CL_TICK_MS) < 0) break;
-        cl_scan_lines(c, &result);
-        if (result) return result;
+        int r = cl_fill(c, CL_TICK_MS);
+        if (r < 0) break;
+        int lines = cl_scan_lines(c, &result);
+        if (result) { c->awaiting = 0; return result; }
+        if (r > 0 || lines) { quiet = 0; continue; }
+
+        /* The turn this send is owed opens within a tick of the write, so going
+         * quiet with none open and none arriving means the CLI folded the send
+         * into a turn that was already running — whose result was read past as
+         * somebody else's. Nothing more is coming: end the turn on what the
+         * stream already showed rather than wait forever. */
+        if (!c->turn_open && ++quiet > CL_STRAY_QUIET_TICKS) {
+            c->awaiting = 0;
+            return strdup("");
+        }
     }
+    c->awaiting = 0;
     return result;   /* NULL unless a result slipped in just before EOF */
 }
 

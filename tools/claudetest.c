@@ -24,6 +24,23 @@ static void result(const char *text)
     fflush(stdout);
 }
 
+/* A turn the CLI runs on its own: announced by a notification, bracketed by an
+ * init and a result, exactly like one this client asked for. */
+static void stray_turn(const char *text)
+{
+    printf("{\"type\":\"system\",\"subtype\":\"task_notification\"}\n"
+           "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"mock\"}\n");
+    fflush(stdout);
+    result(text);
+}
+
+static void turn(const char *text)
+{
+    printf("{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"mock\"}\n");
+    fflush(stdout);
+    result(text);
+}
+
 static long milliseconds(void)
 {
     struct timespec ts;
@@ -84,6 +101,12 @@ static int mock_cli(int argc, char **argv)
             result("Invalid argument: bogus");
         else if (text && !strcmp(text, "continue"))
             result("done");
+        /* The background task finishes just as the send lands: its whole turn
+         * is already in the pipe before the answer to this message starts. */
+        else if (text && !strcmp(text, "race")) {
+            stray_turn("background task finished");
+            turn("answered");
+        }
         else
             result("unexpected input");
         cJSON_Delete(msg);
@@ -124,6 +147,17 @@ int main(int argc, char **argv)
     char *reply = claude_send(client, "continue");
     if (!reply || strcmp(reply, "done")) {
         fputs("claudetest: process was not reusable after effort changes\n", stderr);
+        free(reply);
+        claude_stop(client);
+        return 1;
+    }
+    free(reply);
+
+    claude_result meta = {0};
+    reply = claude_send_ex(client, "race", &meta);
+    if (!reply || strcmp(reply, "answered")) {
+        fprintf(stderr, "claudetest: a stray turn was taken as the reply (%s)\n",
+                reply ? reply : "none");
         free(reply);
         claude_stop(client);
         return 1;
