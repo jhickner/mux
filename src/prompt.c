@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "files.h"
 #include "paste.h"
@@ -579,6 +581,148 @@ static void paste_clipboard(struct prompt *p, int live)
     repaint(p);
 }
 
+/* A one-off path under $TMPDIR (or /tmp). Quoted later, so a quote in the
+ * directory name would break the $EDITOR command; refuse rather than inject. */
+static int editor_temp(char *out, size_t size)
+{
+    const char *dir = getenv("TMPDIR");
+    if (!dir || !*dir)
+        dir = "/tmp";
+    if (strchr(dir, '\''))
+        return 0;
+    if ((size_t)snprintf(out, size, "%s/simple-agent-XXXXXX", dir) >= size)
+        return 0;
+    int fd = mkstemp(out);
+    if (fd < 0)
+        return 0;
+    close(fd);
+    return 1;
+}
+
+static char *read_whole(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    long n = ftell(f);
+    if (n < 0) {
+        fclose(f);
+        return NULL;
+    }
+    rewind(f);
+    char *buf = malloc((size_t)n + 1);
+    if (!buf) {
+        fclose(f);
+        return NULL;
+    }
+    size_t got = fread(buf, 1, (size_t)n, f);
+    fclose(f);
+    buf[got] = '\0';
+    /* Editors almost always write a trailing newline the user did not type. */
+    if (got && buf[got - 1] == '\n')
+        buf[--got] = '\0';
+    if (got && buf[got - 1] == '\r')
+        buf[--got] = '\0';
+    return buf;
+}
+
+/* Ctrl-G hands the current buffer to $VISUAL or $EDITOR (vi if neither is set)
+ * and puts whatever the editor writes back into the line, including newlines. */
+static void edit_in_editor(struct prompt *p, int live)
+{
+    if (p->repl.searching)
+        feed(p, REPL_KEY_ENTER, 0, NULL);
+
+    const char *editor = getenv("VISUAL");
+    if (!editor || !*editor)
+        editor = getenv("EDITOR");
+    if (!editor || !*editor)
+        editor = "vi";
+
+    char path[256];
+    if (!editor_temp(path, sizeof path)) {
+        if (!live) {
+            erase_block(p);
+            ui_note("could not create a temp file for $EDITOR");
+            repaint(p);
+        }
+        return;
+    }
+
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        unlink(path);
+        if (!live) {
+            erase_block(p);
+            ui_note("could not write %s", path);
+            repaint(p);
+        }
+        return;
+    }
+    const char *line = repl_line(&p->repl);
+    int wrote = 1;
+    if (line && *line)
+        wrote = fputs(line, f) >= 0;
+    if (fclose(f) != 0)
+        wrote = 0;
+    if (!wrote) {
+        unlink(path);
+        if (!live) {
+            erase_block(p);
+            ui_note("could not write %s", path);
+            repaint(p);
+        }
+        return;
+    }
+
+    char cmd[4096];
+    if ((size_t)snprintf(cmd, sizeof cmd, "%s '%s'", editor, path) >= sizeof cmd) {
+        unlink(path);
+        if (!live) {
+            erase_block(p);
+            ui_note("$EDITOR command is too long");
+            repaint(p);
+        }
+        return;
+    }
+
+    if (live)
+        status_pause();
+    else
+        erase_block(p);
+    ui_raw(0);
+    tty_raw_end();
+
+    int status = system(cmd);
+
+    tty_raw_begin();
+    ui_raw(1);
+    ui_cursor_plain();
+
+    int ok = status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    if (ok) {
+        char *text = read_whole(path);
+        if (text) {
+            repl_reset(&p->repl);
+            if (*text)
+                repl_insert_text(&p->repl, text);
+            free(text);
+        } else {
+            ok = 0;
+        }
+    }
+    unlink(path);
+
+    if (live)
+        status_resume();
+    else if (!ok)
+        ui_note("$EDITOR failed");
+}
+
 enum key_result {
     KEY_OK,      /* the editor consumed it; redraw   */
     KEY_SUBMIT,  /* a complete line is ready to take */
@@ -617,6 +761,10 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
             return KEY_CANCEL;
         if (ev->cp == 22) { /* Ctrl-V */
             paste_clipboard(p, live);
+            return KEY_OK;
+        }
+        if (ev->cp == 7) { /* Ctrl-G */
+            edit_in_editor(p, live);
             return KEY_OK;
         }
         if (ev->cp == 12) { /* Ctrl-L */
