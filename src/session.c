@@ -443,6 +443,10 @@ static void print_tool_output(const char *text)
     }
 }
 
+/* The session with a turn in flight, for the hooks the backend polls without a
+ * user-data argument. */
+static struct session *live;
+
 static void on_event(void *ud, const backend_event *ev)
 {
     struct session *s = ud;
@@ -451,7 +455,8 @@ static void on_event(void *ud, const backend_event *ev)
         replace(&s->resolved, ev->name);
         return;
     }
-    if (s->quiet)
+    /* Handshake and resume can emit events with no turn in flight. */
+    if (s->quiet || !live)
         return;
 
     switch (ev->kind) {
@@ -562,10 +567,6 @@ void session_set_typeahead(session_key_fn fn, void *ud)
     typeahead = fn;
     typeahead_ud = ud;
 }
-
-/* The session with a turn in flight, for the hooks the backend polls without a
- * user-data argument. */
-static struct session *live;
 
 static void set_id(struct session *s, const char *id);
 

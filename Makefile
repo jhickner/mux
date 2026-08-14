@@ -26,6 +26,9 @@ palette: tools/palette.c src/vendor/colors.h
 spintest: tools/spintest.c src/status.o src/tty.o src/ui.o src/vendor/impl.o src/vendor/cJSON.o
 	$(CC) $(CFLAGS) -Isrc -o $@ $^
 
+statustest: tools/statustest.c src/status.o src/tty.o src/ui.o src/vendor/impl.o src/vendor/cJSON.o
+	$(CC) $(CFLAGS) -Isrc -o $@ $^
+
 reflowtest: tools/reflowtest.c src/ui.o src/tty.o src/vendor/impl.o src/vendor/cJSON.o
 	$(CC) $(CFLAGS) -Isrc -o $@ $^
 
@@ -59,7 +62,7 @@ imagetest: tools/imagetest.c src/image.o src/md.o src/ui.o src/tty.o src/vendor/
 pastetest: tools/pastetest.c src/paste.o
 	$(CC) $(CFLAGS) -Isrc -o $@ $^
 
-check: reflowtest toolstyletest sessionlisttest claudetest codextest groktest filedifftest pitest agenttabstest
+check: reflowtest toolstyletest sessionlisttest claudetest codextest groktest filedifftest pitest agenttabstest statustest
 	./reflowtest
 	./toolstyletest
 	./sessionlisttest
@@ -69,12 +72,13 @@ check: reflowtest toolstyletest sessionlisttest claudetest codextest groktest fi
 	./filedifftest
 	./pitest
 	./agenttabstest
+	./statustest
 
 install: $(BIN)
 	install -d $(PREFIX)/bin
 	install -m 755 $(BIN) $(PREFIX)/bin/$(BIN)
 
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN) palette spintest reflowtest toolstyletest sessionlisttest claudetest codextest groktest filedifftest pitest agenttabstest imagetest pastetest src/*.o.tmp src/vendor/*.o.tmp
+	rm -f $(OBJ) $(DEP) $(BIN) palette spintest statustest reflowtest toolstyletest sessionlisttest claudetest codextest groktest filedifftest pitest agenttabstest imagetest pastetest src/*.o.tmp src/vendor/*.o.tmp
 
 .PHONY: all install clean check

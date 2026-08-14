@@ -49,7 +49,7 @@ void   status_resume(void);
  * with it, leaving the spacing that survives in scrollback to the caller. */
 void   status_gap(int on);
 
-/* Seconds since status_begin(). */
+/* Seconds since status_begin(), or 0 if no turn is in flight. */
 double status_elapsed(void);
 
 #endif /* STATUS_H */

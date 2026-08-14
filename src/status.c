@@ -15,6 +15,7 @@ static const char *const FRAMES[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "
 #define FRAME_MS 90
 
 static double  started;
+static int     active;  /* status_begin() has run and status_end() has not */
 static int     visible;
 static int     frame;
 static double  frame_at;
@@ -42,7 +43,12 @@ static double now_seconds(void)
     return (double)tv.tv_sec + (double)tv.tv_usec / 1e6;
 }
 
-double status_elapsed(void) { return now_seconds() - started; }
+double status_elapsed(void)
+{
+    if (!active)
+        return 0;
+    return now_seconds() - started;
+}
 
 void status_touch(void) { dirty = 1; }
 
@@ -212,6 +218,7 @@ void status_begin(void)
     started = now_seconds();
     frame = 0;
     frame_at = started;
+    active = 1;
     visible = 1;
     caret_row = 0;
     spin_width = 0;
@@ -228,7 +235,7 @@ void status_begin(void)
  * new to show does nothing. */
 void status_tick(void)
 {
-    if (!visible || size_changing())
+    if (!active || !visible || size_changing())
         return;
     double t = now_seconds();
     if ((t - frame_at) * 1000.0 >= FRAME_MS) {
@@ -242,7 +249,7 @@ void status_tick(void)
 
 void status_pause(void)
 {
-    if (!visible)
+    if (!active || !visible)
         return;
     ui_sync_begin();
     erase_block();
@@ -253,7 +260,7 @@ void status_pause(void)
 
 void status_resume(void)
 {
-    if (visible)
+    if (!active || visible)
         return;
     visible = 1;
     if (!size_changing())
@@ -266,7 +273,7 @@ void status_gap(int on)
     if (gap == on)
         return;
     gap = on;
-    if (visible && !size_changing())
+    if (active && visible && !size_changing())
         paint();
 }
 
@@ -278,6 +285,8 @@ void status_end(void)
         ui_sync_end();
     }
     visible = 0;
+    active = 0;
+    started = 0;
     ui_esc("\x1b[?25h");
     ui_flush();
 }
