@@ -7,6 +7,8 @@
 #include <time.h>
 
 #include "agenttabs.h"
+#include "banner.h"
+#include "prompt.h"
 #include "filediff.h"
 #include "image.h"
 #include "md.h"
@@ -762,6 +764,31 @@ struct session *session_new(const char *backend, const char *cwd, const char *mo
     s->effort = effort ? strdup(effort) : NULL;
     s->thinking = 1;
     return s;
+}
+
+/* TEMP: repaint the conversation in the current colors. Only the retained turns
+ * come back — tool activity, reasoning and footers are not kept — so this is a
+ * try-out aid, not a faithful redraw. Remove with the Ctrl-N/Ctrl-O binds. */
+void session_replay(struct session *s)
+{
+    ui_esc("\x1b[2J\x1b[H");
+    banner_hints();
+    if (!s)
+        return;
+    for (size_t i = 0; i < s->transcript.count; i++) {
+        const struct transcript_turn *t = &s->transcript.turns[i];
+        if (t->user && *t->user)
+            prompt_echo_message(t->user);
+        if (t->assistant && *t->assistant) {
+            md_render(t->assistant, 0);
+            ui_put("\n");
+        }
+        if (t->interrupted) {
+            ui_error("  interrupted");
+            ui_put("\n");
+        }
+    }
+    ui_flush();
 }
 
 void session_free(struct session *s)

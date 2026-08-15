@@ -48,6 +48,8 @@ struct prompt {
     int        (*idle_fd)(void *ud);   /* output arriving unprompted, or NULL */
     void       (*idle_render)(void *ud);
     void        *idle_ud;
+    void       (*replay)(void *ud);    /* TEMP: full redraw after a color change */
+    void        *replay_ud;
     int          live_block;   /* the block on screen is the turn-time one */
     const char  *painted_head; /* the floating prompt the block on screen carries.
                                 * status.c owns the text and only replaces it
@@ -739,6 +741,43 @@ enum key_result {
     KEY_CANCEL,  /* Escape or Ctrl-C, live mode only */
 };
 
+/* TEMP: Ctrl-N steps the user's colors, Ctrl-O the emphasis within the reply —
+ * its prose stays put. Each redraws the conversation and prints a sample row in
+ * the new color. Mid-turn the spinner's block is lifted for the redraw and put
+ * back after it, the same way any other printing during a turn is done; what the
+ * turn has streamed so far is not retained and does not come back. Remove with
+ * ui_cycle. */
+static void cycle_colors(struct prompt *p, int live, int mine)
+{
+    const char *label = ui_cycle(mine ? UI_GROUP_INPUT : UI_GROUP_EMPHASIS, 1);
+
+    if (live)
+        status_pause();
+    else
+        erase_block(p);
+
+    if (p->replay) {
+        status_sticky_erased();
+        p->painted_rows = 0;
+        p->caret_row = 0;
+        p->replay(p->replay_ud);
+    }
+    ui_esc(ui_style(UI_BRAND));
+    ui_put(UI_BAR);
+    ui_esc(ui_style(mine ? UI_ACCENT : UI_BOLD));
+    ui_printf(" %s: %s", mine ? "your input" : "reply highlights", label);
+    ui_esc(ui_style(UI_RESET));
+    ui_put("\n");
+    ui_flush();
+
+    if (live) {
+        status_resume();
+        status_touch();
+    } else {
+        repaint(p);
+    }
+}
+
 /* Feed one terminal event to the editor. `live` marks the turn-time prompt,
  * where the screen belongs to the running turn: Ctrl-L is ignored there, and
  * Escape / Ctrl-C mean "interrupt the turn" rather than reaching the editor. */
@@ -774,6 +813,10 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         }
         if (ev->cp == 7) { /* Ctrl-G */
             edit_in_editor(p, live);
+            return KEY_OK;
+        }
+        if (ev->cp == 14 || ev->cp == 15) { /* TEMP: Ctrl-N / Ctrl-O color try-out */
+            cycle_colors(p, live, ev->cp == 14);
             return KEY_OK;
         }
         if (ev->cp == 12) { /* Ctrl-L */
@@ -983,6 +1026,12 @@ static int recall_queued(struct prompt *p)
     repl_insert_text(&p->repl, line);
     free(line);
     return 1;
+}
+
+void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud)
+{
+    p->replay = fn;
+    p->replay_ud = ud;
 }
 
 void prompt_set_hud(struct prompt *p, prompt_hud_fn fn, void *ud)

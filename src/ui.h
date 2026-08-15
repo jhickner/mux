@@ -26,13 +26,25 @@ enum ui_role {
     UI_OK,
     UI_THINKING,/* the model's reasoning rows */
     UI_TOOL,    /* the [name] tag on a tool call */
+    UI_SPIN,    /* the spinner and its elapsed time */
     UI_RESET,
+};
+
+/* TEMP: the role groups the color keybinds move together. */
+enum ui_group {
+    UI_GROUP_INPUT,     /* the user's words, typed and submitted */
+    UI_GROUP_EMPHASIS,  /* the highlights within a reply, and the spinner */
 };
 
 #define UI_BAR "\xe2\x96\x8c" /* ▌ */
 
 void        ui_init(void);
 const char *ui_style(enum ui_role role);
+
+/* TEMP: move a group to the next color in a try-out palette, keep the pick in
+ * settings so it survives the run, and return a label for it. Remove with the
+ * Ctrl-N/Ctrl-O binds in prompt.c. */
+const char *ui_cycle(enum ui_group group, int delta);
 
 /* The typing block is the terminal's own cursor: hold it at the theme's plain
  * cursor color (OSC 12) and hand it back (OSC 112) before exiting. The accent

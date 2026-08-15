@@ -83,6 +83,7 @@ static void usage(void)
  * finished — while the prompt waits for a key. */
 static int idle_fd(void *ud)      { return session_idle_fd(ud); }
 static void idle_render(void *ud) { session_idle_pump(ud); }
+static void replay(void *ud)      { session_replay(ud); } /* TEMP */
 
 /* A command submitted while a turn is streaming. The spinner and the live
  * prompt block are lifted out of the way so the command's own output lands in
@@ -249,6 +250,7 @@ int main(int argc, char **argv)
     prompt_set_live_command(prompt, live_command, session);
     prompt_set_idle(prompt, idle_fd, idle_render, session);
     prompt_set_hud(prompt, hud_paint_idle, session);
+    prompt_set_replay(prompt, replay, session); /* TEMP: color-keybind redraw */
     status_set_hud(hud_paint_busy, session);
     /* The turn summary lands in the HUD's spinner row instead of scrollback. */
     session_hold_footer(session, 1);

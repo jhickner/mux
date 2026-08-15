@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <wchar.h>
 
+#include "settings.h"
 #include "tty.h"
 #include "vendor/screen_color.h"
 #include "vendor/colors.h"
@@ -35,9 +36,103 @@ static const struct {
     [UI_OK]      = { NULL, COLOR_BASE11 },
     [UI_THINKING] = { "3", COLOR_BASE14 },
     [UI_TOOL]    = { NULL, COLOR_BASE12 },
+    [UI_SPIN]    = { NULL, COLOR_BASE12 },
 };
 
 static char styles[UI_RESET][32];
+
+/* The slot each role currently paints in. Seeded from ROLES; only the temporary
+ * ui_cycle() below moves one. */
+static int slots[UI_RESET];
+
+static void build_style(int role)
+{
+    const char *attr = ROLES[role].attr;
+    if (slots[role] < 0) {
+        snprintf(styles[role], sizeof styles[role], "\x1b[%sm", attr ? attr : "0");
+        return;
+    }
+    Color c = color_get((ColorIndex)slots[role]);
+    snprintf(styles[role], sizeof styles[role], "\x1b[%s%s38;2;%u;%u;%um",
+             attr ? attr : "", attr ? ";" : "", c.r, c.g, c.b);
+}
+
+/* TEMP: keybound color try-out. Remove along with the Ctrl-N/Ctrl-O binds. */
+
+static const struct {
+    int         slot;
+    const char *name;
+} SWATCH[] = {
+    /* Every stop is a distinct color: base5 is the body prose itself, and the
+     * UI_TYPED / UI_PROMPT slots are references to base6 and base7, so all
+     * three would be stops that look like no change at all. */
+    {COLOR_BASE6,  "base6"},   {COLOR_BASE7,  "base7"},
+    {COLOR_BASE8,  "red"},     {COLOR_BASE9,  "orange"},
+    {COLOR_BASE10, "yellow"},  {COLOR_BASE11, "green"},
+    {COLOR_BASE12, "lightblue"}, {COLOR_BASE13, "blue"},
+    {COLOR_BASE14, "violet"},  {COLOR_BASE15, "magenta"},
+};
+#define SWATCH_N ((int)(sizeof SWATCH / sizeof *SWATCH))
+
+/* The roles each keybind moves together, and the setting the pick is kept in.
+ * A group ends at UI_RESET. */
+static const struct {
+    const char  *key;
+    enum ui_role roles[8];
+} GROUPS[] = {
+    [UI_GROUP_INPUT]    = {SETTING_COLOR_INPUT,
+                           {UI_ACCENT, UI_STICKY, UI_TEXT, UI_RESET}},
+    [UI_GROUP_EMPHASIS] = {SETTING_COLOR_EMPHASIS,
+                           {UI_BOLD, UI_ITALIC, UI_CODE, UI_HEADING, UI_SPIN,
+                            UI_BRAND, UI_TOOL, UI_RESET}},
+};
+#define GROUP_N ((int)(sizeof GROUPS / sizeof *GROUPS))
+
+static int cursor[GROUP_N]; /* the swatch each group sits on, 1-based; 0 unset */
+
+static void apply_group(int group, int at)
+{
+    cursor[group] = at + 1;
+    for (int i = 0; GROUPS[group].roles[i] != UI_RESET; i++) {
+        int role = GROUPS[group].roles[i];
+        slots[role] = SWATCH[at].slot;
+        build_style(role);
+    }
+}
+
+/* The saved pick for a group, or -1 when there is none and none is recognized. */
+static int saved_swatch(int group)
+{
+    const char *name = settings_get_str(GROUPS[group].key, NULL);
+    if (!name)
+        return -1;
+    for (int i = 0; i < SWATCH_N; i++)
+        if (strcmp(SWATCH[i].name, name) == 0)
+            return i;
+    return -1;
+}
+
+const char *ui_cycle(enum ui_group group, int delta)
+{
+    static char label[64];
+
+    if (!use_color || group < 0 || group >= GROUP_N)
+        return "";
+    if (!cursor[group]) {
+        cursor[group] = 1;
+        for (int i = 0; i < SWATCH_N; i++)
+            if (SWATCH[i].slot == slots[GROUPS[group].roles[0]])
+                cursor[group] = i + 1;
+    }
+    int at = (cursor[group] - 1 + delta % SWATCH_N + SWATCH_N) % SWATCH_N;
+    apply_group(group, at);
+    settings_set_str(GROUPS[group].key, SWATCH[at].name);
+
+    Color c = color_get((ColorIndex)SWATCH[at].slot);
+    snprintf(label, sizeof label, "%s #%02x%02x%02x (%d/%d)",
+             SWATCH[at].name, c.r, c.g, c.b, at + 1, SWATCH_N);
+    return label;
+}
 
 void ui_init(void)
 {
@@ -48,14 +143,14 @@ void ui_init(void)
 
     colors_init();
     for (int i = 0; i < UI_RESET; i++) {
-        const char *attr = ROLES[i].attr;
-        if (ROLES[i].slot < 0) {
-            snprintf(styles[i], sizeof styles[i], "\x1b[%sm", attr ? attr : "0");
-            continue;
-        }
-        Color c = color_get((ColorIndex)ROLES[i].slot);
-        snprintf(styles[i], sizeof styles[i], "\x1b[%s%s38;2;%u;%u;%um",
-                 attr ? attr : "", attr ? ";" : "", c.r, c.g, c.b);
+        slots[i] = ROLES[i].slot;
+        build_style(i);
+    }
+    /* TEMP: the cycled picks, if any were kept. */
+    for (int g = 0; g < GROUP_N; g++) {
+        int at = saved_swatch(g);
+        if (at >= 0)
+            apply_group(g, at);
     }
 }
 

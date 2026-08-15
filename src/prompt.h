@@ -43,6 +43,11 @@ int  prompt_live_offset(void *ud);
 typedef int (*prompt_hud_fn)(void *ud, int cols);
 void prompt_set_hud(struct prompt *p, prompt_hud_fn fn, void *ud);
 
+/* TEMP: what redraws the conversation when a color keybind changes the palette.
+ * Called with the prompt block already lifted off the screen. Remove with the
+ * Ctrl-N/Ctrl-O binds. */
+void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud);
+
 /* Consulted for each line submitted while a turn runs, before it is queued.
  * Return 1 to claim the line and have it dropped from the queue — for the few
  * commands that make sense mid-turn. The callee owns echoing and display. */

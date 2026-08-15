@@ -21,6 +21,11 @@ struct session *session_new(const char *backend, const char *cwd, const char *mo
                             const char *effort);
 void            session_free(struct session *s);
 
+/* TEMP: clear the screen and reprint the retained turns in the current colors.
+ * Tool activity and reasoning are not retained, so only the dialogue returns.
+ * Remove with the Ctrl-N/Ctrl-O color binds. */
+void            session_replay(struct session *s);
+
 /* Print only the reply text: no spinner, tool activity, or footer. For piped
  * output and one-shot runs. */
 void session_set_quiet(struct session *s, int quiet);
