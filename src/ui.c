@@ -15,35 +15,44 @@ static int use_color;
 static int raw_newlines;
 
 /* Each role is an optional SGR attribute plus a foreground drawn from the
- * active colors.h theme. `slot` is -1 for the attribute-only roles. */
+ * active colors.h theme. `slot` is -1 for the attribute-only roles. `tint` is
+ * how far toward the background the role's own foreground is mixed to make a
+ * background wash for it, in percent; 0 leaves the role foreground-only. */
 static const struct {
     const char *attr;
     int         slot;
+    int         tint;
 } ROLES[UI_RESET] = {
-    [UI_ACCENT]  = { NULL, COLOR_BASE9 },
-    [UI_TEXT]    = { NULL, COLOR_UI_TYPED },
-    [UI_STICKY]  = { NULL, COLOR_BASE9 },
-    [UI_BRAND]   = { NULL, COLOR_BASE12 },
-    [UI_CHROME]  = { NULL, COLOR_UI_BORDER_FLOAT },
-    [UI_DIM]     = { NULL, COLOR_UI_DIM },
-    [UI_BODY]    = { NULL, COLOR_BASE5 },
-    [UI_BOLD]    = { "1",  COLOR_BASE12 },
-    [UI_ITALIC]  = { "3",  COLOR_BASE12 },
-    [UI_CODE]    = { NULL, COLOR_BASE12 },
-    [UI_HEADING] = { "1",  COLOR_BASE12 },
-    [UI_LINK]    = { "4",  COLOR_BASE13 },
-    [UI_ERROR]   = { NULL, COLOR_UI_MSG_ERROR },
-    [UI_OK]      = { NULL, COLOR_BASE11 },
-    [UI_THINKING] = { "3", COLOR_BASE14 },
-    [UI_TOOL]    = { NULL, COLOR_BASE12 },
-    [UI_SPIN]    = { NULL, COLOR_BASE12 },
+    [UI_ACCENT]  = { NULL, COLOR_BASE9, 0 },
+    [UI_TEXT]    = { "39", -1, 0 },
+    [UI_STICKY]  = { NULL, COLOR_BASE9, 90 },
+    [UI_STICKY_DONE] = { NULL, COLOR_BASE11, 90 },
+    [UI_BRAND]   = { NULL, COLOR_BASE12, 0 },
+    [UI_CHROME]  = { NULL, COLOR_UI_BORDER_FLOAT, 0 },
+    [UI_DIM]     = { NULL, COLOR_UI_DIM, 0 },
+    [UI_BODY]    = { NULL, COLOR_BASE5, 0 },
+    [UI_BOLD]    = { "1",  COLOR_BASE12, 0 },
+    [UI_ITALIC]  = { "3",  COLOR_BASE12, 0 },
+    [UI_CODE]    = { NULL, COLOR_BASE12, 0 },
+    [UI_HEADING] = { "1",  COLOR_BASE12, 0 },
+    [UI_LINK]    = { "4",  COLOR_BASE13, 0 },
+    [UI_ERROR]   = { NULL, COLOR_UI_MSG_ERROR, 0 },
+    [UI_OK]      = { NULL, COLOR_BASE11, 0 },
+    [UI_THINKING] = { "3", COLOR_BASE14, 0 },
+    [UI_TOOL]    = { NULL, COLOR_BASE12, 0 },
+    [UI_SPIN]    = { NULL, COLOR_BASE12, 0 },
 };
 
-static char styles[UI_RESET][32];
+static char styles[UI_RESET][64];
 
 /* The slot each role currently paints in. Seeded from ROLES; only the temporary
  * ui_cycle() below moves one. */
 static int slots[UI_RESET];
+
+static unsigned mix(unsigned fg, unsigned bg, int pct)
+{
+    return (fg * (100 - pct) + bg * pct + 50) / 100;
+}
 
 static void build_style(int role)
 {
@@ -53,8 +62,15 @@ static void build_style(int role)
         return;
     }
     Color c = color_get((ColorIndex)slots[role]);
-    snprintf(styles[role], sizeof styles[role], "\x1b[%s%s38;2;%u;%u;%um",
-             attr ? attr : "", attr ? ";" : "", c.r, c.g, c.b);
+    char wash[24] = "";
+    if (ROLES[role].tint > 0) {
+        Color b = color_get(COLOR_BASE0);
+        snprintf(wash, sizeof wash, ";48;2;%u;%u;%u",
+                 mix(c.r, b.r, ROLES[role].tint), mix(c.g, b.g, ROLES[role].tint),
+                 mix(c.b, b.b, ROLES[role].tint));
+    }
+    snprintf(styles[role], sizeof styles[role], "\x1b[%s%s38;2;%u;%u;%u%sm",
+             attr ? attr : "", attr ? ";" : "", c.r, c.g, c.b, wash);
 }
 
 /* TEMP: keybound color try-out. Remove along with the Ctrl-N/Ctrl-O binds. */
@@ -81,7 +97,7 @@ static const struct {
     enum ui_role roles[8];
 } GROUPS[] = {
     [UI_GROUP_INPUT]    = {SETTING_COLOR_INPUT,
-                           {UI_ACCENT, UI_STICKY, UI_TEXT, UI_RESET}},
+                           {UI_ACCENT, UI_STICKY, UI_RESET}},
     [UI_GROUP_EMPHASIS] = {SETTING_COLOR_EMPHASIS,
                            {UI_BOLD, UI_ITALIC, UI_CODE, UI_HEADING, UI_SPIN,
                             UI_BRAND, UI_TOOL, UI_RESET}},

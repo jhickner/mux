@@ -11,8 +11,9 @@
  * non-tty output stay clean. */
 enum ui_role {
     UI_ACCENT,  /* the caret, and the user's words once submitted */
-    UI_TEXT,    /* the user's words while being typed */
+    UI_TEXT,    /* the user's words while being typed: the terminal's own fg */
     UI_STICKY,  /* the floating copy of the prompt the turn is answering */
+    UI_STICKY_DONE, /* that same copy once its turn is done */
     UI_BRAND,   /* mux's own voice: the gutter bars it draws, and tool tags */
     UI_CHROME,  /* application frame */
     UI_DIM,     /* asides and footers */

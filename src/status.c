@@ -221,8 +221,10 @@ static void paint_sticky(void)
         size_t skip = 0;
         size_t row = ui_wrap_row(p, budget, &skip);
         int width = 2 + (int)ui_cells_n(p, row);
-        ui_esc("\x1b[K");
+        /* Style first, then erase: the line wipe fills to the right margin with
+         * the style's background, so the wash spans the window. */
         ui_esc(ui_style(UI_STICKY));
+        ui_esc("\x1b[K");
         ui_put(UI_BAR " ");
         ui_putn(p, row);
         p += row + skip;
