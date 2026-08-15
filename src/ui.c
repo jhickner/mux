@@ -24,6 +24,7 @@ static const struct {
     int         tint;
 } ROLES[UI_RESET] = {
     [UI_ACCENT]  = { NULL, COLOR_BASE9, 0 },
+    [UI_ECHO]    = { NULL, COLOR_BASE9, 90 },
     [UI_TEXT]    = { "39", -1, 0 },
     [UI_STICKY]  = { NULL, COLOR_BASE9, 90 },
     [UI_STICKY_DONE] = { NULL, COLOR_BASE11, 90 },
@@ -97,7 +98,7 @@ static const struct {
     enum ui_role roles[8];
 } GROUPS[] = {
     [UI_GROUP_INPUT]    = {SETTING_COLOR_INPUT,
-                           {UI_ACCENT, UI_STICKY, UI_RESET}},
+                           {UI_ACCENT, UI_ECHO, UI_STICKY, UI_RESET}},
     [UI_GROUP_EMPHASIS] = {SETTING_COLOR_EMPHASIS,
                            {UI_BOLD, UI_ITALIC, UI_CODE, UI_HEADING, UI_SPIN,
                             UI_BRAND, UI_TOOL, UI_RESET}},

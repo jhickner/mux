@@ -499,7 +499,10 @@ void prompt_echo_message(const char *text)
     while (*p || first) {
         size_t skip = 0;
         size_t row = *p ? ui_wrap_row(p, budget, &skip) : 0;
-        ui_esc(ui_style(UI_ACCENT));
+        /* Style first, then erase: the line wipe fills to the right margin with
+         * the style's background, so the wash spans the window. */
+        ui_esc(ui_style(UI_ECHO));
+        ui_esc("\x1b[K");
         ui_put(UI_BAR);
         ui_put(" ");
         ui_putn(p, row);

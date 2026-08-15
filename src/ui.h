@@ -11,6 +11,7 @@
  * non-tty output stay clean. */
 enum ui_role {
     UI_ACCENT,  /* the caret, and the user's words once submitted */
+    UI_ECHO,    /* the copy of those words left in scrollback */
     UI_TEXT,    /* the user's words while being typed: the terminal's own fg */
     UI_STICKY,  /* the floating copy of the prompt the turn is answering */
     UI_STICKY_DONE, /* that same copy once its turn is done */
