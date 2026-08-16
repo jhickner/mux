@@ -45,8 +45,8 @@ tests: $(TOOLS)
 $(BUILD)/palette: tools/palette.c src/vendor/colors.h | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ tools/palette.c
 
-$(BUILD)/spintest: tools/spintest.c src/status.o src/prompt.o src/files.o src/paste.o src/settings.o src/tty.o src/ui.o src/vendor/impl.o src/vendor/cJSON.o src/text.o | $(BUILD)
-	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
+$(BUILD)/spintest: tools/spintest.c src/status.o src/prompt.o src/files.o src/paste.o src/settings.o src/tty.o src/ui.o src/bash.o src/vendor/impl.o src/vendor/cJSON.o src/text.o | $(BUILD)
+	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^) $(LIBS)
 
 $(BUILD)/statustest: tools/statustest.c src/status.o src/tty.o src/ui.o src/settings.o src/vendor/impl.o src/vendor/cJSON.o src/text.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
