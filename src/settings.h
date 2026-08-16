@@ -7,6 +7,9 @@
 #define SETTING_COMPACT    "compact"
 #define SETTING_STICKY     "sticky"
 #define SETTING_IMAGE_ROWS "image_rows"
+#define SETTING_ECHO_ROWS  "echo_rows"
+
+#define ECHO_ROWS_DEFAULT 10
 
 #define SETTING_COLOR_INPUT    "color_input"
 #define SETTING_COLOR_EMPHASIS "color_emphasis"

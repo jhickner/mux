@@ -11,6 +11,7 @@
 #include "bash.h"
 #include "files.h"
 #include "paste.h"
+#include "settings.h"
 #include "status.h"
 #include "tty.h"
 #include "ui.h"
@@ -445,7 +446,8 @@ void prompt_echo_message(const char *text)
     int cols = ui_columns();
     enum ui_role role = bash_is_command(text) ? UI_BASH : UI_ECHO;
 
-    struct ui_wrap w = bar_wrap(queued_budget(cols), role, 0, NULL);
+    int cap = settings_get_int(SETTING_ECHO_ROWS, ECHO_ROWS_DEFAULT);
+    struct ui_wrap w = bar_wrap(queued_budget(cols), role, cap > 0 ? cap : 0, NULL);
     ui_wrap_paint(text, &w);
     ui_put("\n");
     ui_flush();
