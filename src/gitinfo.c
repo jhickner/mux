@@ -5,8 +5,6 @@
 #include <string.h>
 #include <sys/time.h>
 
-/* Long enough that a turn's worth of repaints costs a handful of forks, short
- * enough that edits the agent just made show up while it is still working. */
 #define TTL_MS 3000
 
 static struct gitinfo cache;
@@ -20,8 +18,6 @@ static double now_ms(void)
     return (double)tv.tv_sec * 1000.0 + (double)tv.tv_usec / 1000.0;
 }
 
-/* Single-quote for the shell. The only character that cannot appear inside such
- * a quote is the quote itself, which is closed, escaped and reopened. */
 static int shell_quote(const char *s, char *out, size_t size)
 {
     size_t n = 0;
@@ -52,9 +48,6 @@ static void chomp(char *s)
         s[--n] = '\0';
 }
 
-/* " 3 files changed, 98 insertions(+), 7 deletions(-)" — the counts are the
- * numbers in front of the "insertion"/"deletion" words, either of which is
- * missing when it is zero. */
 static void parse_shortstat(const char *line, struct gitinfo *g)
 {
     for (const char *p = line; *p; p++) {
@@ -80,9 +73,6 @@ static void reread(const char *dir, struct gitinfo *g)
     if (!shell_quote(dir, quoted, sizeof quoted))
         return;
 
-    /* One shell for the four questions, its answers split by "@" rows. The
-     * status listing is only read for its two-character codes: "??" is a file
-     * git does not know about, anything else is a tracked change. */
     char cmd[17000];
     snprintf(cmd, sizeof cmd,
              "git -C %s rev-parse --abbrev-ref HEAD 2>/dev/null; echo @; "

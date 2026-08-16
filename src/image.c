@@ -13,9 +13,6 @@
 #include "app.h"
 #include "ui.h"
 
-/* kitty.h writes through term.h's buffered writer. Nothing else in that library
- * is wanted here, so the four entry points it uses are supplied directly and its
- * include guard is pre-defined to keep the header out. */
 #define TERM_H
 static void term_write_n(const char *s, int n) { fwrite(s, 1, (size_t)n, stdout); }
 static void term_write(const char *s) { term_write_n(s, (int)strlen(s)); }
@@ -62,8 +59,6 @@ int img_available(void)
     return img_ok;
 }
 
-/* ---------- reading the file ---------- */
-
 static char *expand_home(const char *path)
 {
     const char *home = getenv("HOME");
@@ -105,8 +100,6 @@ static unsigned char *load_file(const char *path, size_t *len)
     return buf;
 }
 
-/* ---------- pixel dimensions ---------- */
-
 static uint32_t be32(const unsigned char *p)
 {
     return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
@@ -117,8 +110,6 @@ static int is_png(const unsigned char *d, size_t n)
     return n > 24 && memcmp(d, "\x89PNG\r\n\x1a\n", 8) == 0;
 }
 
-/* IHDR is required to be the first chunk: 8 bytes of signature, a 4-byte length
- * and the "IHDR" tag, then width and height as big-endian 32-bit. */
 static int png_dims(const unsigned char *d, size_t n, int *w, int *h)
 {
     if (!is_png(d, n) || memcmp(d + 12, "IHDR", 4) != 0)
@@ -128,8 +119,6 @@ static int png_dims(const unsigned char *d, size_t n, int *w, int *h)
     return *w > 0 && *h > 0;
 }
 
-/* The protocol only carries PNG, so anything else goes through the system image
- * converter into a temporary one. Returns a malloc'd path the caller unlinks. */
 static char *convert_to_png(const char *path)
 {
     char tmp[] = "/tmp/" APP_NAME "-img-XXXXXX";
@@ -161,8 +150,6 @@ static char *convert_to_png(const char *path)
     return strdup(tmp);
 }
 
-/* ---------- drawing ---------- */
-
 static void cell_pixels(int *cw, int *ch, int *rows)
 {
     struct winsize ws;
@@ -184,11 +171,6 @@ static void cell_pixels(int *cw, int *ch, int *rows)
         *ch = 16;
 }
 
-/* Placeholder cells are ordinary text that stays in the scrollback naming
- * whatever id it was drawn with, so an id reused by a later image would repaint
- * them too. The pid separates runs and the counter separates images within one;
- * every byte is kept high and non-zero so tmux cannot fold the colour into a
- * palette index and lose it. */
 static uint32_t next_id(void)
 {
     static unsigned counter;
@@ -249,9 +231,6 @@ int img_show(const char *path, int indent)
     free(data);
     kg_virtual_place(id, cols, rows);
 
-    /* tmux >= 3.7 drops the combining marks of a pane that is not at column 0
-     * unless the write is bracketed, which makes it redraw the pane from its own
-     * grid. kg_placeholder_redraw_* is a no-op everywhere else. */
     kg_placeholder_redraw_begin();
     for (int r = 0; r < rows; r++) {
         for (int i = 0; i < indent; i++)

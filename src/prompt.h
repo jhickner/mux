@@ -1,5 +1,4 @@
-/* The input block: a repl.h line editor painted into normal scrollback (no
- * alternate screen), repainted in place above the terminal cursor. */
+
 #ifndef PROMPT_H
 #define PROMPT_H
 
@@ -8,66 +7,33 @@
 
 struct prompt;
 
-/* `commands` is borrowed and must outlive the prompt. */
 struct prompt *prompt_new(const ReplCommand *commands, int command_count);
 void           prompt_free(struct prompt *p);
 
-/* Load history from `path` and append submitted lines to it. */
 void prompt_history_open(struct prompt *p, const char *path);
 
-/* Complete an "@" token against the files under `root`, chosen from a dropdown
- * with the arrow keys and Tab/Enter. */
 void prompt_file_completion(struct prompt *p, const char *root);
 
-/* Read one message. Returns malloc'd text (possibly multi-line), or NULL when
- * the user quits with Ctrl-D or EOF. The submitted text is left in scrollback
- * as a "▌ " block. Anything typed but not submitted during the previous turn is
- * still in the editor. */
 char *prompt_read(struct prompt *p);
 
-/* The same editor, kept live under the spinner while a turn runs (see
- * status_set_below). Keys go to it as usual and each submitted line joins the
- * queue instead of being returned; Escape, Ctrl-C and Ctrl-D on an empty line
- * ask to interrupt the turn, which is what a nonzero return means. */
 int  prompt_live_key(void *ud, tty_event *ev);
 void prompt_live_paint(void *ud, int *rows, int *caret_row, int *caret_col);
 
-/* Rows from the block's first row down to the caret as the terminal shows them
- * now, which a resize can grow past what the last paint reported. */
 int  prompt_live_offset(void *ud);
 
-/* The chrome rows painted directly above the caret, redrawn with the block so
- * they stay current while a turn runs. The callback paints them at `cols` — each
- * ending in a newline, each exactly one physical row, so the block's height does
- * not depend on the width — and returns how many it drew. */
 typedef int (*prompt_hud_fn)(void *ud, int cols);
 void prompt_set_hud(struct prompt *p, prompt_hud_fn fn, void *ud);
 
-/* TEMP: what redraws the conversation when a color keybind changes the palette.
- * Called with the prompt block already lifted off the screen. Remove with the
- * Ctrl-N/Ctrl-O binds. */
 void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud);
 
-/* Consulted for each line submitted while a turn runs, before it is queued.
- * Return 1 to claim the line and have it dropped from the queue — for the few
- * commands that make sense mid-turn. The callee owns echoing and display. */
 typedef int (*prompt_live_fn)(void *ud, const char *line);
 void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud);
 
-/* Output that can arrive while the prompt is waiting for a key, rather than in
- * answer to anything typed: `fd` names a descriptor to watch (-1 when there is
- * none just now) and `render` prints what arrived. The prompt block is taken
- * down for the call and put back after, so `render` prints into scrollback as
- * if nothing were on screen. Only in effect inside prompt_read(). */
 void prompt_set_idle(struct prompt *p, int (*fd)(void *ud),
                      void (*render)(void *ud), void *ud);
 
-/* The oldest message queued during a turn, or NULL when none is waiting. The
- * caller owns it and is responsible for echoing it. */
 char *prompt_take_queued(struct prompt *p);
 
-/* Print `text` as the "▌ " user block without reading anything — for replaying
- * a message the caller supplied. */
 void prompt_echo_message(const char *text);
 
-#endif /* PROMPT_H */
+#endif

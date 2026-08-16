@@ -13,7 +13,7 @@
 
 #define CLAUDE_TITLE_MODEL "claude-haiku-4-5-20251001"
 #define TITLE_MAX   80
-/* Enough of the turn to name it by; the rest is repetition for this purpose. */
+
 #define EXCERPT     1200
 
 static int cache_path(char *out, size_t size)
@@ -41,7 +41,7 @@ int title_lookup(const char *id, char *out, size_t size)
     size_t cap = 0;
     size_t id_len = strlen(id);
     int found = 0;
-    /* Last match wins: a retitle is appended rather than rewritten in place. */
+
     while (getline(&line, &cap, f) > 0) {
         if (strncmp(line, id, id_len) != 0 || line[id_len] != '\t')
             continue;
@@ -57,8 +57,6 @@ int title_lookup(const char *id, char *out, size_t size)
     return found;
 }
 
-/* Take the first line, drop the quoting and trailing punctuation a model adds
- * around a title, and refuse anything that reads like prose instead. */
 static int tidy(char *text)
 {
     text[strcspn(text, "\n")] = '\0';
@@ -84,7 +82,7 @@ static void write_cache(const char *id, const char *title)
         return;
     char row[256];
     int n = snprintf(row, sizeof row, "%s\t%s\n", id, title);
-    /* One write of one short row: concurrent agents append without interleaving. */
+
     if (n > 0)
         (void)!write(fd, row, (size_t)n);
     close(fd);
@@ -124,8 +122,6 @@ void title_request(const char *id, const char *backend, const char *model,
     if (!id || !*id)
         return;
 
-    /* Fork twice: the middle child exits at once, so init reaps the worker and
-     * the display never waits on a second CLI starting up. */
     pid_t pid = fork();
     if (pid < 0)
         return;

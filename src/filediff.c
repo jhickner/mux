@@ -7,10 +7,10 @@
 
 #include "ui.h"
 
-#define MAX_BYTES  (1u << 20) /* past this a file is not worth holding in memory */
-#define MAX_ROWS   16         /* printed rows before the rest becomes a count */
-#define CONTEXT    2          /* unchanged lines kept either side of a change */
-#define LCS_BUDGET 2000000L   /* ceiling on the DP table, in cells */
+#define MAX_BYTES  (1u << 20)
+#define MAX_ROWS   16
+#define CONTEXT    2
+#define LCS_BUDGET 2000000L
 
 static struct {
     int    have;
@@ -18,8 +18,6 @@ static struct {
     char  *before;
     size_t before_len;
 } snap;
-
-/* ---------- files ---------- */
 
 static char *slurp(const char *path, size_t *len)
 {
@@ -42,8 +40,6 @@ static char *slurp(const char *path, size_t *len)
     return buf;
 }
 
-/* ---------- lines ---------- */
-
 struct linevec {
     const char **p;
     size_t      *n;
@@ -59,8 +55,6 @@ static void lines_free(struct linevec *v)
     v->count = 0;
 }
 
-/* Borrow each line in place. A trailing newline ends the last line rather than
- * starting an empty one. */
 static int lines_split(struct linevec *v, const char *text, size_t len)
 {
     v->p = NULL;
@@ -109,16 +103,12 @@ static int line_eq(const struct linevec *a, int i, const struct linevec *b, int 
     return a->n[i] == b->n[j] && memcmp(a->p[i], b->p[j], a->n[i]) == 0;
 }
 
-/* ---------- edit script ---------- */
-
 struct op {
-    char        sign; /* '-', '+', or ' ' */
+    char        sign;
     const char *p;
     size_t      n;
 };
 
-/* A failed grow drops the tail of the diff, which is better than losing all of
- * it: the row cap truncates the display anyway. */
 static void op_push(struct op **ops, int *count, int *cap, char sign, const char *p, size_t n)
 {
     if (*count == *cap) {
@@ -139,8 +129,6 @@ static void op_block(struct op **ops, int *count, int *cap, char sign, const str
         op_push(ops, count, cap, sign, v->p[i], v->n[i]);
 }
 
-/* Longest common subsequence over the changed region, walked back into an edit
- * script. dp is (ra+1) x (rb+1), addressed row-major. */
 static int lcs_script(struct op **ops, int *count, int *cap, const struct linevec *a,
                       const struct linevec *b, int pre, int ra, int rb)
 {
@@ -182,10 +170,6 @@ static int lcs_script(struct op **ops, int *count, int *cap, const struct lineve
     return 1;
 }
 
-/* ---------- drawing ---------- */
-
-/* Unlike a label, a diff line keeps its leading whitespace — the indentation is
- * often the thing that changed. Tabs expand; control bytes drop. */
 static void diff_text(const char *in, size_t n, char *out, size_t max)
 {
     size_t o = 0;
@@ -259,7 +243,7 @@ static int print_ops(const struct op *ops, int nops)
             continue;
         }
         if (gap && rows > 0)
-            print_note("\xe2\x8b\xae"); /* ⋮ */
+            print_note("\xe2\x8b\xae");
         gap = 0;
         print_row(&ops[k]);
         rows++;
@@ -284,8 +268,6 @@ static int print_diff(const char *a_text, size_t a_len, const char *b_text, size
         return 0;
     }
 
-    /* Identical head and tail lines are usually most of the file; the LCS only
-     * needs to see what lies between them. */
     int limit = a.count < b.count ? a.count : b.count;
     int pre = 0;
     while (pre < limit && line_eq(&a, pre, &b, pre))
@@ -302,8 +284,6 @@ static int print_diff(const char *a_text, size_t a_len, const char *b_text, size
 
     op_block(&ops, &nops, &cap, ' ', &a, pre - CONTEXT < 0 ? 0 : pre - CONTEXT, pre);
 
-    /* Past the budget the table would cost more than the diff is worth, so the
-     * region degrades to a wholesale replacement. */
     if ((long)ra * (long)rb > LCS_BUDGET || !lcs_script(&ops, &nops, &cap, &a, &b, pre, ra, rb)) {
         op_block(&ops, &nops, &cap, '-', &a, pre, pre + ra);
         op_block(&ops, &nops, &cap, '+', &b, pre, pre + rb);
@@ -319,8 +299,6 @@ static int print_diff(const char *a_text, size_t a_len, const char *b_text, size
     lines_free(&b);
     return drew;
 }
-
-/* ---------- interface ---------- */
 
 int filediff_render_patch(const char *patch)
 {

@@ -70,7 +70,7 @@ int transcript_add(struct transcript *t, const char *backend, const char *user,
 
 static size_t turn_size(const struct transcript_turn *turn)
 {
-    /* Labels, byte counts, separators, and the optional interrupted marker. */
+
     return strlen(turn->backend) + strlen(turn->user) + strlen(turn->assistant) + 160;
 }
 

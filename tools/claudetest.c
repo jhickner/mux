@@ -24,8 +24,6 @@ static void result(const char *text)
     fflush(stdout);
 }
 
-/* A turn the CLI runs on its own: announced by a notification, bracketed by an
- * init and a result, exactly like one this client asked for. */
 static void stray_turn(const char *text)
 {
     printf("{\"type\":\"system\",\"subtype\":\"task_notification\"}\n"
@@ -101,8 +99,7 @@ static int mock_cli(int argc, char **argv)
             result("Invalid argument: bogus");
         else if (text && !strcmp(text, "continue"))
             result("done");
-        /* The background task finishes just as the send lands: its whole turn
-         * is already in the pipe before the answer to this message starts. */
+
         else if (text && !strcmp(text, "race")) {
             stray_turn("background task finished");
             turn("answered");

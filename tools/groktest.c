@@ -60,6 +60,8 @@ static void emit_tool(const char *id, const char *status, const char *content,
     fflush(stdout);
 }
 
+static int pinned_model;
+
 static int mock_server(int argc, char **argv)
 {
     int model = 0;
@@ -90,6 +92,20 @@ static int mock_server(int argc, char **argv)
             } else {
                 respond(id, "{\"sessionId\":\"grok-session-1\"}");
             }
+        } else if (method && !strcmp(method, "session/set_model")) {
+            cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
+            const char *want = params ? cJSON_GetStringValue(
+                cJSON_GetObjectItemCaseSensitive(params, "modelId")) : NULL;
+            if (want && !strcmp(want, "grok-test")) {
+                pinned_model = 1;
+                respond(id, "{}");
+            } else {
+                printf("{\"jsonrpc\":\"2.0\",\"id\":%d,\"error\":{"
+                       "\"code\":-32602,\"message\":\"unknown model\"}}\n", id);
+                fflush(stdout);
+            }
+        } else if (method && !strcmp(method, "session/set_mode")) {
+            respond(id, "{}");
         } else if (method && !strcmp(method, "session/prompt")) {
             const char *text = prompt_text(msg);
             if (text && strstr(text, "path-only")) {
@@ -151,9 +167,17 @@ static int mock_server(int argc, char **argv)
                 printf("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\","
                        "\"params\":{\"update\":{\"sessionUpdate\":"
                        "\"agent_message_chunk\",\"content\":{\"type\":\"text\","
-                       "\"text\":\"A useful title\"}}}}\n");
+                       "\"text\":\"%s\"}}}}\n",
+                       pinned_model ? "A useful title" : "model was not pinned");
             }
             respond(id, "{\"stopReason\":\"end_turn\"}");
+        } else if (idj) {
+            /* An unanswered request leaves the client blocked forever, so
+             * anything unrecognised gets an error rather than silence. */
+            printf("{\"jsonrpc\":\"2.0\",\"id\":%d,\"error\":{"
+                   "\"code\":-32601,\"message\":\"unhandled method: %s\"}}\n",
+                   id, method ? method : "(none)");
+            fflush(stdout);
         }
         cJSON_Delete(msg);
     }

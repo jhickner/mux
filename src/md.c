@@ -7,8 +7,6 @@
 #include "image.h"
 #include "ui.h"
 
-/* A run of text carrying one style, produced by the inline pass. Style 0 means
- * "unstyled"; other values are ui_role + 1 so the array can stay zero-filled. */
 struct styled {
     char       *text;
     signed char *style;
@@ -59,8 +57,6 @@ static int is_url_start(const char *p)
     return strncmp(p, "http://", 7) == 0 || strncmp(p, "https://", 8) == 0;
 }
 
-/* Find the closing delimiter `delim` (of length dlen) after `p`, or NULL. The
- * span must be non-empty and must not span a line break. */
 static const char *find_close(const char *p, const char *delim, size_t dlen)
 {
     for (const char *q = p; *q && *q != '\n'; q++)
@@ -69,7 +65,6 @@ static const char *find_close(const char *p, const char *delim, size_t dlen)
     return NULL;
 }
 
-/* Parse inline spans into `out`, stripping the markers. */
 static void inline_scan(const char *p, struct styled *out)
 {
     while (*p) {
@@ -97,7 +92,7 @@ static void inline_scan(const char *p, struct styled *out)
                 continue;
             }
         }
-        /* [label](url) keeps the label and drops the target. */
+
         if (*p == '[') {
             const char *close = find_close(p + 1, "]", 1);
             if (close && close[1] == '(') {
@@ -128,9 +123,6 @@ static void pad(int n)
         ui_put(" ");
 }
 
-/* Emit a styled buffer wrapped to `width` cells, indenting the first row by
- * `first_indent` and the rest by `indent`. Style runs are closed at each row
- * break so no attribute spans a physical line. */
 static void emit_styled(const struct styled *s, int first_indent, int indent)
 {
     if (!s->text)
@@ -148,7 +140,7 @@ static void emit_styled(const struct styled *s, int first_indent, int indent)
 
         pad(row_indent);
         size_t base = (size_t)(p - s->text);
-        /* -1 rather than 0, so the unstyled run also opens (as UI_BODY). */
+
         int open = -1;
         for (size_t i = 0; i < row; i++) {
             signed char style = s->style[base + i];
@@ -170,8 +162,6 @@ static void emit_styled(const struct styled *s, int first_indent, int indent)
     }
 }
 
-/* ---------- tables ---------- */
-
 static char *take_line(const char **text);
 
 #define TABLE_MAX_COLS 12
@@ -184,8 +174,6 @@ struct trow {
     int           ncells;
 };
 
-/* Split "| a | b |" into trimmed cell texts. The outer pipes are optional; a
- * pipe escaped as \| is literal. Returns the cell count. */
 static int split_row(const char *line, char **out, int max)
 {
     const char *p = line;
@@ -228,7 +216,7 @@ static int split_row(const char *line, char **out, int max)
 
         if (*p == '\0')
             break;
-        /* A trailing pipe closes the row rather than opening an empty cell. */
+
         const char *q = p + 1;
         while (*q == ' ')
             q++;
@@ -260,7 +248,6 @@ static int is_delim_cell(const char *s, enum align *out)
     return 1;
 }
 
-/* "|---|:--:|" — the row under a table's header. */
 static int is_delim_row(const char *line, enum align *align, int max)
 {
     if (!strchr(line, '-') || !strchr(line, '|'))
@@ -280,7 +267,6 @@ static int is_delim_row(const char *line, enum align *align, int max)
     return ok;
 }
 
-/* The first line of `text`, without consuming it. */
 static int peek_is_delim(const char *text, enum align *align, int max)
 {
     const char *nl = strchr(text, '\n');
@@ -304,7 +290,7 @@ static void row_init(struct trow *r, const char *line, int ncols)
             free(cells[i]);
         }
     }
-    /* Cells past the column count are dropped, but still owned here. */
+
     for (int i = ncols; i < n; i++)
         free(cells[i]);
     r->ncells = ncols;
@@ -316,8 +302,6 @@ static void row_free(struct trow *r)
         styled_free(&r->cell[i]);
 }
 
-/* Emit s[from .. from+len) with its inline styles, unstyled runs falling back
- * to `base`. */
 static void emit_slice(const struct styled *s, size_t from, size_t len, enum ui_role base)
 {
     int open = -1;
@@ -340,16 +324,14 @@ static void rule_row(const int *width, int ncols, int indent)
     ui_esc(ui_style(UI_CHROME));
     for (int c = 0; c < ncols; c++) {
         if (c)
-            ui_put("\xe2\x94\x80\xe2\x94\xbc\xe2\x94\x80"); /* ─┼─ */
+            ui_put("\xe2\x94\x80\xe2\x94\xbc\xe2\x94\x80");
         for (int i = 0; i < width[c]; i++)
-            ui_put("\xe2\x94\x80"); /* ─ */
+            ui_put("\xe2\x94\x80");
     }
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");
 }
 
-/* One table row, wrapping each cell inside its column so a long cell grows the
- * row downwards instead of overflowing the terminal. */
 static void render_row(const struct trow *r, const int *width, const enum align *align, int ncols,
                        int indent, int header)
 {
@@ -364,7 +346,7 @@ static void render_row(const struct trow *r, const int *width, const enum align 
             size_t take = 0, skip = 0;
             if (s->text && off[c] < s->len) {
                 take = ui_wrap_row(s->text + off[c], (size_t)width[c], &skip);
-                if (take == 0 && skip == 0) /* a cell wider than its column */
+                if (take == 0 && skip == 0)
                     take = s->len - off[c];
             }
 
@@ -376,14 +358,12 @@ static void render_row(const struct trow *r, const int *width, const enum align 
                          : align[c] == ALIGN_CENTER ? slack / 2
                                                     : 0;
 
-            /* Nothing is emitted past the last column's content, so a short or
-             * empty final cell leaves no trailing whitespace. */
             int last = (c == ncols - 1);
             int blank = (take == 0);
 
             if (c) {
                 ui_esc(ui_style(UI_CHROME));
-                ui_put(" \xe2\x94\x82"); /* │ */
+                ui_put(" \xe2\x94\x82");
                 ui_esc(ui_style(UI_RESET));
                 if (!(last && blank))
                     ui_put(" ");
@@ -404,8 +384,6 @@ static void render_row(const struct trow *r, const int *width, const enum align 
     }
 }
 
-/* Natural column widths, shrunk to fit the terminal by taking from the widest
- * column first so narrow ones stay intact. */
 static void fit_widths(int *width, int ncols, int indent)
 {
     int avail = ui_columns() - indent - 3 * (ncols - 1);
@@ -428,8 +406,6 @@ static void fit_widths(int *width, int ncols, int indent)
     }
 }
 
-/* Render the table whose header is `first` and whose remaining lines are read
- * from *text, which is left just past the table. */
 static void render_table(const char *first, const char **text, int indent)
 {
     enum align align[TABLE_MAX_COLS];
@@ -511,7 +487,6 @@ static void render_paragraph(const char *text, int first_indent, int indent)
     styled_free(&s);
 }
 
-/* Leading spaces, counting a tab as four. */
 static int leading_indent(const char *line, const char **body)
 {
     int n = 0;
@@ -532,7 +507,6 @@ static int is_bullet(const char *p, const char **rest)
     return 0;
 }
 
-/* "12. " style ordered marker; *marker_len receives its byte length. */
 static int is_ordered(const char *p, size_t *marker_len)
 {
     const char *q = p;
@@ -558,7 +532,6 @@ static int is_rule(const char *p)
     return *p == '\0' && n >= 3;
 }
 
-/* Copy one line out of `text`, advancing *text past its newline. */
 static char *take_line(const char **text)
 {
     const char *start = *text;
@@ -569,17 +542,13 @@ static char *take_line(const char **text)
         return NULL;
     memcpy(line, start, n);
     line[n] = '\0';
-    /* Trailing carriage returns and spaces are noise in a terminal. */
+
     while (n > 0 && (line[n - 1] == '\r' || line[n - 1] == ' '))
         line[--n] = '\0';
     *text = nl ? nl + 1 : start + strlen(start);
     return line;
 }
 
-/* Emit a line from an ```ansi fence, turning the textual escape forms \e, \033
- * and \x1b into a real ESC so the model can drive SGR directly (a literal 0x1b
- * does not survive the transport). \\ is an escaped backslash; anything else
- * passes through as written. */
 static void render_ansi_line(const char *line, int indent)
 {
     pad(indent);
@@ -606,13 +575,11 @@ static void render_ansi_line(const char *line, int indent)
             p++;
         }
     }
-    /* Close unconditionally so an unterminated SGR cannot leak into the prompt. */
+
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");
 }
 
-/* A line that is nothing but `![alt](path)`: the path, malloc'd, or NULL. A
- * remote target is left alone — there is nothing local to draw. */
 static char *image_line(const char *body)
 {
     if (body[0] != '!' || body[1] != '[')
@@ -634,7 +601,6 @@ static char *image_line(const char *body)
     return path;
 }
 
-/* Draw the image, or name its path when the terminal cannot show one. */
 static void render_image(const char *path, int indent)
 {
     if (img_show(path, indent))
@@ -709,7 +675,6 @@ void md_render(const char *text, int indent)
             continue;
         }
 
-        /* A pipe row followed by a |---|---| row starts a table. */
         if (strchr(body, '|') && peek_is_delim(text, NULL, TABLE_MAX_COLS)) {
             render_table(body, &text, indent);
             wrote_any = 1;
@@ -722,7 +687,7 @@ void md_render(const char *text, int indent)
             pad(indent);
             ui_esc(ui_style(UI_DIM));
             for (int i = 0; i < width && i < 60; i++)
-                ui_put("\xe2\x94\x80"); /* ─ */
+                ui_put("\xe2\x94\x80");
             ui_esc(ui_style(UI_RESET));
             ui_put("\n");
         } else if (*body == '#') {
@@ -742,7 +707,7 @@ void md_render(const char *text, int indent)
                 q++;
             pad(indent);
             ui_esc(ui_style(UI_DIM));
-            ui_put("\xe2\x94\x82 "); /* │ */
+            ui_put("\xe2\x94\x82 ");
             ui_esc(ui_style(UI_RESET));
             render_paragraph(q, 0, indent + 2);
         } else {
@@ -752,7 +717,7 @@ void md_render(const char *text, int indent)
             if (is_bullet(body, &rest)) {
                 pad(item_indent);
                 ui_esc(ui_style(UI_CHROME));
-                ui_put("\xe2\x80\xa2 "); /* • */
+                ui_put("\xe2\x80\xa2 ");
                 ui_esc(ui_style(UI_RESET));
                 render_paragraph(rest, 0, item_indent + 2);
             } else if (is_ordered(body, &marker)) {

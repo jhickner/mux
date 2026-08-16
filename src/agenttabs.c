@@ -8,20 +8,15 @@
 #include <time.h>
 #include <unistd.h>
 
-/* Both empty until agenttabs_begin() claims the tab; every entry point below
- * checks `record` and does nothing without one. */
-static char record[4200];    /* <state>/agents/<pid>.json, the row we own    */
-static char hook_dir[4200];  /* <state>/state, where the CLI's hook writes   */
-static char agent[32];       /* backend name, for usage-provider discovery   */
+static char record[4200];
+static char hook_dir[4200];
+static char agent[32];
 static const char *current_status;
 static int usage_percent = -1;
 static long usage_resets_at;
 static long usage_window_minutes;
 static time_t usage_updated_at;
 
-/* Mirrors the plugin's scripts/paths.sh agent_tabs_state_dir(): the tmux config
- * tree, falling back to the legacy ~/.tmux only when it is the one that
- * exists. */
 static int state_dir(char *out, size_t size)
 {
     const char *env = getenv("AGENT_TABS_STATE_DIR");
@@ -46,9 +41,6 @@ static int state_dir(char *out, size_t size)
     return 1;
 }
 
-/* A pane id is "%<digits>", so one that looks right needs no JSON escaping.
- * Anything else is dropped rather than quoted: the field is optional, and the
- * plugin falls back to walking our pid up to its pane. */
 static int pane_id(const char *s)
 {
     if (!s || *s != '%' || !s[1])
@@ -83,8 +75,6 @@ static void write_record(void)
     }
     fprintf(f, "}\n");
 
-    /* The plugin re-reads this file every second, so it must never catch one
-     * half-written. */
     if (fclose(f) == 0)
         rename(tmp, record);
     else
@@ -99,12 +89,10 @@ static void drop_record(void)
 
 void agenttabs_begin(const char *backend)
 {
-    /* No pane, no tab to report on. */
+
     if (!getenv("TMUX_PANE"))
         return;
 
-    /* Backend names come from backend_names(), but keep the state file valid
-     * even if a future caller hands us something unexpected. */
     if (!backend || !*backend || strlen(backend) >= sizeof agent)
         return;
     for (const char *p = backend; *p; p++)
@@ -115,7 +103,7 @@ void agenttabs_begin(const char *backend)
     char dir[4096];
     struct stat st;
     if (!state_dir(dir, sizeof dir) || stat(dir, &st) != 0)
-        return;   /* the plugin has never run here — nothing reads what we write */
+        return;
 
     char agents[4200];
     snprintf(agents, sizeof agents, "%s/agents", dir);
@@ -125,16 +113,8 @@ void agenttabs_begin(const char *backend)
     snprintf(hook_dir, sizeof hook_dir, "%s/state", dir);
     snprintf(record, sizeof record, "%s/%ld.json", agents, (long)getpid());
 
-    /* Silence the CLI's own hook, which would otherwise write a second row for
-     * this same window: its status outranks ours whenever it is the staler of
-     * the two, which is exactly what happens on an interrupt. The child reads
-     * this from the environment it inherits, so it has to be set before the
-     * CLI is spawned. */
     setenv("AGENT_TABS_WRAPPED", "1", 1);
 
-    /* The row outlives every exit path, so retire it from one place. A leaked
-     * record is not fatal — the plugin drops rows whose pid is gone — but it
-     * would sit in agents/ until something else cleans up. */
     atexit(drop_record);
 
     agenttabs_finished();
@@ -168,8 +148,7 @@ void agenttabs_usage(int percent, long resets_at, long window_minutes)
 
 void agenttabs_forget_hook(const char *id)
 {
-    /* Session ids come from the CLI and are uuids; refuse anything that could
-     * name a path outside the hook's own directory. */
+
     if (!record[0] || !id || !*id || strchr(id, '/'))
         return;
 

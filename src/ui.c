@@ -14,10 +14,6 @@
 static int use_color;
 static int raw_newlines;
 
-/* Each role is an optional SGR attribute plus a foreground drawn from the
- * active colors.h theme. `slot` is -1 for the attribute-only roles. `tint` is
- * how far toward the background the role's own foreground is mixed to make a
- * background wash for it, in percent; 0 leaves the role foreground-only. */
 static const struct {
     const char *attr;
     int         slot;
@@ -46,8 +42,6 @@ static const struct {
 
 static char styles[UI_RESET][64];
 
-/* The slot each role currently paints in. Seeded from ROLES; only the temporary
- * ui_cycle() below moves one. */
 static int slots[UI_RESET];
 
 static unsigned mix(unsigned fg, unsigned bg, int pct)
@@ -74,15 +68,11 @@ static void build_style(int role)
              attr ? attr : "", attr ? ";" : "", c.r, c.g, c.b, wash);
 }
 
-/* TEMP: keybound color try-out. Remove along with the Ctrl-N/Ctrl-O binds. */
-
 static const struct {
     int         slot;
     const char *name;
 } SWATCH[] = {
-    /* Every stop is a distinct color: base5 is the body prose itself, and the
-     * UI_TYPED / UI_PROMPT slots are references to base6 and base7, so all
-     * three would be stops that look like no change at all. */
+
     {COLOR_BASE6,  "base6"},   {COLOR_BASE7,  "base7"},
     {COLOR_BASE8,  "red"},     {COLOR_BASE9,  "orange"},
     {COLOR_BASE10, "yellow"},  {COLOR_BASE11, "green"},
@@ -91,8 +81,6 @@ static const struct {
 };
 #define SWATCH_N ((int)(sizeof SWATCH / sizeof *SWATCH))
 
-/* The roles each keybind moves together, and the setting the pick is kept in.
- * A group ends at UI_RESET. */
 static const struct {
     const char  *key;
     enum ui_role roles[8];
@@ -105,7 +93,7 @@ static const struct {
 };
 #define GROUP_N ((int)(sizeof GROUPS / sizeof *GROUPS))
 
-static int cursor[GROUP_N]; /* the swatch each group sits on, 1-based; 0 unset */
+static int cursor[GROUP_N];
 
 static void apply_group(int group, int at)
 {
@@ -117,7 +105,6 @@ static void apply_group(int group, int at)
     }
 }
 
-/* The saved pick for a group, or -1 when there is none and none is recognized. */
 static int saved_swatch(int group)
 {
     const char *name = settings_get_str(GROUPS[group].key, NULL);
@@ -163,7 +150,7 @@ void ui_init(void)
         slots[i] = ROLES[i].slot;
         build_style(i);
     }
-    /* TEMP: the cycled picks, if any were kept. */
+
     for (int g = 0; g < GROUP_N; g++) {
         int at = saved_swatch(g);
         if (at >= 0)
@@ -202,7 +189,7 @@ void ui_cursor_restore(void)
 void ui_raw(int on) { raw_newlines = on; }
 
 static int scroll_rows;
-static int scroll_col = 1; /* cells on the row being written, counted from 1 */
+static int scroll_col = 1;
 static int scroll_track = 1;
 
 void ui_scroll_mark(void)
@@ -215,9 +202,6 @@ int ui_scroll_rows(void) { return scroll_rows; }
 
 void ui_scroll_track(int on) { scroll_track = on ? 1 : 0; }
 
-/* A row that is filled exactly to the edge has not broken yet — the terminal
- * holds the wrap until something more is written — so the column is kept in
- * 1..cols and only what passes the edge counts as a row. */
 static void scroll_text(const char *s, size_t n)
 {
     if (!scroll_track || !n)
@@ -311,7 +295,6 @@ void ui_flush(void) { fflush(stdout); }
 
 int ui_columns(void) { return tty_columns(); }
 
-/* Decode one codepoint from s[*i .. n), advancing past it. */
 static unsigned decode(const char *s, size_t n, size_t *i)
 {
     unsigned char b = (unsigned char)s[*i];
@@ -337,7 +320,7 @@ static int cell_width(unsigned cp)
         return 0;
     if (cp < 0x20 || cp == 0x7f)
         return 0;
-    /* Emoji and other wide pictographs that wcwidth() often misreports as 1. */
+
     if ((cp >= 0x1F300 && cp <= 0x1FAFF) || (cp >= 0x2600 && cp <= 0x27BF) ||
         (cp >= 0x1F000 && cp <= 0x1F2FF))
         return 2;
@@ -375,7 +358,7 @@ size_t ui_wrap_row(const char *s, size_t budget, size_t *skip)
                 *skip = 1;
                 return last_space;
             }
-            return start; /* one unbroken word: hard-break it */
+            return start;
         }
         cells += w;
         if (s[start] == ' ')

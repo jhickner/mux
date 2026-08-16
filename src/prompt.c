@@ -30,33 +30,29 @@ struct frame {
 struct prompt {
     Repl         repl;
     struct frame frame;
-    int          painted_rows; /* rows the last paint occupies, 0 when clean */
-    int          painted_cols; /* the width it was painted at */
-    int          caret_row;    /* rows from the top of the block to the caret */
+    int          painted_rows;
+    int          painted_cols;
+    int          caret_row;
     int          caret_col;
-    int          caret_frame_row; /* the caret's row within the frame */
+    int          caret_frame_row;
     char        *history_path;
     prompt_live_fn live_command;
     void          *live_ud;
-    char       **queued;       /* lines submitted while a turn was running */
+    char       **queued;
     int          queued_count;
     int          queued_cap;
-    char        *file_root;    /* project root for @-completion, or NULL */
-    prompt_hud_fn hud;         /* the chrome rows above the caret, or NULL */
+    char        *file_root;
+    prompt_hud_fn hud;
     void         *hud_ud;
-    int           painted_hud; /* rows of chrome the block on screen carries */
-    int        (*idle_fd)(void *ud);   /* output arriving unprompted, or NULL */
+    int           painted_hud;
+    int        (*idle_fd)(void *ud);
     void       (*idle_render)(void *ud);
     void        *idle_ud;
-    void       (*replay)(void *ud);    /* TEMP: full redraw after a color change */
+    void       (*replay)(void *ud);
     void        *replay_ud;
-    int          live_block;   /* the block on screen is the turn-time one */
-    const char  *painted_head; /* the floating prompt the block on screen carries.
-                                * status.c owns the text and only replaces it
-                                * between turns, when no block is painted */
+    int          live_block;
+    const char  *painted_head;
 };
-
-/* ---------- history ---------- */
 
 static void history_append(struct prompt *p, const char *line)
 {
@@ -65,7 +61,7 @@ static void history_append(struct prompt *p, const char *line)
     FILE *f = fopen(p->history_path, "a");
     if (!f)
         return;
-    /* Newlines would split one entry into several on reload. */
+
     for (const char *q = line; *q; q++)
         fputc(*q == '\n' ? ' ' : *q, f);
     fputc('\n', f);
@@ -92,8 +88,6 @@ void prompt_history_open(struct prompt *p, const char *path)
     free(line);
     fclose(f);
 }
-
-/* ---------- frame buffer ---------- */
 
 static void frame_size(struct frame *f, int rows, int cols)
 {
@@ -168,8 +162,6 @@ static void put_codepoint(uint32_t cp)
     ui_putn(buf, (size_t)n);
 }
 
-/* Trailing unstyled blanks need no output; a highlighted row keeps its run so
- * the selection reads as a filled bar. */
 static int row_extent(const struct frame *f, int y)
 {
     int last = -1;
@@ -189,34 +181,23 @@ static size_t queued_budget(int cols)
     return (size_t)(cols - 2 > 4 ? cols - 2 : 4);
 }
 
-/* Rows a line of `cells` cells occupies at this width. */
 static int rows_for(size_t cells, int cols)
 {
     return cells ? (int)((cells - 1) / (size_t)cols) + 1 : 1;
 }
 
-/* The floating prompt carried above an idle editor: the message the last turn
- * answered, once its echo has scrolled off the top. The turn-time block sits
- * under the spinner, which floats it there itself. */
 static const char *head_text(const struct prompt *p)
 {
     return p->live_block ? NULL : status_sticky_offscreen();
 }
 
-/* The mark opening the floating prompt, which the answered turn wears. */
-#define STICKY_DONE "\xe2\x9c\x93 " /* ✓ */
+#define STICKY_DONE "\xe2\x9c\x93 "
 
-/* Cells a "▌ " bar may fill. The floating prompt reserves one more for the
- * ellipsis a clipped last row may carry, and two for the mark its first row
- * opens with, so neither can push the row into a wrap the row count did not
- * predict. */
 static size_t sticky_budget(int cols)
 {
     return (size_t)(cols - 5 > 4 ? cols - 5 : 4);
 }
 
-/* Rows one bar message occupies when wrapped at `budget` cells. `cap` > 0
- * stops after that many rows, matching the floating-prompt clip. */
 static int wrapped_rows(const char *text, size_t budget, int cap)
 {
     int rows = 0, first = 1;
@@ -232,17 +213,13 @@ static int wrapped_rows(const char *text, size_t budget, int cap)
     return rows;
 }
 
-/* The same message as the terminal shows it now: each row it was painted on is
- * re-measured against the current width, since a resize rewraps them. `cap` is
- * the clip used at paint time; the last of those rows is one cell wider when
- * an ellipsis was appended. */
 static int reflowed_rows(const char *text, size_t budget, int cols, int cap)
 {
     int rows = 0, first = 1, painted = 0;
     while (*text || first) {
         size_t skip = 0;
         size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
-        int width = 2 + (int)ui_cells_n(text, row); /* the "▌ " prefix */
+        int width = 2 + (int)ui_cells_n(text, row);
         text += row + skip;
         painted++;
         if (*text && cap && painted == cap)
@@ -255,10 +232,6 @@ static int reflowed_rows(const char *text, size_t budget, int cols, int cap)
     return rows;
 }
 
-/* Rows from the top of the painted block down to the caret, as the terminal
- * shows them now. A resize rewraps what is on screen, so any painted row that
- * no longer fits sits on more rows than it did when it was drawn; walking up by
- * the old count would land inside the block and leave its top rows stranded. */
 static int caret_offset(const struct prompt *p, int cols)
 {
     if (p->painted_rows == 0 || cols == p->painted_cols || p->painted_cols <= 0)
@@ -268,16 +241,15 @@ static int caret_offset(const struct prompt *p, int cols)
     size_t budget = queued_budget(p->painted_cols);
     if (p->painted_head)
         up += reflowed_rows(p->painted_head, sticky_budget(p->painted_cols),
-                            cols, STICKY_LINES) + 1; /* and its blank */
+                            cols, STICKY_LINES) + 1;
     for (int i = 0; i < p->queued_count; i++)
         up += reflowed_rows(p->queued[i], budget, cols, 0);
-    up += p->painted_hud; /* clipped to the width, so a resize cannot rewrap them */
+    up += p->painted_hud;
     for (int y = 0; y < p->caret_frame_row && y < p->frame.rows; y++)
         up += rows_for((size_t)row_extent(&p->frame, y), cols);
     return up + p->caret_col / cols;
 }
 
-/* Move the terminal cursor to the top-left of the painted block. */
 static void goto_origin(struct prompt *p)
 {
     int up = caret_offset(p, ui_columns());
@@ -302,16 +274,11 @@ static void erase_block(struct prompt *p)
     p->painted_hud = 0;
 }
 
-/* The caret repl.h draws past the end of a row is a placeholder for the real
- * terminal cursor, so it must not be printed. */
 static int caret_is_synthetic(const Repl *r)
 {
     return r->cursor >= r->len || r->buf[r->cursor] == '\n';
 }
 
-/* Rows above the editor — the floating prompt with its blank row, then the
- * queued messages — which the block height depends on. Must agree with
- * paint_above(). */
 static int rows_above(const struct prompt *p, const char *head, int cols)
 {
     int rows = head ? wrapped_rows(head, sticky_budget(cols), STICKY_LINES) + 1 : 0;
@@ -321,9 +288,6 @@ static int rows_above(const struct prompt *p, const char *head, int cols)
     return rows;
 }
 
-/* One "▌ " message, wrapped the way the history echo wraps it so a message
- * reads the same before and after it runs. `mark`, when given, opens the first
- * row in the same color as the message. */
 static void paint_bars(const char *text, size_t budget, enum ui_role role, int cap,
                        const char *mark)
 {
@@ -331,8 +295,7 @@ static void paint_bars(const char *text, size_t budget, enum ui_role role, int c
     while (*text || first) {
         size_t skip = 0;
         size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
-        /* Style first, then erase: the line wipe fills to the right margin with
-         * the style's background, so a role's wash spans the window. */
+
         ui_esc(ui_style(role));
         ui_esc("\x1b[K");
         ui_put(UI_BAR " ");
@@ -351,11 +314,6 @@ static void paint_bars(const char *text, size_t budget, enum ui_role role, int c
     }
 }
 
-/* The floating prompt, then whatever was queued during the last turn: what is
- * waiting to run is dim, the message already answered is green and opens with a
- * ✓, since this copy is only ever drawn once its turn is done — the turn-time
- * copy above the spinner keeps the sticky color. A long floating prompt is
- * clipped to STICKY_LINES. */
 static void paint_above(const struct prompt *p, const char *head, int cols)
 {
     if (head) {
@@ -368,8 +326,6 @@ static void paint_above(const struct prompt *p, const char *head, int cols)
         paint_bars(p->queued[i], budget, UI_DIM, 0, NULL);
 }
 
-/* Draw the block from the cursor's row down, leaving the cursor at the end of
- * the last row. Reports the height and where the caret belongs within it. */
 static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *caret_col)
 {
     int cols = ui_columns();
@@ -399,9 +355,7 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
     int synthetic = caret_is_synthetic(&p->repl);
 
     paint_above(p, head, cols);
-    /* Painted rather than measured: the rows are clipped to the width, so their
-     * count is the same whatever the terminal does to it. While a turn runs the
-     * chrome belongs above the spinner, which paints it there instead. */
+
     p->painted_hud = p->hud && !p->live_block ? p->hud(p->hud_ud, cols) : 0;
     above += p->painted_hud;
     *rows_out += p->painted_hud;
@@ -410,8 +364,6 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
     *caret_row += p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
     *caret_col = p->frame.have_cursor ? p->frame.cursor_x : 0;
 
-    /* Kept so the next erase can re-measure the block against a width that may
-     * have changed under it. */
     p->painted_cols = cols;
     p->painted_head = head;
     p->caret_row = *caret_row;
@@ -427,11 +379,9 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
             uint32_t cp = c->cp;
             const char *seq = c->style == REPL_STYLE_NONE
                                   ? "" : style_open((ReplStyle)c->style);
-            /* The line being edited wears a caret; it becomes the "▌" block only
-             * once it is submitted into the history above. repl.h prefixes the
-             * first row with "> " and continuation rows with two spaces. */
+
             if (c->style == REPL_STYLE_PROMPT && x == 0 && cp == '>') {
-                cp = 0x276F; /* ❯ */
+                cp = 0x276F;
                 seq = ui_style(UI_ACCENT);
             }
             if (c->style == REPL_STYLE_CURSOR && cp == '_' && synthetic &&
@@ -449,7 +399,7 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
         if (y + 1 < rows)
             ui_put("\n");
     }
-    /* Clear anything the previous, taller block left below. */
+
     ui_esc("\x1b[J");
 }
 
@@ -458,13 +408,12 @@ static void repaint(struct prompt *p)
     int rows = 1, caret_row = 0, caret_col = 0;
 
     p->live_block = 0;
-    /* One frame for the erase and the redraw: without it a terminal is free to
-     * show the block half-taken-down, which a tall one makes obvious. */
+
     ui_sync_begin();
-    /* Redrawn in place, so it scrolls nothing that outlives it. */
+
     ui_scroll_track(0);
     goto_origin(p);
-    ui_esc("\x1b[?25l"); /* hide while the block redraws */
+    ui_esc("\x1b[?25l");
     paint_block(p, &rows, &caret_row, &caret_col);
 
     int up = (rows - 1) - caret_row;
@@ -487,8 +436,6 @@ static void repaint(struct prompt *p)
     p->painted_rows = rows;
 }
 
-/* ---------- the submitted block left in scrollback ---------- */
-
 void prompt_echo_message(const char *text)
 {
     int cols = ui_columns();
@@ -499,8 +446,7 @@ void prompt_echo_message(const char *text)
     while (*p || first) {
         size_t skip = 0;
         size_t row = *p ? ui_wrap_row(p, budget, &skip) : 0;
-        /* Style first, then erase: the line wipe fills to the right margin with
-         * the style's background, so the wash spans the window. */
+
         ui_esc(ui_style(UI_ECHO));
         ui_esc("\x1b[K");
         ui_put(UI_BAR);
@@ -515,16 +461,13 @@ void prompt_echo_message(const char *text)
     ui_flush();
 }
 
-/* ---------- lifecycle ---------- */
-
 struct prompt *prompt_new(const ReplCommand *commands, int command_count)
 {
     struct prompt *p = calloc(1, sizeof *p);
     if (!p)
         return NULL;
     repl_init(&p->repl, commands, command_count);
-    /* History stays available through up/down and Ctrl-R; only the inline ghost
-     * text is off. */
+
     p->repl.suggest_off = true;
     return p;
 }
@@ -552,15 +495,12 @@ void prompt_free(struct prompt *p)
     free(p);
 }
 
-/* ---------- input loop ---------- */
-
 static int feed(struct prompt *p, ReplKey key, uint32_t cp, const char *text)
 {
     ReplEvent ev = {.key = key, .codepoint = cp, .text = text};
     return repl_handle_input(&p->repl, &ev);
 }
 
-/* Forward-delete, which repl.h has no key for: step right, then delete back. */
 static void delete_forward(struct prompt *p)
 {
     if (p->repl.dropdown_open || p->repl.cursor >= p->repl.len)
@@ -569,9 +509,6 @@ static void delete_forward(struct prompt *p)
     feed(p, REPL_KEY_BACKSPACE, 0, NULL);
 }
 
-/* Ctrl-V pastes the clipboard. An image is saved to a file and the editor gets
- * its path, which is what the agent needs to open it; anything else inserts as
- * text, the same way the terminal's own bracketed paste arrives. */
 static void paste_clipboard(struct prompt *p, int live)
 {
     char path[1024];
@@ -590,15 +527,13 @@ static void paste_clipboard(struct prompt *p, int live)
         return;
     }
 
-    if (live) /* the turn owns the screen; a note would land inside its output */
+    if (live)
         return;
     erase_block(p);
     ui_note("clipboard is empty");
     repaint(p);
 }
 
-/* A one-off path under $TMPDIR (or /tmp). Quoted later, so a quote in the
- * directory name would break the $EDITOR command; refuse rather than inject. */
 static int editor_temp(char *out, size_t size)
 {
     const char *dir = getenv("TMPDIR");
@@ -638,7 +573,7 @@ static char *read_whole(const char *path)
     size_t got = fread(buf, 1, (size_t)n, f);
     fclose(f);
     buf[got] = '\0';
-    /* Editors almost always write a trailing newline the user did not type. */
+
     if (got && buf[got - 1] == '\n')
         buf[--got] = '\0';
     if (got && buf[got - 1] == '\r')
@@ -646,8 +581,6 @@ static char *read_whole(const char *path)
     return buf;
 }
 
-/* Ctrl-G hands the current buffer to $VISUAL or $EDITOR (vi if neither is set)
- * and puts whatever the editor writes back into the line, including newlines. */
 static void edit_in_editor(struct prompt *p, int live)
 {
     if (p->repl.searching)
@@ -740,18 +673,12 @@ static void edit_in_editor(struct prompt *p, int live)
 }
 
 enum key_result {
-    KEY_OK,      /* the editor consumed it; redraw   */
-    KEY_SUBMIT,  /* a complete line is ready to take */
-    KEY_EOF,     /* Ctrl-D on an empty line, or EOF  */
-    KEY_CANCEL,  /* Escape or Ctrl-C, live mode only */
+    KEY_OK,
+    KEY_SUBMIT,
+    KEY_EOF,
+    KEY_CANCEL,
 };
 
-/* TEMP: Ctrl-N steps the user's colors, Ctrl-O the emphasis within the reply —
- * its prose stays put. Each redraws the conversation and prints a sample row in
- * the new color. Mid-turn the spinner's block is lifted for the redraw and put
- * back after it, the same way any other printing during a turn is done; what the
- * turn has streamed so far is not retained and does not come back. Remove with
- * ui_cycle. */
 static void cycle_colors(struct prompt *p, int live, int mine)
 {
     const char *label = ui_cycle(mine ? UI_GROUP_INPUT : UI_GROUP_EMPHASIS, 1);
@@ -783,9 +710,6 @@ static void cycle_colors(struct prompt *p, int live, int mine)
     }
 }
 
-/* Feed one terminal event to the editor. `live` marks the turn-time prompt,
- * where the screen belongs to the running turn: Ctrl-L is ignored there, and
- * Escape / Ctrl-C mean "interrupt the turn" rather than reaching the editor. */
 static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
 {
     switch (ev->key) {
@@ -804,27 +728,27 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         return KEY_OK;
 
     case TK_CHAR:
-        if (ev->cp == 4) { /* Ctrl-D */
+        if (ev->cp == 4) {
             if (p->repl.len == 0)
                 return KEY_EOF;
             delete_forward(p);
             return KEY_OK;
         }
-        if (ev->cp == 3 && live) /* Ctrl-C */
+        if (ev->cp == 3 && live)
             return KEY_CANCEL;
-        if (ev->cp == 22) { /* Ctrl-V */
+        if (ev->cp == 22) {
             paste_clipboard(p, live);
             return KEY_OK;
         }
-        if (ev->cp == 7) { /* Ctrl-G */
+        if (ev->cp == 7) {
             edit_in_editor(p, live);
             return KEY_OK;
         }
-        if (ev->cp == 14 || ev->cp == 15) { /* TEMP: Ctrl-N / Ctrl-O color try-out */
+        if (ev->cp == 14 || ev->cp == 15) {
             cycle_colors(p, live, ev->cp == 14);
             return KEY_OK;
         }
-        if (ev->cp == 12) { /* Ctrl-L */
+        if (ev->cp == 12) {
             if (live)
                 return KEY_OK;
             status_sticky_erased();
@@ -838,10 +762,7 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         return KEY_OK;
 
     case TK_TAB:
-        /* Tab takes the highlighted completion wherever the cursor sits. With
-         * the dropdown closed it first tries to open one — the cursor may have
-         * moved back into a token — and failing that accepts the inline
-         * suggestion, which repl.h binds to Right. */
+
         if (repl_accept_completion(&p->repl) || repl_open_completion(&p->repl))
             return KEY_OK;
         if (repl_suggestion(&p->repl))
@@ -853,8 +774,7 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         return KEY_OK;
 
     case TK_ESCAPE:
-        /* Escape still closes the dropdown; only an idle editor gives it up to
-         * the turn. */
+
         if (live && !p->repl.dropdown_open)
             return KEY_CANCEL;
         feed(p, REPL_KEY_ESCAPE, 0, NULL);
@@ -876,9 +796,9 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
             [TK_WORD_RIGHT] = REPL_KEY_WORD_RIGHT,
         };
         if (ev->key == TK_HOME)
-            feed(p, REPL_KEY_CHAR, 1, NULL); /* ctrl-a */
+            feed(p, REPL_KEY_CHAR, 1, NULL);
         else if (ev->key == TK_END)
-            feed(p, REPL_KEY_CHAR, 5, NULL); /* ctrl-e */
+            feed(p, REPL_KEY_CHAR, 5, NULL);
         else if ((size_t)ev->key < sizeof MAP / sizeof *MAP)
             feed(p, MAP[ev->key], 0, NULL);
         return KEY_OK;
@@ -886,8 +806,6 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
     }
 }
 
-/* Lift the submitted line out of the editor, recording it in history. The
- * editor is left empty and ready for the next one. */
 static char *take_line(struct prompt *p)
 {
     const char *line = repl_line(&p->repl);
@@ -908,8 +826,6 @@ void prompt_set_idle(struct prompt *p, int (*fd)(void *ud),
     p->idle_ud = ud;
 }
 
-/* The watch hooks tty_read installs for the wait inside prompt_read. The prompt
- * being read is the one on screen, so it can be reached from a static. */
 static struct prompt *waiting;
 
 static int idle_fd_hook(void *ud)
@@ -918,7 +834,6 @@ static int idle_fd_hook(void *ud)
     return waiting && waiting->idle_fd ? waiting->idle_fd(waiting->idle_ud) : -1;
 }
 
-/* Print what arrived where the block is, not on top of it. */
 static void idle_ready_hook(void *ud)
 {
     (void)ud;
@@ -932,8 +847,7 @@ static void idle_ready_hook(void *ud)
 
 static char *read_loop(struct prompt *p)
 {
-    /* Whatever was typed during the last turn but never submitted carries over,
-     * so the block is repainted rather than reset. */
+
     p->painted_rows = 0;
     p->caret_row = 0;
     repaint(p);
@@ -941,7 +855,7 @@ static char *read_loop(struct prompt *p)
     int resizing = 0;
     for (;;) {
         tty_event ev;
-        /* Once the size stops changing, one repaint puts the block back. */
+
         if (!tty_read(&ev, resizing ? TTY_RESIZE_SETTLE_MS : -1)) {
             if (resizing) {
                 resizing = 0;
@@ -977,8 +891,7 @@ static char *read_loop(struct prompt *p)
 
 char *prompt_read(struct prompt *p)
 {
-    /* Unprompted output is only welcome while this wait owns the screen: a turn
-     * reads its own stream, and the pump would take it out from under it. */
+
     waiting = p;
     tty_watch(p->idle_fd ? idle_fd_hook : NULL, idle_ready_hook, NULL);
     char *out = read_loop(p);
@@ -986,8 +899,6 @@ char *prompt_read(struct prompt *p)
     waiting = NULL;
     return out;
 }
-
-/* ---------- the prompt while a turn runs ---------- */
 
 static void queue_push(struct prompt *p, char *line)
 {
@@ -1015,9 +926,6 @@ char *prompt_take_queued(struct prompt *p)
     return line;
 }
 
-/* Up on an empty line pulls the newest queued message back into the editor
- * instead of browsing history: while something is waiting to run, that pending
- * message is what the user means to change. Submitting re-queues it. */
 static int recall_queued(struct prompt *p)
 {
     if (p->queued_count == 0)

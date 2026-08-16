@@ -1,11 +1,4 @@
-/* Manual check for the Ctrl-V clipboard grab, which needs a real pasteboard
- * and so cannot join `make check`.
- *
- *   make pastetest
- *   ./pastetest                  # whatever is on the clipboard now
- *   ./pastetest some/image.png   # put that on the clipboard first, then grab
- *
- * Prints the path it wrote, or the reason nothing came back. */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,7 +62,6 @@ int main(int argc, char **argv)
     }
     printf("wrote      %s (%lld bytes)\n", path, (long long)st.st_size);
 
-    /* The grab is only useful if it produced something a decoder accepts. */
     static const unsigned char PNG_MAGIC[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
     FILE *f = fopen(path, "rb");
     unsigned char head[8] = {0};

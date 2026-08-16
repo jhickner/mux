@@ -119,8 +119,7 @@ static int mock_server(void)
                 cJSON_Delete(msg);
                 continue;
             }
-            /* Arrives while the client is waiting for turn/start's response;
-             * it must be retained rather than discarded by the response loop. */
+
             if (turns == 2) {
                 printf("{\"method\":\"account/rateLimits/updated\",\"params\":{"
                        "\"rateLimits\":{\"primary\":{\"usedPercent\":29,"

@@ -1,7 +1,3 @@
-/* palette - print every colors.h theme as truecolor swatches.
- *
- *     make palette && ./palette [theme-name-or-index]
- */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,8 +22,6 @@ static const char *SLOT_NAMES[COLOR_COUNT] = {
     "NONE", "MUZZLE_FLASH", "DEBUG",
 };
 
-/* "\x1b" for a terminal, or the literal two characters \e for pasting into an
- * ```ansi markdown fence. */
 static const char *ESC = "\x1b";
 
 static void print_row(ColorIndex idx) {
@@ -39,8 +33,6 @@ static void print_row(ColorIndex idx) {
         snprintf(ref, sizeof ref, "-> %s", SLOT_NAMES[e->ref]);
     }
 
-    // Swatch: 8 background-colored spaces, then the sample text on the same
-    // color over the theme background.
     printf("  %s[48;2;%d;%d;%dm        %s[0m", ESC, c.r, c.g, c.b, ESC);
     Color bg = color_get(COLOR_BASE0);
     printf(" %s[48;2;%d;%d;%dm%s[38;2;%d;%d;%dm Agg %s[0m",

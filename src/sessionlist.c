@@ -10,11 +10,9 @@
 #include "vendor/cJSON.h"
 
 #define MAX_SESSIONS 40
-/* Transcripts open with mode/permission/snapshot records before any real turn. */
+
 #define SCAN_LINES   40
 
-/* The CLI names a project directory after its cwd with every character outside
- * [A-Za-z0-9-] replaced by a dash. */
 static void encode_cwd(const char *cwd, char *out, size_t size)
 {
     size_t o = 0;
@@ -61,7 +59,6 @@ static void relative_time(time_t then, char *out, size_t size)
         snprintf(out, size, "%ldd ago", secs / 86400);
 }
 
-/* Slash commands and harness notices are noise as a session label. */
 static int usable_label(const char *text)
 {
     if (!text || !*text)
@@ -71,8 +68,6 @@ static int usable_label(const char *text)
     return strncmp(text, "Caveat:", 7) != 0;
 }
 
-/* Pull a label out of a transcript: the name Claude Code gave the conversation
- * if it wrote one, otherwise the first genuine user message. */
 static int transcript_label(const char *path, char *out, size_t size)
 {
     FILE *f = fopen(path, "r");
@@ -90,8 +85,7 @@ static int transcript_label(const char *path, char *out, size_t size)
             continue;
         const char *type = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "type"));
         cJSON *meta = cJSON_GetObjectItem(ev, "isMeta");
-        /* The CLI names the conversation just after its first turn, so the title
-         * lands a few records below the message that would stand in for it. */
+
         if (type && strcmp(type, "ai-title") == 0) {
             const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "aiTitle"));
             if (title && *title) {
@@ -134,7 +128,6 @@ static int by_recency(const void *a, const void *b)
     return x->modified < y->modified ? 1 : -1;
 }
 
-/* Keep the newest MAX_SESSIONS without depending on readdir() order. */
 static void keep_recent(struct past_session *list, int *count,
                         const struct past_session *candidate)
 {
@@ -207,7 +200,7 @@ static int load_claude(const char *cwd, const char *skip_id, struct past_session
 
         struct past_session candidate = {0};
         struct past_session *s = &candidate;
-        /* Our own title first: the CLI only names the sessions it drives itself. */
+
         if (!title_lookup(id, s->label, sizeof s->label) &&
             !transcript_label(path, s->label, sizeof s->label))
             continue;
@@ -220,8 +213,6 @@ static int load_claude(const char *cwd, const char *skip_id, struct past_session
     return finish_list(list, count, out);
 }
 
-/* Grok URL-encodes the cwd; when that name would exceed 255 bytes it uses a
- * slug and writes the original path in a .cwd file inside the group. */
 static void encode_cwd_grok(const char *cwd, char *out, size_t size)
 {
     static const char hex[] = "0123456789ABCDEF";
@@ -388,8 +379,6 @@ static int load_grok(const char *cwd, const char *skip_id, struct past_session *
     return finish_list(list, count, out);
 }
 
-/* Pi names the project directory --<cwd>-- with the leading slash stripped and
- * every / \\ : turned into a dash. */
 static void encode_cwd_pi(const char *cwd, char *out, size_t size)
 {
     if (size < 5) {
@@ -426,8 +415,6 @@ static int pi_agent_dir(char *out, size_t size)
     return 1;
 }
 
-/* Custom --session-dir / PI_CODING_AGENT_SESSION_DIR is a flat folder of every
- * project's files, so the caller must filter by the header cwd. */
 static int pi_session_dir(const char *cwd, char *out, size_t size, int *filter_cwd)
 {
     const char *custom = getenv("PI_CODING_AGENT_SESSION_DIR");

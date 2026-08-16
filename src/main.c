@@ -23,7 +23,6 @@
 
 #define APP APP_NAME
 
-/* The agent CLIs backend.h can drive, as "claude, codex, grok, pi". */
 static void backend_choices(char *out, size_t size)
 {
     size_t n = 0;
@@ -48,7 +47,6 @@ static void restore_terminal(void)
     tty_raw_end();
 }
 
-/* ~/.config/<app>, created on demand. Returns 0 when HOME is unset. */
 static int config_dir(char *out, size_t size)
 {
     const char *home = getenv("HOME");
@@ -79,15 +77,10 @@ static void usage(void)
             choices);
 }
 
-/* The agent taking a turn of its own — a background task it started has
- * finished — while the prompt waits for a key. */
 static int idle_fd(void *ud)      { return session_idle_fd(ud); }
 static void idle_render(void *ud) { session_idle_pump(ud); }
-static void replay(void *ud)      { session_replay(ud); } /* TEMP */
+static void replay(void *ud)      { session_replay(ud); }
 
-/* A command submitted while a turn is streaming. The spinner and the live
- * prompt block are lifted out of the way so the command's own output lands in
- * scrollback rather than being overwritten. */
 static int live_command(void *ud, const char *line)
 {
     if (!cmd_is_live(line))
@@ -108,7 +101,7 @@ int main(int argc, char **argv)
         {"dir",     required_argument, NULL, 'C'},
         {"safe",    no_argument,       NULL, 's'},
         {"resume",  no_argument,       NULL, 'r'},
-        {"session", required_argument, NULL, 'S'}, /* long only: no -S */
+        {"session", required_argument, NULL, 'S'},
         {"help",    no_argument,       NULL, 'h'},
         {NULL,      0,                 NULL, 0},
     };
@@ -146,7 +139,6 @@ int main(int argc, char **argv)
 
     sessionfork_set_program(argv[0]);
 
-    /* The picker needs the terminal, so it cannot combine with one-shot mode. */
     if (resume && optind < argc) {
         fprintf(stderr, APP ": --resume takes no prompt — it starts with the picker\n");
         return 2;
@@ -171,20 +163,16 @@ int main(int argc, char **argv)
         settings_open(path);
     }
 
-    /* What /model and /effort picked outlives the run it was picked in; -m and
-     * -e are this run's own answer, so they win. */
     if (!model)
         model = session_saved_model(backend);
     if (!effort)
         effort = session_saved_effort(backend);
 
     ui_init();
-    /* Asks tmux for passthrough while nothing has been drawn yet, and settles
-     * whether the model is told it can show images. */
+
     img_init();
     img_set_rows(settings_get_int(SETTING_IMAGE_ROWS, IMG_ROWS_DEFAULT));
-    /* Before session_start(): the CLI it spawns inherits the marker that keeps
-     * the plugin's own hook from reporting this pane too. */
+
     agenttabs_begin(backend);
     struct session *session = session_new(backend, cwd, model, effort);
     if (session) {
@@ -193,7 +181,7 @@ int main(int argc, char **argv)
         session_set_compact(session, settings_get_int(SETTING_COMPACT, 0));
         session_set_permission(session,
             session_permission_name(settings_get_int(SETTING_PERMISSION, 0)));
-        /* Set before start: the CLI then comes up already resumed. */
+
         session_adopt_id(session, session_arg);
     }
     if (!session || !session_start(session)) {
@@ -201,7 +189,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* One-shot mode: everything after the options is a single prompt. */
     if (optind < argc) {
         size_t need = 1;
         for (int i = optind; i < argc; i++)
@@ -244,27 +231,24 @@ int main(int argc, char **argv)
         prompt_history_open(prompt, history);
     }
 
-    /* Keep the prompt on screen and editable while a turn runs, so a message
-     * typed then is queued for the moment the turn ends. */
     session_set_typeahead(prompt_live_key, prompt);
     status_set_below(prompt_live_paint, prompt_live_offset, prompt);
     prompt_set_live_command(prompt, live_command, session);
     prompt_set_idle(prompt, idle_fd, idle_render, session);
     prompt_set_hud(prompt, hud_paint_idle, session);
-    prompt_set_replay(prompt, replay, session); /* TEMP: color-keybind redraw */
+    prompt_set_replay(prompt, replay, session);
     status_set_hud(hud_paint_busy, session);
-    /* The turn summary lands in the HUD's spinner row instead of scrollback. */
+
     session_hold_footer(session, 1);
 
     ui_put("\n");
-    /* The HUD carries the identity above the caret from here on, so the opening
-     * block is the hint row alone. */
+
     if (resume)
         cmd_resume(session);
     banner_hints();
 
     for (;;) {
-        /* Messages queued during the last turn run first, in the order typed. */
+
         char *line = prompt_take_queued(prompt);
         if (line)
             prompt_echo_message(line);
@@ -285,7 +269,6 @@ int main(int argc, char **argv)
         free(line);
     }
 
-    /* Both hooks borrow the prompt, so they go first. */
     session_set_typeahead(NULL, NULL);
     status_set_below(NULL, NULL, NULL);
     status_set_hud(NULL, NULL);

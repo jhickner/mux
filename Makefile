@@ -4,9 +4,10 @@ LDFLAGS ?=
 PREFIX  ?= $(HOME)/.local
 
 BIN     := mux
-# Each tools/*.c builds a binary of the same name at the root, so the list of
-# them to clean up is the directory itself rather than a copy of it kept by hand.
-TOOLS   := $(patsubst tools/%.c,%,$(wildcard tools/*.c))
+BUILD   := build
+# Each tools/*.c builds a binary of the same name under $(BUILD), derived from
+# the directory rather than a copy of the list kept by hand.
+TOOLS   := $(patsubst tools/%.c,$(BUILD)/%,$(wildcard tools/*.c))
 SRC     := $(wildcard src/*.c) $(wildcard src/vendor/*.c)
 OBJ     := $(SRC:.c=.o)
 DEP     := $(OBJ:.o=.d)
@@ -27,69 +28,76 @@ $(BIN): $(OBJ)
 # the app alone, and `check` builds just the ones that test themselves.
 tests: $(TOOLS)
 
-palette: tools/palette.c src/vendor/colors.h
+$(BUILD)/palette: tools/palette.c src/vendor/colors.h | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc/vendor -o $@ tools/palette.c
 
-spintest: tools/spintest.c src/status.o src/prompt.o src/files.o src/paste.o src/settings.o src/tty.o src/ui.o src/vendor/impl.o src/vendor/cJSON.o
+$(BUILD)/spintest: tools/spintest.c src/status.o src/prompt.o src/files.o src/paste.o src/settings.o src/tty.o src/ui.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
 
-statustest: tools/statustest.c src/status.o src/tty.o src/ui.o src/vendor/impl.o src/vendor/cJSON.o
+$(BUILD)/statustest: tools/statustest.c src/status.o src/tty.o src/ui.o src/settings.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^
 
-reflowtest: tools/reflowtest.c src/ui.o src/tty.o src/vendor/impl.o src/vendor/cJSON.o
+$(BUILD)/reflowtest: tools/reflowtest.c src/ui.o src/settings.o src/tty.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^
 
-toolstyletest: tools/toolstyletest.c src/toolstyle.o src/vendor/cJSON.o
+$(BUILD)/toolstyletest: tools/toolstyletest.c src/toolstyle.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^
 
-sessionlisttest: tools/sessionlisttest.c src/sessionlist.c src/vendor/cJSON.c
+$(BUILD)/sessionlisttest: tools/sessionlisttest.c src/sessionlist.c src/vendor/cJSON.c | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
 
-codextest: tools/codextest.c src/vendor/impl.o src/vendor/cJSON.o
+$(BUILD)/codextest: tools/codextest.c src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
 
-groktest: tools/groktest.c src/vendor/impl.o src/vendor/cJSON.o
+$(BUILD)/groktest: tools/groktest.c src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
 
-filedifftest: tools/filedifftest.c src/filediff.o src/ui.o src/tty.o src/vendor/impl.o src/vendor/cJSON.o
+$(BUILD)/filedifftest: tools/filedifftest.c src/filediff.o src/ui.o src/settings.o src/tty.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
 
-claudetest: tools/claudetest.c src/vendor/impl.o src/vendor/cJSON.o
+$(BUILD)/claudetest: tools/claudetest.c src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
 
-pitest: tools/pitest.c src/vendor/impl.o src/vendor/cJSON.o
+$(BUILD)/pitest: tools/pitest.c src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
 
-agenttabstest: tools/agenttabstest.c src/agenttabs.o src/vendor/cJSON.o
+$(BUILD)/agenttabstest: tools/agenttabstest.c src/agenttabs.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
 
-imagetest: tools/imagetest.c src/image.o src/md.o src/ui.o src/tty.o src/vendor/impl.o src/vendor/cJSON.o
+$(BUILD)/imagetest: tools/imagetest.c src/image.o src/md.o src/ui.o src/settings.o src/tty.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -Isrc/vendor -o $@ $^
 
-pastetest: tools/pastetest.c src/paste.o
+$(BUILD)/pastetest: tools/pastetest.c src/paste.o | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^
 
-transcripttest: tools/transcripttest.c src/transcript.c
+$(BUILD)/transcripttest: tools/transcripttest.c src/transcript.c | $(BUILD)
 	$(CC) $(CFLAGS) -Isrc -o $@ $^
 
-check: reflowtest toolstyletest sessionlisttest claudetest codextest groktest filedifftest pitest agenttabstest statustest transcripttest
-	./reflowtest
-	./toolstyletest
-	./sessionlisttest
-	./claudetest
-	./codextest
-	./groktest
-	./filedifftest
-	./pitest
-	./agenttabstest
-	./statustest
-	./transcripttest
+CHECKS  := reflowtest toolstyletest sessionlisttest claudetest codextest \
+           groktest filedifftest pitest agenttabstest statustest transcripttest
+
+check: $(addprefix $(BUILD)/,$(CHECKS))
+	$(BUILD)/reflowtest
+	$(BUILD)/toolstyletest
+	$(BUILD)/sessionlisttest
+	$(BUILD)/claudetest
+	$(BUILD)/codextest
+	$(BUILD)/groktest
+	$(BUILD)/filedifftest
+	$(BUILD)/pitest
+	$(BUILD)/agenttabstest
+	$(BUILD)/statustest
+	$(BUILD)/transcripttest
 
 install: $(BIN)
 	install -d $(PREFIX)/bin
 	install -m 755 $(BIN) $(PREFIX)/bin/$(BIN)
 
+$(BUILD):
+	@mkdir -p $(BUILD)
+
 clean:
-	rm -f $(OBJ) $(DEP) $(BIN) $(TOOLS) src/*.o.tmp src/vendor/*.o.tmp
+	rm -rf $(BUILD)
+	rm -f $(OBJ) $(DEP) $(BIN) src/*.o.tmp src/vendor/*.o.tmp
 
 .PHONY: all install clean check tests

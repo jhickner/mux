@@ -9,21 +9,20 @@
 #include "session.h"
 #include "ui.h"
 
-#define SEP    " \xe2\x80\xba " /* › */
-#define BRANCH "\xee\x82\xa0"   /*  , the nerd-font branch glyph */
+#define SEP    " \xe2\x80\xba "
+#define BRANCH "\xee\x82\xa0"
 
 struct seg {
     const char   *text;
     enum ui_role  role;
 };
 
-/* Bytes of `s` that fit within `budget` cells, cut on a character boundary. */
 static size_t fit_bytes(const char *s, size_t budget)
 {
     size_t n = 0, fit = 0;
     while (s[n]) {
         n++;
-        while (((unsigned char)s[n] & 0xC0) == 0x80) /* UTF-8 continuation bytes */
+        while (((unsigned char)s[n] & 0xC0) == 0x80)
             n++;
         if (ui_cells_n(s, n) > budget)
             break;
@@ -32,9 +31,6 @@ static size_t fit_bytes(const char *s, size_t budget)
     return fit;
 }
 
-/* One row of segments, clipped a column short of the margin: a row filled to
- * the edge leaves the terminal holding a deferred wrap, which would put the row
- * on two and make the block taller than its caller counted. */
 static void paint_row(const struct seg *segs, int count, int cols)
 {
     size_t budget = (size_t)(cols > 1 ? cols - 1 : 1);
@@ -53,8 +49,6 @@ static void paint_row(const struct seg *segs, int count, int cols)
     ui_put("\n");
 }
 
-/* Model ids are all "claude-"-prefixed here, so the prefix carries no
- * information in the row. */
 static const char *short_model(const char *model)
 {
     if (strncmp(model, "claude-", 7) == 0 && model[7])
@@ -62,7 +56,6 @@ static const char *short_model(const char *model)
     return model;
 }
 
-/* "▌ mux › claude › opus-5[1m] › medium" */
 static void row_identity(const struct session *s, int cols)
 {
     const char *backend = session_backend(s);
@@ -93,7 +86,6 @@ static void home_relative(const char *dir, char *out, size_t size)
         snprintf(out, size, "%s", dir);
 }
 
-/* "~/working/mux >  master (4363d72) +98 -7 [!] · 42%" */
 static void row_location(const struct session *s, int cols)
 {
     char path[1024];
@@ -109,7 +101,7 @@ static void row_location(const struct session *s, int cols)
         snprintf(added, sizeof added, " +%ld", g->added);
     if (g->removed)
         snprintf(removed, sizeof removed, " -%ld", g->removed);
-    /* "!" for tracked changes, "?" for files git has never seen. */
+
     if (g->dirty || g->untracked)
         snprintf(flags, sizeof flags, " [%s%s]", g->dirty ? "!" : "",
                  g->untracked ? "?" : "");
@@ -137,8 +129,7 @@ int hud_paint_busy(void *ud, int cols)
         return 0;
     row_identity(s, cols);
     row_location(s, cols);
-    /* The blank row that keeps the spinner — or the caret, between turns — off
-     * the chrome. */
+
     ui_esc("\x1b[K");
     ui_put("\n");
     return 3;
@@ -150,7 +141,7 @@ int hud_paint_idle(void *ud, int cols)
     int rows = hud_paint_busy(ud, cols);
     if (!rows)
         return 0;
-    /* The last turn's summary takes the row the spinner just left. */
+
     const char *footer = session_footer(s);
     if (footer) {
         struct seg segs[] = {{footer, UI_DIM}};

@@ -12,7 +12,6 @@
 #include "session.h"
 #include "ui.h"
 
-/* Bare when found on PATH, absolute once resolved from argv[0]. */
 static char program[4096] = APP_NAME;
 
 void sessionfork_set_program(const char *argv0)
@@ -26,11 +25,6 @@ void sessionfork_set_program(const char *argv0)
         snprintf(program, sizeof program, "%s", argv0);
 }
 
-/* ---------- running things ---------- */
-
-/* Run argv to completion with stdout going to `out_path` (or /dev/null) and
- * stderr discarded — this display owns the terminal. Returns the exit status,
- * or -1 if the child could not be run. */
 static int run(char *const argv[], const char *out_path)
 {
     pid_t pid = fork();
@@ -58,8 +52,6 @@ static int run(char *const argv[], const char *out_path)
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
-/* ---------- interface ---------- */
-
 int sessionfork(const struct session *s, enum fork_where where)
 {
     if (!getenv("TMUX")) {
@@ -68,9 +60,6 @@ int sessionfork(const struct session *s, enum fork_where where)
         return 0;
     }
 
-    /* A fork is a second agent resumed on this conversation, so it needs both a
-     * backend that can resume and an id to resume from — which the CLI only
-     * reports once a turn has streamed. */
     if (!session_can_resume(s)) {
         ui_error("%s cannot resume a conversation, so there is nothing to fork",
                  session_backend(s));
@@ -100,8 +89,7 @@ int sessionfork(const struct session *s, enum fork_where where)
     tmux[n++] = (char *)session_backend(s);
     tmux[n++] = "--session";
     tmux[n++] = (char *)id;
-    /* session_model() reports "default" when no model was asked for, which is a
-     * label rather than something to pass back on the command line. */
+
     const char *model = session_model(s);
     if (strcmp(model, "default") != 0) {
         tmux[n++] = "-m";
@@ -126,23 +114,18 @@ int sessionfork(const struct session *s, enum fork_where where)
     return 1;
 }
 
-/* ---------- the note on the way out ---------- */
-
 void sessionfork_exit_note(const struct session *s)
 {
     const char *id = session_id(s);
     if (!id || !*id || !session_can_resume(s))
         return;
 
-    /* Transcripts are per-directory, so the command carries its own cd unless
-     * it would land where the shell already is. */
     char here[4096];
     const char *dir = session_cwd(s);
     char lead[4200] = "";
     if (dir && *dir && !(getcwd(here, sizeof here) && !strcmp(here, dir)))
         snprintf(lead, sizeof lead, "cd %s && ", dir);
 
-    /* Only the flags that would not be the defaults on a fresh start. */
     char flags[4200] = "";
     size_t n = 0;
     const char *backend = session_backend(s);
@@ -159,7 +142,7 @@ void sessionfork_exit_note(const struct session *s)
     snprintf(cmd, sizeof cmd, "%s" APP_NAME "%s --session %s", lead, flags, id);
 
     ui_bar(ui_style(UI_DIM), "resume this conversation:");
-    /* No gutter bar on the command itself: it has to survive a copy-paste. */
+
     ui_printf("%s%s%s\n", ui_style(UI_DIM), cmd, ui_style(UI_RESET));
     ui_flush();
 }

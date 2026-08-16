@@ -11,8 +11,6 @@
 
 #define APP APP_NAME
 
-/* Kept rather than written to a temp dir: a path in an earlier message stays
- * valid when the conversation is resumed days later. */
 static int paste_dir(char *out, size_t size)
 {
     const char *home = getenv("HOME");
@@ -28,7 +26,6 @@ static int paste_dir(char *out, size_t size)
     return 1;
 }
 
-/* A name no existing paste holds. Same-second pastes get a counter. */
 static int paste_path(char *out, size_t size, const char *dir)
 {
     time_t now = time(NULL);
@@ -58,16 +55,10 @@ int paste_image(char *out, size_t size)
     char dir[1024];
     if (!paste_dir(dir, sizeof dir) || !paste_path(out, size, dir))
         return 0;
-    /* The path is interpolated into a shell command and an AppleScript string;
-     * a quote anywhere in $HOME would break out of both. */
+
     if (strchr(out, '\'') || strchr(out, '"') || strchr(out, '\\'))
         return 0;
 
-    /* «class PNGf» is AppleScript's raw four-char pasteboard type. Asking for
-     * it coerces whatever image flavour is on the pasteboard — a screenshot
-     * arrives as TIFF — so this is the only form worth trying. Coercion fails
-     * outright when there is no image, before the file is opened, which is why
-     * a miss leaves nothing behind. */
     char cmd[2048];
     int len = snprintf(cmd, sizeof cmd,
                        "osascript"

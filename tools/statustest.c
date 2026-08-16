@@ -1,6 +1,4 @@
-/* Resume-without-a-turn must not paint the spinner. That is the session-resume
- * bug: status_resume() used to draw with started==0, so the clock was the Unix
- * timestamp (~500000h) and nothing ticked the frames. */
+
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -104,8 +102,6 @@ static int looks_like_spinner(const char *out)
     return 0;
 }
 
-/* More rows of output than any terminal is tall, so whatever was echoed above
- * them is gone. */
 static void fill_screen(void)
 {
     ui_raw(1);
@@ -120,9 +116,6 @@ static void turn_with_prompt(void)
     status_end();
 }
 
-/* The block carries the prompt only while the feature is on, and only once the
- * echo it copies has scrolled away — never both at once. More than STICKY_LINES
- * comes back clipped, with an ellipsis on the last row shown. */
 static void check_sticky(void)
 {
     status_sticky_set(1);

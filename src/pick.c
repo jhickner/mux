@@ -10,9 +10,9 @@
 #define VISIBLE_MAX 10
 
 struct view {
-    int rows;    /* rows the block currently occupies */
-    int top;     /* first item shown, for lists taller than the window */
-    int visible; /* items shown at once */
+    int rows;
+    int top;
+    int visible;
 };
 
 static void erase(struct view *v)
@@ -35,7 +35,7 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
     if (v->rows > 0)
         printf("\x1b[%dA\r", v->rows);
     fputs("\x1b[?25l", stdout);
-    ui_scroll_track(0); /* redrawn in place, and erased when the pick is over */
+    ui_scroll_track(0);
 
     int columns = ui_columns();
     int rows = 0;
@@ -58,7 +58,7 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
         fputs("\x1b[K", stdout);
         int selected = (i == sel);
         ui_esc(ui_style(selected ? UI_ACCENT : UI_RESET));
-        ui_put(selected ? "  \xe2\x86\x92 " : "    "); /* → */
+        ui_put(selected ? "  \xe2\x86\x92 " : "    ");
 
         size_t used = 4 + ui_cells(items[i].label);
         ui_put(items[i].label);
@@ -135,11 +135,11 @@ int pick(const char *title, const struct pick_item *items, int count, int initia
             erase(&v);
             return -1;
         case TK_CHAR:
-            if (ev.cp == 3 || ev.cp == 4) { /* Ctrl-C / Ctrl-D */
+            if (ev.cp == 3 || ev.cp == 4) {
                 erase(&v);
                 return -1;
             }
-            /* Digits jump straight to an entry. */
+
             if (ev.cp >= '1' && ev.cp <= '9' && (int)(ev.cp - '1') < count)
                 sel = (int)(ev.cp - '1');
             break;

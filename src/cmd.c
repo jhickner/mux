@@ -37,7 +37,6 @@ const ReplCommand CMD_TABLE[] = {
 };
 const int CMD_COUNT = (int)(sizeof CMD_TABLE / sizeof *CMD_TABLE);
 
-/* The picker knows the Claude and Grok line-ups; codex and pi take a name. */
 static const struct pick_item MODELS[] = {
     {"claude-opus-5", "most capable"},
     {"claude-opus-5[1m]", "opus with a 1M-token context"},
@@ -91,8 +90,6 @@ static const struct pick_item PI_EFFORTS[] = {
     {"max", "maximum thinking, when the model supports it"},
 };
 
-/* Parallel to session_permission_name's table — same order, so the picker's
- * index is the stored setting. */
 static const struct pick_item PERMISSIONS[] = {
     {"bypassPermissions", "never refuses a tool call"},
     {"auto", "approves the safe calls, refuses the rest"},
@@ -153,8 +150,6 @@ static int known_backend(const char *name)
             return 1;
     return 0;
 }
-
-/* ---------- helpers ---------- */
 
 static void help_row(const char *label, const char *text)
 {
@@ -224,7 +219,6 @@ static int copy_to_clipboard(const char *text)
     return pclose(pipe) == 0;
 }
 
-/* Model ids are all "claude-"-prefixed, so the prefix carries no information. */
 static const char *short_model(const struct session *s, const char *model)
 {
     if (is_claude(s) && strncmp(model, "claude-", 7) == 0 && model[7])
@@ -232,8 +226,6 @@ static const char *short_model(const struct session *s, const char *model)
     return model;
 }
 
-/* "claude · opus-5[1m] · high · 1M context" — everything a switch changes, said
- * once, whichever of /backend, /model and /effort did the switching. */
 static void note_identity(const struct session *s)
 {
     char effort[64] = "", ctx[32] = "";
@@ -251,8 +243,6 @@ static void note_identity(const struct session *s)
     ui_put("\n");
     ui_flush();
 }
-
-/* ---------- commands ---------- */
 
 static void do_model(struct session *s, const char *arg)
 {
@@ -362,9 +352,6 @@ static void do_backend(struct session *s, const char *arg)
     note_identity(s);
     free(from);
 
-    /* A provider limit commonly rejects the whole preceding prompt. Once the
-     * user explicitly chooses a replacement, finish the handoff by retrying
-     * that prompt rather than making them type it again. */
     if (retry) {
         ui_note("retrying the failed turn with %s", arg);
         ui_put("\n\n");
@@ -374,8 +361,6 @@ static void do_backend(struct session *s, const char *arg)
     }
 }
 
-/* No argument opens the picker. Restarts the CLI on the current session id, so
- * the conversation carries across. The choice is remembered across runs. */
 static void do_permission(struct session *s, const char *arg)
 {
     if (!is_claude(s)) {
@@ -414,8 +399,6 @@ static void do_permission(struct session *s, const char *arg)
     ui_flush();
 }
 
-/* No argument flips it; "on"/"off" set it outright. The choice is remembered
- * across runs. */
 static void do_thinking(struct session *s, const char *arg)
 {
     int on;
@@ -439,8 +422,6 @@ static void do_thinking(struct session *s, const char *arg)
     ui_flush();
 }
 
-/* No argument flips it; "compact"/"full" set it outright. The choice is
- * remembered across runs. */
 static void do_tools(struct session *s, const char *arg)
 {
     int compact;
@@ -464,7 +445,6 @@ static void do_tools(struct session *s, const char *arg)
     ui_flush();
 }
 
-/* No argument flips it; "on"/"off" set it outright. */
 static void do_sticky(const char *arg)
 {
     int on;
@@ -488,8 +468,6 @@ static void do_sticky(const char *arg)
     ui_flush();
 }
 
-/* No argument reports the current height. The width follows from the image, so
- * rows is the only thing worth setting. */
 static void do_image(const char *arg)
 {
     if (arg && *arg) {
@@ -519,7 +497,7 @@ static void do_image(const char *arg)
 
 int cmd_resume(struct session *s)
 {
-    /* The picker reads the backend's own transcript store. */
+
     if (!sessionlist_available(session_backend(s))) {
         ui_note("%s keeps no transcripts to resume from", session_backend(s));
         ui_put("\n");
@@ -550,7 +528,7 @@ int cmd_resume(struct session *s)
     int index = pick("resume which conversation", items, count, 0);
     if (index >= 0) {
         if (session_resume(s, list[index].id)) {
-            status_sticky_prompt(NULL); /* a different conversation's message */
+            status_sticky_prompt(NULL);
             ui_bar(ui_style(UI_DIM), "resumed \xc2\xb7 %s", list[index].label);
             ui_put("\n");
             resumed = 1;
@@ -572,7 +550,7 @@ static void do_new(struct session *s)
         ui_put("\n");
         return;
     }
-    /* Nothing is being answered any more, so the floating prompt goes too. */
+
     status_sticky_prompt(NULL);
     ui_bar(ui_style(UI_DIM), "new conversation");
     ui_put("\n");
@@ -593,8 +571,6 @@ static void do_copy(struct session *s)
     ui_flush();
 }
 
-/* Split "/name rest" into `name` and a pointer to the argument. Returns 0 when
- * the line is not a command this table could own. */
 static int split_command(const char *line, char *name, size_t size, const char **arg)
 {
     if (*line != '/')
@@ -615,7 +591,6 @@ static int split_command(const char *line, char *name, size_t size, const char *
     return 1;
 }
 
-/* The fork commands and where each one puts the new agent. */
 static int fork_target(const char *name, enum fork_where *where)
 {
     static const struct {
@@ -638,8 +613,6 @@ static int fork_target(const char *name, enum fork_where *where)
     return 0;
 }
 
-/* Forking only reads session state, so it is safe with a turn in flight.
- * Anything that restarts the CLI is not. */
 int cmd_is_live(const char *line)
 {
     char name[32];
@@ -697,8 +670,7 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line)
     } else if (!strcmp(name, "/quit") || !strcmp(name, "/exit")) {
         return CMD_QUIT;
     } else {
-        /* Not ours: hand it to the CLI, which owns the user's skills and its
-         * own commands (/w, /todo, /diagram, ...). */
+
         return CMD_NOT_A_COMMAND;
     }
     return CMD_HANDLED;

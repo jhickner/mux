@@ -24,48 +24,45 @@
 
 struct session {
     Backend *agent;
-    char    *backend;  /* driver name: claude, codex, grok, pi     */
+    char    *backend;
     char    *cwd;
-    char    *model;    /* requested; NULL means the CLI's default  */
-    char    *effort;   /* requested; NULL means the CLI's default  */
-    char    *resolved; /* what the CLI reported at init            */
+    char    *model;
+    char    *effort;
+    char    *resolved;
     char     id[128];
-    char     title[128]; /* the short name, once the helper has written one */
-    int      retitle;    /* name the conversation again, ignoring the cached one */
-    int      named;      /* the helper has been asked for this conversation's name */
-    double   named_at;   /* when the cache was last read for it */
-    char    *prompt;     /* the turn in flight, which is what it gets named for */
+    char     title[128];
+    int      retitle;
+    int      named;
+    double   named_at;
+    char    *prompt;
     char    *last_reply;
-    char    *failed_prompt; /* last prompt whose provider turn failed */
-    struct transcript transcript; /* completed turns for backend handoff */
-    char    *last_block;  /* the final streamed text block of a turn  */
-    char    *streamed;    /* every text block of a turn, in order     */
+    char    *failed_prompt;
+    struct transcript transcript;
+    char    *last_block;
+    char    *streamed;
     int      turns;
     double   cost_usd;
     long     context_tokens;
     long     context_window;
-    int      quiet;          /* suppress activity, spinner, and footer      */
-    int      skip_naming;    /* one-shot: nothing displays the name, so skip it */
-    char     footer[384];    /* the last turn's summary row                 */
-    int      hold_footer;    /* keep it for the HUD instead of printing it  */
-    int      thinking;       /* show the model's reasoning rows             */
-    int      compact;        /* one row per tool call, whatever it does     */
-    int      customizations; /* load the user's skills, CLAUDE.md, MCP, ... */
-    char    *permission;     /* --permission-mode; NULL means the default   */
-    int      after_activity; /* last thing printed was a tool/thinking row  */
-    int      after_tool;     /* ... a tool or thinking block that wants air */
-    int      after_collapse; /* ... and specifically a collapsed tool row   */
+    int      quiet;
+    int      skip_naming;
+    char     footer[384];
+    int      hold_footer;
+    int      thinking;
+    int      compact;
+    int      customizations;
+    char    *permission;
+    int      after_activity;
+    int      after_tool;
+    int      after_collapse;
 
-    /* The run of collapsed calls sharing the row above the cursor. */
     struct {
         char  tool[64];
-        char *line;    /* the row as printed, before styling */
-        int   columns; /* the width it was fitted to         */
+        char *line;
+        int   columns;
         int   onscreen;
     } cluster;
 };
-
-/* ---------- small helpers ---------- */
 
 static void replace(char **slot, const char *value)
 {
@@ -102,7 +99,6 @@ static void humanize(long n, char *out, size_t size)
         snprintf(out, size, "%.1fM", (double)n / 1000000.0);
 }
 
-/* Collapse whitespace runs and clip to `max` bytes so a label stays one line. */
 static void one_line(const char *in, char *out, size_t max)
 {
     size_t o = 0;
@@ -124,7 +120,6 @@ static void one_line(const char *in, char *out, size_t max)
     out[o] = '\0';
 }
 
-/* Absolute paths under the agent's cwd (or $HOME) are noise at full length. */
 static const char *shorten_path(const struct session *s, const char *value, char *scratch,
                                 size_t size)
 {
@@ -146,8 +141,6 @@ static const char *shorten_path(const struct session *s, const char *value, char
     return value;
 }
 
-/* What a tool call is doing: the telling field of its JSON input, or the
- * one-line summary a backend that reports no structured input handed us. */
 static void tool_argument(const struct session *s, const backend_event *ev, char *out, size_t size)
 {
     static const char *const KEYS[] = {"command",          "file_path", "target_file",
@@ -176,9 +169,6 @@ static void tool_argument(const struct session *s, const backend_event *ev, char
     snprintf(out, size, "%s", arg);
 }
 
-/* The file a tool is about to touch, made absolute against the agent's cwd.
- * Keyed on the argument name rather than the tool name, so a backend with its
- * own tool vocabulary still gets a diff. Returns 0 when there is no path. */
 static int tool_path(const struct session *s, const char *input_json, char *out, size_t size)
 {
     static const char *const KEYS[] = {"file_path", "target_file", "path",
@@ -206,11 +196,6 @@ static int tool_path(const struct session *s, const char *input_json, char *out,
     return found != NULL;
 }
 
-/* ---------- live turn rendering ---------- */
-
-/* Everything the agent does is indented; only what it says starts at column 0.
- * That is the whole difference between a tool block and a reply, so it has to
- * hold for every activity row — full, collapsed, and the ✻ reasoning rows. */
 #define TOOL_INDENT 2
 
 static void pad(int cells)
@@ -219,8 +204,6 @@ static void pad(int cells)
         ui_put(" ");
 }
 
-/* A reasoning block: the ✻ in chrome, the full text in the thinking color,
- * wrapped under the marker the same way a tool argument sits under its tag. */
 static void print_activity(const char *marker, const char *text, enum ui_role role)
 {
     int indent = TOOL_INDENT + (int)ui_cells(marker) + 1;
@@ -269,8 +252,6 @@ static void tool_tag(const char *name, char *out, size_t size)
     out[t] = '\0';
 }
 
-/* Render a tool call as "[bash] <command>": the tag in its own color, the full
- * argument in normal weight so it stands out, wrapped under the tag. */
 static void print_tool_call(const char *name, const char *arg)
 {
     char tag[64];
@@ -306,18 +287,6 @@ static void print_tool_call(const char *name, const char *arg)
     }
 }
 
-/* ---------- collapsed tool rows ---------- */
-
-/* A call that only looks at the workspace is worth a row, not a block: the tag
- * and its argument use the normal tool-call colors, with no output preview, and
- * a run of calls to the same tool listed together on one row. Compact mode puts
- * every call here, whatever it does.
- *
- * The row grows by being written again over itself. That works because every
- * print here happens with the status block lifted, which leaves the cursor at
- * the start of the row directly below the row to replace — and because the row
- * is kept inside the terminal width, so it never wrapped into two. */
-
 static void cluster_forget(struct session *s)
 {
     free(s->cluster.line);
@@ -326,8 +295,6 @@ static void cluster_forget(struct session *s)
     s->cluster.onscreen = 0;
 }
 
-/* Cells the row may fill: one short of the width so the terminal is never left
- * holding a deferred wrap, and one more in hand for the ellipsis. */
 static int cluster_budget(void)
 {
     int budget = ui_columns() - TOOL_INDENT - 2;
@@ -356,8 +323,6 @@ static void cluster_start(struct session *s, const char *name, const char *arg)
     s->cluster.columns = ui_columns();
 }
 
-/* List another call on the open row. Fails when the row belongs to another
- * tool, was fitted to another width, or has no room left. */
 static int cluster_extend(struct session *s, const char *name, const char *arg)
 {
     if (!s->cluster.line || !s->after_collapse || strcmp(s->cluster.tool, name) != 0 ||
@@ -396,8 +361,6 @@ static void cluster_paint(struct session *s)
     s->cluster.onscreen = 1;
 }
 
-/* Preview of a tool's output: the first few lines, dimmed, with a count of
- * whatever is left. */
 #define TOOL_PREVIEW_ROWS 3
 
 static void print_tool_output(const char *text, enum ui_role role)
@@ -455,8 +418,6 @@ static void print_tool_output(const char *text, enum ui_role role)
     }
 }
 
-/* The session with a turn in flight, for the hooks the backend polls without a
- * user-data argument. */
 static struct session *live;
 
 static void remember_model(const struct session *s);
@@ -471,7 +432,7 @@ static void on_event(void *ud, const backend_event *ev)
         replace(&s->resolved, ev->name);
         return;
     }
-    /* Handshake and resume can emit events with no turn in flight. */
+
     if (s->quiet || !live)
         return;
 
@@ -483,7 +444,7 @@ static void on_event(void *ud, const backend_event *ev)
         if (!ev->text || !*ev->text)
             break;
         status_pause();
-        /* Let the prose breathe after a run of tool rows. */
+
         if (s->after_activity)
             ui_put("\n");
         md_render(ev->text, 0);
@@ -502,9 +463,9 @@ static void on_event(void *ud, const backend_event *ev)
             break;
         status_pause();
         cluster_forget(s);
-        if (s->after_tool) /* same blank as between consecutive tool blocks */
+        if (s->after_tool)
             ui_put("\n");
-        print_activity("\xe2\x9c\xbb", ev->text, UI_THINKING); /* ✻ */
+        print_activity("\xe2\x9c\xbb", ev->text, UI_THINKING);
         status_resume();
         s->after_activity = 1;
         s->after_tool = 1;
@@ -520,14 +481,14 @@ static void on_event(void *ud, const backend_event *ev)
         status_pause();
         if (collapsed) {
             if (!cluster_extend(s, name, arg)) {
-                if (s->after_tool && !s->after_collapse) /* clear of the block above */
+                if (s->after_tool && !s->after_collapse)
                     ui_put("\n");
                 cluster_start(s, name, arg);
             }
             cluster_paint(s);
         } else {
             cluster_forget(s);
-            if (s->after_tool) /* one blank row between consecutive spaced blocks */
+            if (s->after_tool)
                 ui_put("\n");
             print_tool_call(name, arg);
         }
@@ -566,12 +527,10 @@ static void on_event(void *ud, const backend_event *ev)
             s->after_collapse = 0;
             break;
         }
-        /* A collapsed call has already said everything it is going to; leaving
-         * the row untouched is also what keeps the next one able to rewrite it. */
+
         if (!s->after_collapse) {
             status_pause();
-            /* A tool that changed the file speaks for itself; one that did not
-             * still needs its own output shown. */
+
             int drew;
             if (ev->diff) {
                 drew = filediff_render_patch(ev->diff);
@@ -587,8 +546,7 @@ static void on_event(void *ud, const backend_event *ev)
         s->after_tool = 1;
         break;
     }
-    /* Tool and thinking rows end without a trailing blank, so the spinner would
-     * otherwise sit flush against them. The row is part of the status block. */
+
     status_gap(s->after_tool);
     ui_flush();
 }
@@ -604,14 +562,7 @@ void session_idle_pump(struct session *s)
 {
     if (!s || !s->agent || !s->agent->idle_pump || s->quiet)
         return;
-    /* on_event prints only for the turn in flight, and this is a turn nobody
-     * asked for: name it live for the pump so it reaches the screen.
-     *
-     * A collapsed tool row is rewritten in place as the cluster grows, and each
-     * pump hands the screen back to the caller's display in between, so the row
-     * a cluster would rewrite is no longer the one under the cursor. Starting
-     * every pump clean costs a merged row and keeps the rewrites off scrollback
-     * that has already moved on. */
+
     cluster_forget(s);
     s->after_activity = 0;
     s->after_tool = 0;
@@ -621,8 +572,6 @@ void session_idle_pump(struct session *s)
     live = NULL;
 }
 
-/* Where keys typed during a turn go. The abort predicate the backend polls
- * takes no argument, so the hook lives here rather than on the session. */
 static session_key_fn typeahead;
 static void          *typeahead_ud;
 
@@ -644,10 +593,6 @@ static void quota_poll(struct session *s)
         agenttabs_usage(limit.used_percent, limit.resets_at, limit.window_minutes);
 }
 
-/* A conversation is worth naming while its first turn is still running, so the
- * helper is started as soon as the CLI reports the session id and the answer is
- * picked up off the cache a second or so later — both from here, since a turn
- * can run for minutes without an event of its own. */
 static void name_poll(struct session *s)
 {
     if (!s || s->title[0] || !s->agent)
@@ -661,7 +606,7 @@ static void name_poll(struct session *s)
         if (s->title[0] || !s->id[0])
             return;
     }
-    /* The id is picked up above either way; only the helper run is skipped. */
+
     if (s->skip_naming)
         return;
 
@@ -690,8 +635,6 @@ static int effort_is_off(const char *effort)
            !strcmp(effort, "none") || !strcmp(effort, "off");
 }
 
-/* Requested level if the user set one; otherwise whatever the backend has
- * resolved (Claude's settings.json / stream `effort`, GROK_EFFORT, ...). */
 static const char *spin_effort(const struct session *s)
 {
     if (s->effort && *s->effort &&
@@ -717,10 +660,6 @@ static void set_spin_word(const struct session *s)
     status_set_word(phrase);
 }
 
-/* Polled by the backend many times a second: drain whatever was typed, then
- * tick the spinner, and report whether the user asked to interrupt. This is the
- * only place keys are read during a turn, so its cadence is what echo latency
- * costs — hence the short poll timeouts in the drivers. */
 static int abort_check(void)
 {
     name_poll(live);
@@ -728,16 +667,13 @@ static int abort_check(void)
     if (live)
         set_spin_word(live);
 
-    /* Without a raw terminal there is no interrupt key to read, and reading a
-     * redirected stdin would see EOF and cancel the turn immediately. */
     if (!tty_is_raw())
         return 0;
 
     int interrupt = 0;
     tty_event ev;
     while (tty_read(&ev, 0)) {
-        /* Typing edits the live prompt, and a resize rewraps it: either way the
-         * block on screen is stale until the tick below repaints it. */
+
         status_touch();
         if (typeahead) {
             interrupt |= typeahead(typeahead_ud, &ev);
@@ -755,8 +691,6 @@ static int abort_check(void)
     return interrupt;
 }
 
-/* ---------- lifecycle ---------- */
-
 struct session *session_new(const char *backend, const char *cwd, const char *model,
                             const char *effort)
 {
@@ -771,9 +705,6 @@ struct session *session_new(const char *backend, const char *cwd, const char *mo
     return s;
 }
 
-/* TEMP: repaint the conversation in the current colors. Only the retained turns
- * come back — tool activity, reasoning and footers are not kept — so this is a
- * try-out aid, not a faithful redraw. Remove with the Ctrl-N/Ctrl-O binds. */
 void session_replay(struct session *s)
 {
     ui_esc("\x1b[2J\x1b[H");
@@ -820,9 +751,6 @@ void session_free(struct session *s)
     free(s);
 }
 
-/* Open the backend on first use. Everything the driver is told at open time —
- * the name, the working directory, whether to load the user's customizations —
- * is fixed here, so this runs after the setters and before the first start. */
 static Backend *agent(struct session *s)
 {
     if (s->agent)
@@ -834,9 +762,7 @@ static Backend *agent(struct session *s)
     o.effort = s->effort;
     o.allow_customizations = s->customizations;
     o.permission_mode = s->permission;
-    /* The model has no way to discover the front end can draw, so it is told.
-     * Only when it actually can: the instruction is worse than useless in a
-     * terminal that would print the markdown instead. */
+
     if (img_available())
         o.system =
             "This conversation is displayed in a terminal that renders images inline. "
@@ -863,8 +789,6 @@ int session_switch_backend(struct session *s, const char *backend)
     if (strcmp(s->backend, backend) == 0)
         return 1;
 
-    /* Keep enough recent verbatim dialogue for a faithful handoff without
-     * risking an enormous argv/developer-instructions field. */
     char *handoff = transcript_handoff(&s->transcript, 128 * 1024);
     backend_opts o = {0};
     o.name = backend;
@@ -877,8 +801,6 @@ int session_switch_backend(struct session *s, const char *backend)
     if (!replacement)
         return 0;
 
-    /* Starting is transactional: do not tear down a usable provider until its
-     * replacement has completed its own handshake. */
     if (!replacement->start(replacement, NULL)) {
         replacement->close(replacement);
         return 0;
@@ -889,14 +811,13 @@ int session_switch_backend(struct session *s, const char *backend)
     Backend *previous = s->agent;
     s->agent = replacement;
     replace(&s->backend, backend);
-    replace(&s->model, NULL);       /* provider model names are not portable */
-    replace(&s->effort, NULL);      /* nor are its effort levels */
+    replace(&s->model, NULL);
+    replace(&s->effort, NULL);
     replace(&s->resolved, NULL);
     s->id[0] = '\0';
     const char *id = replacement->session_id(replacement);
     if (id) {
-        /* This is a new provider leg of the same logical conversation. Keep
-         * its title instead of treating the provider's new id as a new topic. */
+
         snprintf(s->id, sizeof s->id, "%s", id);
         agenttabs_forget_hook(id);
     }
@@ -907,8 +828,7 @@ int session_switch_backend(struct session *s, const char *backend)
     s->context_window = 0;
     if (previous)
         previous->close(previous);
-    /* The caller names the new backend's model right away, so wait for the
-     * handshake that answers with it rather than fall back to a cached id. */
+
     await_model(s);
     return 1;
 }
@@ -934,17 +854,13 @@ int session_compact(const struct session *s) { return s->compact; }
 
 void session_set_customizations(struct session *s, int on) { s->customizations = on; }
 
-/* Adopting a session id also disowns whatever the plugin's hook recorded for
- * that same conversation in an earlier run. */
 static void set_id(struct session *s, const char *id)
 {
-    /* Re-adopting the same id is routine — it arrives again at the end of every
-     * turn — and must not restart the naming that is already under way. */
+
     int changed = strcmp(s->id, id) != 0;
     snprintf(s->id, sizeof s->id, "%s", id);
     if (changed) {
-        /* A resumed conversation carries its name in from the start; one waiting
-         * to be renamed keeps none until the helper has written the new one. */
+
         s->title[0] = '\0';
         s->named = 0;
         if (!s->retitle)
@@ -954,8 +870,6 @@ static void set_id(struct session *s, const char *id)
     agenttabs_forget_hook(id);
 }
 
-/* (Re)start the child process, carrying the conversation across on the backends
- * that can resume one. */
 static int restart(struct session *s, const char *resume_id)
 {
     Backend *b = agent(s);
@@ -963,8 +877,7 @@ static int restart(struct session *s, const char *resume_id)
         return 0;
     if (resume_id && resume_id != s->id)
         set_id(s, resume_id);
-    /* Adopt an id the backend already knows (a resume, or one reported without
-     * waiting on the child). A fresh pi id arrives after the first turn. */
+
     const char *id = b->session_id(b);
     if (id)
         set_id(s, id);
@@ -1024,7 +937,6 @@ int session_set_effort(struct session *s, const char *effort)
     return 0;
 }
 
-/* Index 0 is what the CLI gets when nothing is stored. */
 static const char *const PERMISSIONS[] = {
     "bypassPermissions", "auto", "acceptEdits", "dontAsk", "manual", "plan",
 };
@@ -1050,8 +962,7 @@ const char *session_permission(const struct session *s)
 
 int session_set_permission(struct session *s, const char *mode)
 {
-    /* Before the first start there is nothing to restart: the mode is read at
-     * open time, so storing it is enough and avoids spawning the CLI twice. */
+
     if (!s->agent) {
         replace(&s->permission, mode);
         return 1;
@@ -1103,13 +1014,12 @@ int session_clear(struct session *s)
     replace(&s->failed_prompt, NULL);
     replace(&s->last_block, NULL);
     transcript_clear(&s->transcript);
-    /* Whatever it is about now, it is not what it was named for. Set before
-     * set_id, which otherwise reads the old name back out of the cache. */
+
     s->title[0] = '\0';
     s->retitle = 1;
     s->named = 0;
     status_set_note(NULL);
-    /* A cleared conversation gets a new session id from the CLI. */
+
     const char *id = s->agent->session_id(s->agent);
     if (id)
         set_id(s, id);
@@ -1118,11 +1028,6 @@ int session_clear(struct session *s)
     return 1;
 }
 
-/* ---------- one turn ---------- */
-
-/* What name_poll could not finish while the turn ran: the id only turns up at
- * the end on a backend that reports it late, and a helper that answered in the
- * last second of the turn was never polled for. */
 static void update_title(struct session *s)
 {
     if (!s->id[0] || s->title[0])
@@ -1135,17 +1040,12 @@ static void update_title(struct session *s)
         status_set_note(s->title);
 }
 
-/* The turn summary — elapsed, context, cost, name — kept on the session so the
- * HUD can carry it in the row the spinner just left, and printed into scrollback
- * only when nothing is holding it there. */
 static void print_footer(struct session *s, double elapsed)
 {
     char used[32], window[32];
     humanize(s->context_tokens, used, sizeof used);
     humanize(s->context_window, window, sizeof window);
 
-    /* snprintf reports what it *would* have written, so advancing by its return
-     * value unchecked can walk past the buffer. */
     char line[384];
     size_t n = 0;
     #define APPEND(...)                                                                        \
@@ -1165,9 +1065,6 @@ static void print_footer(struct session *s, double elapsed)
     if (s->cost_usd > 0)
         APPEND(" · $%.4f", s->cost_usd);
 
-    /* The name trails the figures, and drops to a row of its own rather than let
-     * the terminal wrap it mid-word. The spare column keeps a full row from
-     * leaving a deferred wrap behind. */
     int wrapped = 0;
     if (s->title[0]) {
         int room = ui_columns() - 1;
@@ -1189,7 +1086,7 @@ static void print_footer(struct session *s, double elapsed)
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");
     if (wrapped)
-        ui_wrapped(s->title, 0, ui_style(UI_DIM)); /* ends its own row */
+        ui_wrapped(s->title, 0, ui_style(UI_DIM));
     ui_put("\n");
     ui_flush();
 }
@@ -1238,9 +1135,6 @@ int session_turn(struct session *s, const char *text)
         return 0;
     }
 
-    /* The reply repeats what the stream already showed — the last block for the
-     * backends that report one, everything streamed for those that hand back
-     * the whole turn. Print only what neither covered. */
     int shown = (s->last_block && strcmp(reply, s->last_block) == 0) ||
                 (s->streamed && strcmp(reply, s->streamed) == 0);
     if (s->quiet) {
@@ -1272,21 +1166,12 @@ int session_turn(struct session *s, const char *text)
     s->turns++;
     if (meta.cost_usd > 0)
         s->cost_usd = meta.cost_usd;
-    /* Only the latest primary-model request says how much of the window is
-     * occupied. The result event's usage block is aggregate traffic across
-     * every model request in the turn — a long tool loop re-reads the same
-     * cached prompt and reports several windows' worth — so a driver that
-     * reports no per-request figure leaves the last real one standing rather
-     * than overwrite it with a number that measures something else. An
-     * interrupted turn reports a stub usage block, which this skips for free.
-     * The window is a property of the model, so it stands on its own. */
+
     if (meta.context_window > 0)
         s->context_window = meta.context_window;
     if (meta.context_tokens > 0)
         s->context_tokens = meta.context_tokens;
 
-    /* Interrupting is a turn that ended, not one that failed — and it is the
-     * case the CLI's own hook never reports. */
     agenttabs_finished();
 
     update_title(s);
@@ -1296,8 +1181,6 @@ int session_turn(struct session *s, const char *text)
         print_footer(s, elapsed);
     return 1;
 }
-
-/* ---------- accessors ---------- */
 
 const char *session_model(const struct session *s)
 {
@@ -1313,23 +1196,17 @@ const char *session_effort(const struct session *s)
     return s->effort && *s->effort ? s->effort : "default";
 }
 
-/* Where the id a backend resolved for this model request is remembered between
- * runs, so the banner can name the model without waiting on a handshake. */
 static void model_cache_key(const struct session *s, char *out, size_t n)
 {
     snprintf(out, n, "model.%s.%s", s->backend,
              s->model && *s->model ? s->model : "default");
 }
 
-/* And where the choices themselves are kept — one of each per backend, since
- * neither a model name nor an effort level is portable across them. */
 static void choice_key(const char *what, const char *backend, char *out, size_t n)
 {
     snprintf(out, n, "%s.%s", what, backend);
 }
 
-/* "default" is stored for the pick that asks for nothing, so that choosing it
- * back is remembered too rather than reading as "never picked". */
 static const char *saved_choice(const char *what, const char *backend)
 {
     if (!backend || !*backend)
@@ -1375,9 +1252,6 @@ static void remember_model(const struct session *s)
     settings_set_str(key, id);
 }
 
-/* A model change restarts the CLI, whose handshake answers with the id the new
- * request resolves to a moment later. Waiting for it here is what lets the
- * switch be recorded — and named on screen — without a turn having run. */
 static void await_model(struct session *s)
 {
     if (!s->agent || !s->agent->model)
@@ -1393,8 +1267,7 @@ const char *session_model_label(const struct session *s)
 {
     if (s->resolved && *s->resolved)
         return s->resolved;
-    /* The backend has this as soon as its own startup handshake lands, which is
-     * usually after the banner has been drawn — hence the remembered id. */
+
     if (s->agent && s->agent->model) {
         const char *got = s->agent->model(s->agent);
         if (got && *got)
@@ -1410,9 +1283,6 @@ const char *session_model_label(const struct session *s)
     return "default";
 }
 
-/* A model's window is a property of the model, so it is worth remembering:
- * usage only arrives with a turn's final event, and the size is wanted before
- * one has run. Keyed by the id the backend resolved, not the request. */
 static void window_cache_key(const struct session *s, char *out, size_t n)
 {
     snprintf(out, n, "window.%s.%s", s->backend, session_model_label(s));
@@ -1473,8 +1343,7 @@ const char *session_failed_prompt(const struct session *s)
 int session_context_percent(const struct session *s)
 {
     long used = s->context_tokens, window = s->context_window;
-    /* Mid-turn the driver has a newer count than the last footer; the window
-     * only arrives with the turn's final event, so keep the one we have. */
+
     if (s->agent && s->agent->usage) {
         long live_used = 0, live_window = 0;
         s->agent->usage(s->agent, &live_used, &live_window);
@@ -1489,9 +1358,6 @@ int session_context_percent(const struct session *s)
     return percent > 100 ? 100 : percent;
 }
 
-/* How the CLI authenticated, or NULL when the backend never says. A CLI that
- * reports "none" had no key env var in play, which is exactly the case where it
- * fell back to the subscription login. */
 static const char *auth_description(const struct session *s)
 {
     const char *source = s->agent ? s->agent->auth_source(s->agent) : NULL;
@@ -1515,7 +1381,7 @@ void session_report(const struct session *s)
         ui_note("  effort   %s", session_effort(s));
     if (auth)
         ui_note("  auth     %s", auth);
-    /* Only Claude Code is told whether to load the user's own configuration. */
+
     if (strcmp(s->backend, "claude") == 0) {
         ui_note("  config   %s", s->customizations ? "skills, CLAUDE.md, MCP, agents"
                                                    : "safe mode (customizations off)");
@@ -1524,14 +1390,13 @@ void session_report(const struct session *s)
     ui_note("  calls    %s", s->compact ? "compact (one row each)" : "full blocks");
     if (s->id[0])
         ui_note("  session  %s", s->id);
-    /* Keep the report to one row per field even in a narrow terminal.
-     * shorten_path already rewrites a $HOME prefix as "~". */
+
     char scratch[512];
     const char *dir = s->cwd ? shorten_path(s, s->cwd, scratch, sizeof scratch) : ".";
     int room = ui_columns() - 12;
     size_t cells = ui_cells(dir);
     if (room > 8 && cells > (size_t)room) {
-        /* Elide the head: the tail of a path is the identifying part. */
+
         while (*dir && ui_cells(dir) > (size_t)room - 1)
             dir++;
         ui_note("  cwd      …%s", dir);

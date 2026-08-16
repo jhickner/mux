@@ -1,4 +1,4 @@
-/* Exercises backend transcript discovery without touching the user's stores. */
+
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,8 +8,6 @@
 
 #include "sessionlist.h"
 
-/* sessionlist prefers mux's title cache; these fixtures deliberately
- * exercise the titles in Grok's own summary files. */
 int title_lookup(const char *id, char *out, size_t size)
 {
     (void)id;
@@ -92,8 +90,6 @@ int main(void)
         return 1;
     }
 
-    /* Creation order is oldest-first, so stopping after readdir's first 40
-     * entries would omit the five newest sessions. */
     for (int i = 0; i < 45; i++)
         if (!make_fixture(group, i)) {
             fail("session fixture");

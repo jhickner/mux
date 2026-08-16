@@ -1,5 +1,4 @@
-/* Render a markdown blob containing an image line, the way a reply would be
- * rendered. Run it in a graphics terminal: ./imagetest some.png */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

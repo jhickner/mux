@@ -9,26 +9,22 @@
 #include <sys/stat.h>
 #include <time.h>
 
-#define INDEX_MAX  20000 /* entries kept; a huge tree is simply truncated */
-#define INDEX_TTL  10    /* seconds an index is reused before rebuilding */
+#define INDEX_MAX  20000
+#define INDEX_TTL  10
 #define WALK_DEPTH 8
-#define TOP_MAX    64    /* candidates ranked at once (repl's dropdown cap) */
+#define TOP_MAX    64
 
-/* Directories the fallback walk never descends into. Repos with a .gitignore
- * are handled by git ls-files instead. */
 static const char *SKIP_DIRS[] = {"node_modules", "target", "build", "dist",
                                   "vendor",       "venv",   "__pycache__"};
 
 struct index {
-    char **paths; /* relative; directories carry a trailing '/' */
+    char **paths;
     int    count, cap;
     char  *root;
     time_t built;
 };
 
 static struct index IDX;
-
-/* ---------- building ---------- */
 
 static void index_clear(struct index *ix)
 {
@@ -54,8 +50,6 @@ static void index_add(struct index *ix, const char *path)
         ix->paths[ix->count++] = d;
 }
 
-/* Add the file plus every directory above it, so "@src/" narrows before a file
- * is chosen. Duplicate parents are removed when the index is sorted. */
 static void index_add_with_parents(struct index *ix, const char *path)
 {
     for (const char *s = strchr(path, '/'); s; s = strchr(s + 1, '/')) {
@@ -73,13 +67,12 @@ static void index_add_with_parents(struct index *ix, const char *path)
 static int path_depth(const char *s)
 {
     int n = 0;
-    for (; *s && s[1]; s++) /* a trailing '/' marks a directory, not a level */
+    for (; *s && s[1]; s++)
         if (*s == '/')
             n++;
     return n;
 }
 
-/* Shallow before deep, then alphabetical: the order the empty "@" list shows. */
 static int cmp_path(const void *a, const void *b)
 {
     const char *x = *(const char *const *)a, *y = *(const char *const *)b;
@@ -102,11 +95,9 @@ static void index_sort_unique(struct index *ix)
     ix->count = w;
 }
 
-/* git knows the tracked and untracked-but-not-ignored files, which is exactly
- * the set worth offering. Returns 0 when `root` is not a repo. */
 static int index_from_git(struct index *ix, const char *root)
 {
-    if (strchr(root, '\'')) /* unquotable root: fall back to the walk */
+    if (strchr(root, '\''))
         return 0;
     char cmd[4200];
     snprintf(cmd, sizeof cmd,
@@ -121,7 +112,7 @@ static int index_from_git(struct index *ix, const char *root)
     while ((n = getline(&line, &cap, f)) > 0) {
         if (line[n - 1] == '\n')
             line[--n] = '\0';
-        /* git C-quotes paths with unusual bytes; those are not worth unquoting. */
+
         if (n > 0 && line[0] != '"')
             index_add_with_parents(ix, line);
     }
@@ -138,8 +129,6 @@ static int is_skipped_dir(const char *name)
     return 0;
 }
 
-/* `abs` is the directory to read, `rel` its path relative to the root ("" at the
- * top, otherwise slash-terminated). */
 static void walk(struct index *ix, const char *abs, const char *rel, int depth)
 {
     if (depth > WALK_DEPTH || ix->count >= INDEX_MAX)
@@ -190,10 +179,6 @@ void files_forget(void)
     memset(&IDX, 0, sizeof IDX);
 }
 
-/* ---------- ranking ---------- */
-
-/* Case-insensitive subsequence score, or -1 when `q` is not a subsequence.
- * Contiguous runs and matches at a word boundary score higher. */
 static int fuzzy(const char *name, const char *q)
 {
     int score = 0, ni = 0, streak = 0;
@@ -220,7 +205,6 @@ static int fuzzy(const char *name, const char *q)
     return score;
 }
 
-/* Offset of the last path segment, ignoring a directory's trailing '/'. */
 static int basename_at(const char *path)
 {
     int end = (int)strlen(path);
@@ -232,8 +216,6 @@ static int basename_at(const char *path)
     return 0;
 }
 
-/* A token without a slash is meant for the file name, so a basename hit beats a
- * scattered match across the directories above it. Shorter paths break ties. */
 static int path_score(const char *path, const char *token)
 {
     int         s = -1;
@@ -242,9 +224,7 @@ static int path_score(const char *path, const char *token)
         s = fuzzy(base, token);
     if (s >= 0) {
         s += 20;
-        /* A name starting with what was typed beats the same letters scattered
-         * through a longer one, and a name that *is* what was typed beats both:
-         * "@src" should offer src/ ahead of src/sessionfork.c. */
+
         size_t tl = strlen(token), bl = strlen(base);
         if (tl && strncasecmp(base, token, tl) == 0) {
             s += 30;
@@ -260,10 +240,6 @@ static int path_score(const char *path, const char *token)
     return s < 0 ? 0 : s;
 }
 
-/* ---------- paths outside the index ---------- */
-
-/* True for a token that names a place the project index does not cover: "~"
- * (home), "/" (absolute), "." or ".." (relative to the working directory). */
 static int is_external(const char *t)
 {
     if (t[0] == '~' || t[0] == '/')
@@ -275,10 +251,6 @@ static int is_external(const char *t)
     return t[1] == '.' && (t[2] == '/' || t[2] == '\0');
 }
 
-/* Split `token` into the directory prefix to list and the partial name being
- * matched inside it. `prefix` keeps the form typed (minus a "~" expanded to
- * $HOME) so accepting a candidate leaves a path the agent can open; `dir` is
- * that prefix made absolute for opendir(). Returns 0 when it cannot resolve. */
 static int split_external(const char *token, const char *root, char *prefix, size_t prefix_sz,
                           char *dir, size_t dir_sz, char *base, size_t base_sz)
 {
@@ -292,7 +264,7 @@ static int split_external(const char *token, const char *root, char *prefix, siz
         pre[n] = '\0';
         snprintf(base, base_sz, "%s", slash + 1);
     } else {
-        /* A bare "~", "." or ".." names the directory itself. */
+
         snprintf(pre, sizeof pre, "%s/", token);
         base[0] = '\0';
     }
@@ -317,7 +289,6 @@ static int cmp_name(const void *a, const void *b)
     return strcmp(*(const char *const *)a, *(const char *const *)b);
 }
 
-/* List one directory, fuzzy-matched against `base`, in place of the index. */
 static int complete_external(const char *token, const char *root, ReplCandidate *out, int max)
 {
     char prefix[4096], dir[4096], base[REPL_CAND_TEXT];
@@ -333,7 +304,7 @@ static int complete_external(const char *token, const char *root, ReplCandidate 
     while ((e = readdir(d)) && count < (int)(sizeof names / sizeof *names)) {
         if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0)
             continue;
-        if (e->d_name[0] == '.' && base[0] != '.') /* hidden until asked for */
+        if (e->d_name[0] == '.' && base[0] != '.')
             continue;
         char full[4096];
         snprintf(full, sizeof full, "%s/%s", dir, e->d_name);
@@ -394,12 +365,9 @@ int files_complete(void *ctx, const char *token, ReplCandidate *out, int max)
     if (cap <= 0)
         return 0;
 
-    /* Keep the best `cap` by insertion, so a large index costs no allocation. */
     int idx[TOP_MAX], score[TOP_MAX], n = 0;
     for (int i = 0; i < IDX.count; i++) {
-        /* An exact hit completes to what is already typed. Dropping it keeps a
-         * just-accepted directory off the top of its own narrowed list, where
-         * Tab would otherwise re-accept it and appear to do nothing. */
+
         if (strcmp(IDX.paths[i], token) == 0)
             continue;
         int sc = *token ? path_score(IDX.paths[i], token) : 0;

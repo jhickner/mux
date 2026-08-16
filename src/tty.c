@@ -13,8 +13,6 @@
 #define BRACKETED_PASTE_ON  "\x1b[?2004h"
 #define BRACKETED_PASTE_OFF "\x1b[?2004l"
 
-/* An ESC that is not followed by more bytes within this window is a real Escape
- * key rather than the start of a sequence. */
 #define ESC_GRACE_MS 30
 
 static struct termios entry_mode;
@@ -24,8 +22,6 @@ static volatile sig_atomic_t got_winch;
 static unsigned char pending[4096];
 static size_t pending_len, pending_pos;
 
-/* Counted rather than flagged, so a caller that only repaints still sees that
- * the window moved even when nothing is draining the input queue. */
 static volatile sig_atomic_t winch_count;
 
 static void on_winch(int sig) { (void)sig; got_winch = 1; winch_count++; }
@@ -101,8 +97,6 @@ void tty_watch(int (*fd)(void *ud), void (*ready)(void *ud), void *ud)
     watch_ud = ud;
 }
 
-/* Block up to timeout_ms for readable stdin. Returns 1 readable, 0 timeout,
- * -1 on error/EOF-ish failure. */
 static int wait_readable(int timeout_ms)
 {
     for (;;) {
@@ -127,14 +121,12 @@ static int wait_readable(int timeout_ms)
         if (extra < 0 || !FD_ISSET(extra, &fds))
             return 0;
         watch_ready(watch_ud);
-        /* A bounded wait has no room to restart its clock, so the caller gets a
-         * timeout and repaints; an open-ended one goes back to waiting. */
+
         if (timeout_ms >= 0)
             return 0;
     }
 }
 
-/* Refill the byte buffer. Returns bytes available, 0 on timeout, -1 on EOF. */
 static int refill(int timeout_ms)
 {
     if (pending_pos < pending_len)
@@ -152,7 +144,6 @@ static int refill(int timeout_ms)
     return (int)pending_len;
 }
 
-/* Peek the next byte, waiting at most timeout_ms. Returns -1 when none. */
 static int peek_byte(int timeout_ms)
 {
     if (pending_pos >= pending_len && refill(timeout_ms) <= 0)
@@ -175,7 +166,6 @@ static void emit(tty_event *ev, tty_key key)
     ev->text = NULL;
 }
 
-/* Consume a bracketed-paste body up to the terminating ESC [ 201~ . */
 static void read_paste(tty_event *ev)
 {
     size_t cap = 256, len = 0;
@@ -195,7 +185,7 @@ static void read_paste(tty_event *ev)
                 break;
             continue;
         }
-        /* A partial match was ordinary text after all. */
+
         for (size_t i = 0; i < matched; i++) {
             if (len + 2 > cap) {
                 char *g = realloc(body, cap * 2);
@@ -223,7 +213,6 @@ done:
     ev->text = body;
 }
 
-/* Map a CSI sequence's final byte and parameters onto a key. */
 static void decode_csi(tty_event *ev, const int *params, int nparams, int final)
 {
     int mods = nparams >= 2 ? params[1] : 1;
@@ -237,7 +226,7 @@ static void decode_csi(tty_event *ev, const int *params, int nparams, int final)
     case 'H': emit(ev, TK_HOME); return;
     case 'F': emit(ev, TK_END); return;
     case 'u':
-        /* kitty CSI-u: shift/ctrl + Enter reaches us as 13 with a modifier. */
+
         if (nparams >= 1 && params[0] == 13) {
             emit(ev, mods > 1 ? TK_NEWLINE : TK_ENTER);
             return;
@@ -307,7 +296,7 @@ static void decode_escape(tty_event *ev)
         }
     }
 
-    if (b == 'O') { /* SS3: application-mode arrows */
+    if (b == 'O') {
         pending_pos++;
         int c = take_byte(50);
         switch (c) {
@@ -321,23 +310,21 @@ static void decode_escape(tty_event *ev)
         }
     }
 
-    /* Alt-<key> arrives as ESC <key>. */
     pending_pos++;
     switch (b) {
     case 'b': emit(ev, TK_WORD_LEFT); return;
     case 'f': emit(ev, TK_WORD_RIGHT); return;
     case '\r': case '\n': emit(ev, TK_NEWLINE); return;
-    case 0x7f: emit(ev, TK_WORD_LEFT); return; /* alt-backspace ~ word motion */
+    case 0x7f: emit(ev, TK_WORD_LEFT); return;
     default: emit(ev, TK_ESCAPE); return;
     }
 }
 
-/* Assemble one UTF-8 codepoint whose lead byte is `lead`. */
 static uint32_t decode_utf8(int lead)
 {
     int extra;
     uint32_t cp;
-    if (lead < 0xC0)      return '?';           /* stray continuation */
+    if (lead < 0xC0)      return '?';
     else if (lead < 0xE0) { cp = (uint32_t)lead & 0x1F; extra = 1; }
     else if (lead < 0xF0) { cp = (uint32_t)lead & 0x0F; extra = 2; }
     else                  { cp = (uint32_t)lead & 0x07; extra = 3; }
