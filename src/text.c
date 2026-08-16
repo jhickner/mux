@@ -1,0 +1,119 @@
+#include "text.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+
+#include "app.h"
+
+void text_one_line(const char *in, char *out, size_t size)
+{
+    size_t o = 0;
+    int space = 0;
+    for (const char *p = in; *p && o + 1 < size; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
+            if (o == 0 || space)
+                continue;
+            space = 1;
+            out[o++] = ' ';
+            continue;
+        }
+        space = 0;
+        out[o++] = (char)c;
+    }
+    while (o > 0 && out[o - 1] == ' ')
+        o--;
+    out[o] = '\0';
+}
+
+void text_chomp(char *s)
+{
+    size_t n = strlen(s);
+    while (n && (s[n - 1] == '\n' || s[n - 1] == '\r'))
+        s[--n] = '\0';
+}
+
+char *text_slurp(const char *path, size_t max_bytes, size_t *len_out)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return NULL;
+
+    struct stat st;
+    if (fstat(fileno(f), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0 ||
+        (max_bytes && (unsigned long long)st.st_size > max_bytes)) {
+        fclose(f);
+        return NULL;
+    }
+
+    size_t want = (size_t)st.st_size;
+    char *buf = malloc(want + 1);
+    if (!buf) {
+        fclose(f);
+        return NULL;
+    }
+    size_t got = fread(buf, 1, want, f);
+    fclose(f);
+    buf[got] = '\0';
+    if (len_out)
+        *len_out = got;
+    return buf;
+}
+
+double now_seconds(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (double)tv.tv_sec + (double)tv.tv_usec / 1e6;
+}
+
+int path_config_dir(char *out, size_t size)
+{
+    const char *home = getenv("HOME");
+    if (!home || !*home)
+        return 0;
+    if ((size_t)snprintf(out, size, "%s/" APP_CONFIG, home) >= size)
+        return 0;
+    mkdir(out, 0700);
+    return 1;
+}
+
+int path_config_file(char *out, size_t size, const char *leaf)
+{
+    char dir[4096];
+    if (!path_config_dir(dir, sizeof dir))
+        return 0;
+    if ((size_t)snprintf(out, size, "%s/%s", dir, leaf) >= size)
+        return 0;
+    return 1;
+}
+
+void path_home_relative(const char *dir, char *out, size_t size)
+{
+    if (!dir) {
+        if (size)
+            out[0] = '\0';
+        return;
+    }
+    const char *home = getenv("HOME");
+    size_t n = home ? strlen(home) : 0;
+    if (n && strncmp(dir, home, n) == 0 && (dir[n] == '\0' || dir[n] == '/'))
+        snprintf(out, size, "~%s", dir + n);
+    else
+        snprintf(out, size, "%s", dir);
+}
+
+char *path_expand_home(const char *path)
+{
+    const char *home = getenv("HOME");
+    if (path[0] != '~' || (path[1] && path[1] != '/') || !home)
+        return NULL;
+    size_t n = strlen(home) + strlen(path);
+    char *out = malloc(n + 1);
+    if (out)
+        snprintf(out, n + 1, "%s%s", home, path + 1);
+    return out;
+}

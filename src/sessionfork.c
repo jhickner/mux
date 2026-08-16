@@ -82,8 +82,13 @@ int sessionfork(const struct session *s, enum fork_where where)
         tmux[n++] = "split-window";
         tmux[n++] = where == FORK_SPLIT_H ? "-h" : "-v";
     }
-    tmux[n++] = "-c";
-    tmux[n++] = (char *)session_cwd(s);
+    /* A NULL here would truncate argv at the -c, since execvp stops at the
+       first NULL. */
+    const char *cwd = session_cwd(s);
+    if (cwd) {
+        tmux[n++] = "-c";
+        tmux[n++] = (char *)cwd;
+    }
     tmux[n++] = program;
     tmux[n++] = "-b";
     tmux[n++] = (char *)session_backend(s);

@@ -1,8 +1,9 @@
 # mux
 
-A coding agent that wraps existing agents in headless mode, allowing
-subscription use.
+A coding harness that wraps existing harnesses in headless mode, allowing
+subscription use. I use it to test experimental harness features.
 
 - minimal UI (no tui, uses native terminal scroll)
-- kitty image support, useful for iterating on graphical projects
 - wraps claude, codex, grok, and pi
+- switch between backends mid-conversation, preserving context
+- kitty image support, useful for iterating on graphical projects

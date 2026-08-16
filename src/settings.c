@@ -3,10 +3,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
-#define MAX_SETTINGS 64
+/* One model.<backend>.<model> and one window.<backend>.<label> key accrues per
+   model per backend, so the table has to outlast heavy use. */
+#define MAX_SETTINGS 512
 #define MAX_KEY      MAX_SETTING_KEY
-#define MAX_VALUE    128
+#define MAX_VALUE    256
 
 static struct {
     char key[MAX_KEY];
@@ -74,18 +77,30 @@ void settings_set_str(const char *key, const char *value)
     }
     snprintf(entries[i].value, MAX_VALUE, "%s", value);
 
-    FILE *f = fopen(file_path, "w");
+    /* Write-and-rename so a crash or a full disk cannot leave the settings
+       file truncated. */
+    char temp[sizeof file_path + 8];
+    if (snprintf(temp, sizeof temp, "%s.tmp", file_path) >= (int)sizeof temp)
+        return;
+    FILE *f = fopen(temp, "w");
     if (!f)
         return;
     for (int j = 0; j < count; j++)
         fprintf(f, "%s=%s\n", entries[j].key, entries[j].value);
-    fclose(f);
+    if (fclose(f) != 0 || rename(temp, file_path) != 0)
+        unlink(temp);
 }
 
 int settings_get_int(const char *key, int fallback)
 {
     int i = find(key);
-    return i < 0 ? fallback : atoi(entries[i].value);
+    if (i < 0)
+        return fallback;
+    char *end;
+    long v = strtol(entries[i].value, &end, 10);
+    if (end == entries[i].value || *end)
+        return fallback;
+    return (int)v;
 }
 
 void settings_set_int(const char *key, int value)

@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "agenttabs.h"
+#include "app.h"
 #include "banner.h"
 #include "prompt.h"
 #include "filediff.h"
@@ -20,6 +21,7 @@
 #include "tty.h"
 #include "ui.h"
 #include "vendor/agents/backend.h"
+#include "text.h"
 #include "vendor/cJSON.h"
 
 struct session {
@@ -40,6 +42,7 @@ struct session {
     struct transcript transcript;
     char    *last_block;
     char    *streamed;
+    size_t   streamed_len, streamed_cap;
     int      turns;
     double   cost_usd;
     long     context_tokens;
@@ -70,23 +73,32 @@ static void replace(char **slot, const char *value)
     *slot = value ? strdup(value) : NULL;
 }
 
-static void append(char **slot, const char *value)
+/* Doubling rather than an exact realloc per event: this runs once per streamed
+   assistant chunk, so an exact fit would make a long reply quadratic. */
+static void stream_append(struct session *s, const char *value)
 {
     if (!value || !*value)
         return;
-    size_t have = *slot ? strlen(*slot) : 0, add = strlen(value);
-    char *grown = realloc(*slot, have + add + 1);
-    if (!grown)
-        return;
-    memcpy(grown + have, value, add + 1);
-    *slot = grown;
+    size_t add = strlen(value);
+    if (s->streamed_len + add + 1 > s->streamed_cap) {
+        size_t want = s->streamed_cap ? s->streamed_cap : 1024;
+        while (want < s->streamed_len + add + 1)
+            want *= 2;
+        char *grown = realloc(s->streamed, want);
+        if (!grown)
+            return;
+        s->streamed = grown;
+        s->streamed_cap = want;
+    }
+    memcpy(s->streamed + s->streamed_len, value, add + 1);
+    s->streamed_len += add;
 }
 
-static double now_seconds(void)
+static void stream_reset(struct session *s)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double)tv.tv_sec + (double)tv.tv_usec / 1e6;
+    free(s->streamed);
+    s->streamed = NULL;
+    s->streamed_len = s->streamed_cap = 0;
 }
 
 static void humanize(long n, char *out, size_t size)
@@ -97,27 +109,6 @@ static void humanize(long n, char *out, size_t size)
         snprintf(out, size, "%.1fk", (double)n / 1000.0);
     else
         snprintf(out, size, "%.1fM", (double)n / 1000000.0);
-}
-
-static void one_line(const char *in, char *out, size_t max)
-{
-    size_t o = 0;
-    int space = 0;
-    for (const char *p = in; *p && o + 1 < max; p++) {
-        unsigned char c = (unsigned char)*p;
-        if (c == '\n' || c == '\t' || c == '\r' || c == ' ') {
-            if (o == 0 || space)
-                continue;
-            space = 1;
-            out[o++] = ' ';
-            continue;
-        }
-        space = 0;
-        out[o++] = (char)c;
-    }
-    while (o > 0 && out[o - 1] == ' ')
-        o--;
-    out[o] = '\0';
 }
 
 static const char *shorten_path(const struct session *s, const char *value, char *scratch,
@@ -141,38 +132,45 @@ static const char *shorten_path(const struct session *s, const char *value, char
     return value;
 }
 
+/* One list for both readers: tool_argument takes the first match in this order,
+   tool_path considers only the entries flagged as naming a file. */
+static const struct {
+    const char *key;
+    int         is_path;
+} TOOL_ARG_KEYS[] = {
+    {"command", 0},          {"file_path", 1}, {"target_file", 1},
+    {"path", 1},             {"target_directory", 0},
+    {"pattern", 0},          {"url", 0},       {"query", 0},
+    {"prompt", 0},           {"description", 0},
+    {"notebook_path", 1},
+};
+
 static void tool_argument(const struct session *s, const backend_event *ev, char *out, size_t size)
 {
-    static const char *const KEYS[] = {"command",          "file_path", "target_file",
-                                       "path",             "target_directory",
-                                       "pattern",          "url",       "query",
-                                       "prompt",           "description",
-                                       "notebook_path"};
     char arg[4096] = "";
 
     if (ev->input_json) {
         cJSON *input = cJSON_Parse(ev->input_json);
         if (input) {
-            for (size_t i = 0; i < sizeof KEYS / sizeof *KEYS; i++) {
-                const char *v = cJSON_GetStringValue(cJSON_GetObjectItem(input, KEYS[i]));
+            for (size_t i = 0; i < COUNT(TOOL_ARG_KEYS); i++) {
+                const char *v =
+                    cJSON_GetStringValue(cJSON_GetObjectItem(input, TOOL_ARG_KEYS[i].key));
                 if (v && *v) {
                     char scratch[1024];
-                    one_line(shorten_path(s, v, scratch, sizeof scratch), arg, sizeof arg);
+                    text_one_line(shorten_path(s, v, scratch, sizeof scratch), arg, sizeof arg);
                     break;
                 }
             }
             cJSON_Delete(input);
         }
     } else if (ev->arg) {
-        one_line(ev->arg, arg, sizeof arg);
+        text_one_line(ev->arg, arg, sizeof arg);
     }
     snprintf(out, size, "%s", arg);
 }
 
 static int tool_path(const struct session *s, const char *input_json, char *out, size_t size)
 {
-    static const char *const KEYS[] = {"file_path", "target_file", "path",
-                                       "notebook_path"};
     if (!input_json)
         return 0;
 
@@ -181,8 +179,11 @@ static int tool_path(const struct session *s, const char *input_json, char *out,
         return 0;
 
     const char *found = NULL;
-    for (size_t i = 0; i < sizeof KEYS / sizeof *KEYS && !found; i++) {
-        const char *v = cJSON_GetStringValue(cJSON_GetObjectItem(input, KEYS[i]));
+    for (size_t i = 0; i < COUNT(TOOL_ARG_KEYS) && !found; i++) {
+        if (!TOOL_ARG_KEYS[i].is_path)
+            continue;
+        const char *v =
+            cJSON_GetStringValue(cJSON_GetObjectItem(input, TOOL_ARG_KEYS[i].key));
         if (v && *v)
             found = v;
     }
@@ -198,12 +199,6 @@ static int tool_path(const struct session *s, const char *input_json, char *out,
 
 #define TOOL_INDENT 2
 
-static void pad(int cells)
-{
-    for (int i = 0; i < cells; i++)
-        ui_put(" ");
-}
-
 static void print_activity(const char *marker, const char *text, enum ui_role role)
 {
     int indent = TOOL_INDENT + (int)ui_cells(marker) + 1;
@@ -212,7 +207,7 @@ static void print_activity(const char *marker, const char *text, enum ui_role ro
     if (budget < 8)
         budget = 8;
 
-    pad(TOOL_INDENT);
+    ui_pad(TOOL_INDENT);
     ui_esc(ui_style(UI_CHROME));
     ui_put(marker);
     ui_esc(ui_style(UI_RESET));
@@ -230,7 +225,7 @@ static void print_activity(const char *marker, const char *text, enum ui_role ro
         size_t skip = 0;
         size_t row = ui_wrap_row(p, (size_t)budget, &skip);
         if (!first)
-            pad(indent);
+            ui_pad(indent);
         if (*style)
             ui_esc(style);
         ui_putn(p, row);
@@ -260,7 +255,7 @@ static void print_tool_call(const char *name, const char *arg)
     int indent = TOOL_INDENT + (int)ui_cells(tag) + 1;
     int columns = ui_columns();
 
-    pad(TOOL_INDENT);
+    ui_pad(TOOL_INDENT);
     ui_esc(ui_style(UI_TOOL));
     ui_put(tag);
     ui_esc(ui_style(UI_RESET));
@@ -279,7 +274,7 @@ static void print_tool_call(const char *name, const char *arg)
         size_t skip = 0;
         size_t row = ui_wrap_row(p, (size_t)budget, &skip);
         if (!first)
-            pad(indent);
+            ui_pad(indent);
         ui_putn(p, row);
         ui_put("\n");
         p += row + skip;
@@ -336,8 +331,11 @@ static int cluster_extend(struct session *s, const char *name, const char *arg)
     if ((int)ui_cells(row) > cluster_budget())
         return 0;
 
+    char *grown = strdup(row);
+    if (!grown)
+        return 0;
     free(s->cluster.line);
-    s->cluster.line = strdup(row);
+    s->cluster.line = grown;
     return 1;
 }
 
@@ -351,7 +349,7 @@ static void cluster_paint(struct session *s)
 
     if (s->cluster.onscreen)
         ui_esc("\x1b[1A\r\x1b[K");
-    pad(TOOL_INDENT);
+    ui_pad(TOOL_INDENT);
     ui_esc(ui_style(UI_TOOL));
     ui_putn(s->cluster.line, tag);
     ui_esc(ui_style(UI_RESET));
@@ -385,7 +383,7 @@ static void print_tool_output(const char *text, enum ui_role role)
         line[n] = '\0';
 
         char clipped[1024];
-        one_line(line, clipped, sizeof clipped);
+        text_one_line(line, clipped, sizeof clipped);
         if (*clipped) {
             size_t skip = 0;
             size_t fit = ui_wrap_row(clipped, (size_t)budget, &skip);
@@ -437,7 +435,7 @@ static void on_event(void *ud, const backend_event *ev)
         return;
 
     switch (ev->kind) {
-    case BACKEND_EV_INIT:
+    case BACKEND_EV_INIT: /* handled above; listed to keep -Wswitch exhaustive */
         break;
 
     case BACKEND_EV_ASSISTANT:
@@ -451,7 +449,7 @@ static void on_event(void *ud, const backend_event *ev)
         ui_put("\n");
         status_resume();
         replace(&s->last_block, ev->text);
-        append(&s->streamed, ev->text);
+        stream_append(s, ev->text);
         cluster_forget(s);
         s->after_activity = 0;
         s->after_tool = 0;
@@ -698,6 +696,10 @@ struct session *session_new(const char *backend, const char *cwd, const char *mo
     if (!s)
         return NULL;
     s->backend = strdup(backend && *backend ? backend : "claude");
+    if (!s->backend) {
+        free(s);
+        return NULL;
+    }
     s->cwd = cwd ? strdup(cwd) : NULL;
     s->model = model ? strdup(model) : NULL;
     s->effort = effort ? strdup(effort) : NULL;
@@ -707,7 +709,7 @@ struct session *session_new(const char *backend, const char *cwd, const char *mo
 
 void session_replay(struct session *s)
 {
-    ui_esc("\x1b[2J\x1b[H");
+    ui_esc(UI_CLEAR_SCREEN);
     banner_hints();
     if (!s)
         return;
@@ -741,7 +743,7 @@ void session_free(struct session *s)
     free(s->last_reply);
     free(s->failed_prompt);
     free(s->last_block);
-    free(s->streamed);
+    stream_reset(s);
     free(s->prompt);
     free(s->permission);
     free(s->cluster.line);
@@ -892,8 +894,11 @@ int session_set_model(struct session *s, const char *model)
     if (!b)
         return 0;
 
+    char *next = model ? strdup(model) : NULL;
+    if (model && !next)
+        return 0;
     char *previous = s->model;
-    s->model = model ? strdup(model) : NULL;
+    s->model = next;
     b->set_model(b, s->model);
     if (restart(s, s->id[0] ? s->id : NULL)) {
         free(previous);
@@ -937,27 +942,44 @@ int session_set_effort(struct session *s, const char *effort)
     return 0;
 }
 
-static const char *const PERMISSIONS[] = {
-    "bypassPermissions", "auto", "acceptEdits", "dontAsk", "manual", "plan",
+static const struct {
+    const char *name;
+    const char *desc;
+} PERMISSIONS[] = {
+    {"bypassPermissions", "never refuses a tool call"},
+    {"auto", "approves the safe calls, refuses the rest"},
+    {"acceptEdits", "edits without asking, refuses the rest"},
+    {"dontAsk", "refuses anything that would ask"},
+    {"manual", "refuses everything not pre-allowed"},
+    {"plan", "read-only: research and propose, no changes"},
 };
-#define PERMISSION_COUNT ((int)(sizeof PERMISSIONS / sizeof *PERMISSIONS))
+#define PERMISSION_COUNT (COUNT(PERMISSIONS))
+
+int session_permission_count(void) { return PERMISSION_COUNT; }
 
 const char *session_permission_name(int index)
 {
-    return (index >= 0 && index < PERMISSION_COUNT) ? PERMISSIONS[index] : NULL;
+    return (index >= 0 && index < PERMISSION_COUNT) ? PERMISSIONS[index].name : NULL;
+}
+
+const char *session_permission_desc(int index)
+{
+    return (index >= 0 && index < PERMISSION_COUNT) ? PERMISSIONS[index].desc : NULL;
 }
 
 int session_permission_index(const char *mode)
 {
-    for (int i = 0; mode && i < PERMISSION_COUNT; i++)
-        if (strcmp(PERMISSIONS[i], mode) == 0)
+    if (!mode)
+        return -1;
+    for (int i = 0; i < PERMISSION_COUNT; i++)
+        if (strcmp(PERMISSIONS[i].name, mode) == 0)
             return i;
     return -1;
 }
 
 const char *session_permission(const struct session *s)
 {
-    return (s && s->permission) ? s->permission : PERMISSIONS[0];
+    return (s && s->permission) ? s->permission : PERMISSIONS[0].name;
 }
 
 int session_set_permission(struct session *s, const char *mode)
@@ -1097,7 +1119,7 @@ int session_turn(struct session *s, const char *text)
         return 0;
 
     replace(&s->last_block, NULL);
-    replace(&s->streamed, NULL);
+    stream_reset(s);
     replace(&s->prompt, text);
     s->after_activity = 0;
     s->after_tool = 0;
@@ -1261,6 +1283,13 @@ static void await_model(struct session *s)
         struct timespec nap = {0, 20 * 1000 * 1000};
         nanosleep(&nap, NULL);
     }
+}
+
+const char *session_model_short(const struct session *s, const char *model)
+{
+    if (strcmp(s->backend, "claude") == 0 && strncmp(model, "claude-", 7) == 0 && model[7])
+        return model + 7;
+    return model;
 }
 
 const char *session_model_label(const struct session *s)

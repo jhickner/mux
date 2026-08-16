@@ -8,6 +8,7 @@
 #include "agenttabs.h"
 #include "app.h"
 #include "banner.h"
+#include "bash.h"
 #include "cmd.h"
 #include "hud.h"
 #include "image.h"
@@ -20,8 +21,7 @@
 #include "ui.h"
 #include "vendor/agents/backend.h"
 #include "vendor/repl.h"
-
-#define APP APP_NAME
+#include "text.h"
 
 static void backend_choices(char *out, size_t size)
 {
@@ -47,22 +47,12 @@ static void restore_terminal(void)
     tty_raw_end();
 }
 
-static int config_dir(char *out, size_t size)
-{
-    const char *home = getenv("HOME");
-    if (!home)
-        return 0;
-    snprintf(out, size, "%s/.config/%s", home, APP);
-    mkdir(out, 0700);
-    return 1;
-}
-
 static void usage(void)
 {
     char choices[128];
     backend_choices(choices, sizeof choices);
     fprintf(stderr,
-            "usage: " APP " [-b backend] [-m model] [-e effort] [-C dir] [-s] [-r] [prompt...]\n"
+            "usage: " APP_NAME " [-b backend] [-m model] [-e effort] [-C dir] [-s] [-r] [prompt...]\n"
             "\n"
             "  -b name    agent CLI to drive: %s (default: claude)\n"
             "  -m model   model to run (default: the last /model pick, else the CLI's own)\n"
@@ -131,7 +121,7 @@ int main(int argc, char **argv)
     if (!backend_known(backend)) {
         char choices[128];
         backend_choices(choices, sizeof choices);
-        fprintf(stderr, APP ": unknown backend '%s' — pick one of %s\n", backend, choices);
+        fprintf(stderr, APP_NAME ": unknown backend '%s' — pick one of %s\n", backend, choices);
         return 2;
     }
     if (effort && !strcmp(effort, "default"))
@@ -140,23 +130,23 @@ int main(int argc, char **argv)
     sessionfork_set_program(argv[0]);
 
     if (resume && optind < argc) {
-        fprintf(stderr, APP ": --resume takes no prompt — it starts with the picker\n");
+        fprintf(stderr, APP_NAME ": --resume takes no prompt — it starts with the picker\n");
         return 2;
     }
 
     char cwd[4096];
     if (dir) {
         if (!realpath(dir, cwd)) {
-            fprintf(stderr, APP ": no such directory: %s\n", dir);
+            fprintf(stderr, APP_NAME ": no such directory: %s\n", dir);
             return 1;
         }
     } else if (!getcwd(cwd, sizeof cwd)) {
-        fprintf(stderr, APP ": cannot determine the working directory\n");
+        fprintf(stderr, APP_NAME ": cannot determine the working directory\n");
         return 1;
     }
 
     char config[4096];
-    int have_config = config_dir(config, sizeof config);
+    int have_config = path_config_dir(config, sizeof config);
     if (have_config) {
         char path[4200];
         snprintf(path, sizeof path, "%s/settings", config);
@@ -185,7 +175,8 @@ int main(int argc, char **argv)
         session_adopt_id(session, session_arg);
     }
     if (!session || !session_start(session)) {
-        fprintf(stderr, APP ": could not start the %s CLI — is it on PATH?\n", backend);
+        fprintf(stderr, APP_NAME ": could not start the %s CLI — is it on PATH?\n", backend);
+        session_free(session);
         return 1;
     }
 
@@ -194,13 +185,19 @@ int main(int argc, char **argv)
         for (int i = optind; i < argc; i++)
             need += strlen(argv[i]) + 1;
         char *text = calloc(need, 1);
-        if (!text)
+        if (!text) {
+            session_free(session);
             return 1;
+        }
+        size_t at = 0;
         for (int i = optind; i < argc; i++) {
             if (i > optind)
-                strcat(text, " ");
-            strcat(text, argv[i]);
+                text[at++] = ' ';
+            size_t n = strlen(argv[i]);
+            memcpy(text + at, argv[i], n);
+            at += n;
         }
+        text[at] = '\0';
         session_set_quiet(session, !isatty(STDOUT_FILENO));
         session_set_naming(session, 0);
         int ok = session_turn(session, text);
@@ -210,7 +207,7 @@ int main(int argc, char **argv)
     }
 
     if (tty_raw_begin() != 0) {
-        fprintf(stderr, APP ": not a terminal — pass a prompt as arguments instead\n");
+        fprintf(stderr, APP_NAME ": not a terminal — pass a prompt as arguments instead\n");
         session_free(session);
         return 1;
     }
@@ -256,6 +253,18 @@ int main(int argc, char **argv)
             line = prompt_read(prompt);
         if (!line)
             break;
+
+        if (bash_is_command(line)) {
+            bash_run(line);
+            char *text = bash_take_context();
+            if (text) {
+                status_sticky_prompt(line);
+                session_turn(session, text);
+                free(text);
+            }
+            free(line);
+            continue;
+        }
 
         enum cmd_result r = cmd_dispatch(session, line);
         if (r == CMD_QUIT) {

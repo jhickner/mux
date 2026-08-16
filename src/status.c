@@ -1,3 +1,4 @@
+#include "app.h"
 #include "status.h"
 
 #include <stdio.h>
@@ -7,9 +8,10 @@
 
 #include "tty.h"
 #include "ui.h"
+#include "text.h"
 
 static const char *const FRAMES[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
-#define FRAME_COUNT ((int)(sizeof FRAMES / sizeof *FRAMES))
+#define FRAME_COUNT (COUNT(FRAMES))
 
 #define FRAME_MS 90
 
@@ -24,7 +26,7 @@ static char    note[128];
 static status_paint_fn  below;
 static status_offset_fn below_offset;
 static void            *below_ud;
-static status_hud_fn    hud;
+static ui_hud_fn    hud;
 static void            *hud_ud;
 static int              hud_rows;
 static int              caret_row;
@@ -40,18 +42,11 @@ static int   sticky_on;
 static char *sticky_text;
 static int   sticky_widths[STICKY_ROWS_MAX];
 static int   sticky_rows;
-static int   sticky_screen;
+static int   sticky_tracking;
 static int   block_tallest;
 
 static unsigned resize_epoch;
 static double   resize_at;
-
-static double now_seconds(void)
-{
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double)tv.tv_sec + (double)tv.tv_usec / 1e6;
-}
 
 double status_elapsed(void)
 {
@@ -89,7 +84,7 @@ void status_set_below(status_paint_fn paint_fn, status_offset_fn offset_fn, void
     below_ud = ud;
 }
 
-void status_set_hud(status_hud_fn paint_fn, void *ud)
+void status_set_hud(ui_hud_fn paint_fn, void *ud)
 {
     hud = paint_fn;
     hud_ud = ud;
@@ -101,17 +96,9 @@ static int size_changing(void)
     if (epoch != resize_epoch) {
         resize_epoch = epoch;
         resize_at = now_seconds();
+        dirty = 1;
     }
     return resize_at > 0 && (now_seconds() - resize_at) * 1000.0 < TTY_RESIZE_SETTLE_MS;
-}
-
-static void move(int count, char direction)
-{
-    if (count <= 0)
-        return;
-    char esc[16];
-    snprintf(esc, sizeof esc, "\x1b[%d%c", count, direction);
-    ui_esc(esc);
 }
 
 static int rows_above_caret(void)
@@ -129,9 +116,9 @@ static int rows_above_caret(void)
 
 static void erase_block(void)
 {
-    ui_esc("\x1b[?25l");
+    ui_esc(UI_CURSOR_HIDE);
     if (painted)
-        move(rows_above_caret(), 'A');
+        ui_move(rows_above_caret(), 'A');
     ui_esc("\r\x1b[J");
     caret_row = 0;
     spin_width = 0;
@@ -156,7 +143,9 @@ static void humanize(double seconds, char *out, size_t n)
 
 static int sticky_gone(void)
 {
-    int gone_at = sticky_screen - 2 - (block_tallest > 0 ? block_tallest - 1 : 0);
+    if (!sticky_tracking)
+        return 1;
+    int gone_at = tty_rows() - 2 - (block_tallest > 0 ? block_tallest - 1 : 0);
     return ui_scroll_rows() >= (gone_at > 0 ? gone_at : 0);
 }
 
@@ -178,7 +167,7 @@ static void paint_sticky(void)
         int width = 2 + (int)ui_cells_n(p, row);
 
         ui_esc(ui_style(UI_STICKY));
-        ui_esc("\x1b[K");
+        ui_esc(UI_ERASE_EOL);
         ui_put(UI_BAR " ");
         ui_putn(p, row);
         p += row + skip;
@@ -190,7 +179,7 @@ static void paint_sticky(void)
         ui_put("\n");
         sticky_widths[sticky_rows++] = width;
     }
-    ui_esc("\x1b[K");
+    ui_esc(UI_ERASE_EOL);
     ui_put("\n");
     sticky_widths[sticky_rows++] = 0;
 }
@@ -257,13 +246,13 @@ static void paint(void)
         int rows = 1, row = 0, col = 0;
         ui_put("\n");
         below(below_ud, &rows, &row, &col);
-        move((rows - 1) - row, 'A');
+        ui_move((rows - 1) - row, 'A');
         ui_esc("\r");
-        move(col, 'C');
+        ui_move(col, 'C');
         caret_row = 1 + row;
         caret_col = col;
         below_rows = rows;
-        ui_esc("\x1b[?25h");
+        ui_esc(UI_CURSOR_SHOW);
     }
     block_rows(below_rows);
     painted = 1;
@@ -285,14 +274,14 @@ static int paint_spin_only(void)
     int down = 1 + (below_offset ? below_offset(below_ud) : caret_row - 1);
     ui_sync_begin();
     ui_scroll_track(0);
-    ui_esc("\x1b[?25l");
-    move(down, 'A');
+    ui_esc(UI_CURSOR_HIDE);
+    ui_move(down, 'A');
     ui_esc("\r\x1b[K");
     paint_spin();
     ui_esc("\r");
-    move(down, 'B');
-    move(caret_col, 'C');
-    ui_esc("\x1b[?25h");
+    ui_move(down, 'B');
+    ui_move(caret_col, 'C');
+    ui_esc(UI_CURSOR_SHOW);
     ui_scroll_track(1);
     ui_sync_end();
     ui_flush();
@@ -383,11 +372,11 @@ void status_sticky_prompt(const char *text)
     sticky_text = text && *text ? strdup(text) : NULL;
     dirty = 1;
 
-    sticky_screen = tty_rows();
+    sticky_tracking = 1;
     ui_scroll_mark();
 }
 
-void status_sticky_erased(void) { sticky_screen = 0; }
+void status_sticky_erased(void) { sticky_tracking = 0; }
 
 const char *status_sticky_offscreen(void)
 {
@@ -406,6 +395,6 @@ void status_end(void)
     visible = 0;
     active = 0;
     started = 0;
-    ui_esc("\x1b[?25h");
+    ui_esc(UI_CURSOR_SHOW);
 
 }

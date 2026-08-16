@@ -2,7 +2,12 @@
 #ifndef TTY_H
 #define TTY_H
 
+#include <stddef.h>
 #include <stdint.h>
+
+/* Forward-declared rather than including <termios.h>: session.h includes this
+   header, so every session consumer would otherwise pull in termios. */
+struct termios;
 
 typedef enum {
     TK_CHAR,
@@ -40,6 +45,10 @@ int  tty_read(tty_event *ev, int timeout_ms);
 void tty_watch(int (*fd)(void *ud), void (*ready)(void *ud), void *ud);
 
 int  tty_is_raw(void);
+
+int tty_cooked_termios(struct termios *out);
+
+size_t tty_take_pending(void *buf, size_t max);
 
 unsigned tty_resize_epoch(void);
 

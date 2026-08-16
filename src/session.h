@@ -53,7 +53,9 @@ int session_can_set_effort(const struct session *s);
 int session_set_permission(struct session *s, const char *mode);
 const char *session_permission(const struct session *s);
 
+int         session_permission_count(void);
 const char *session_permission_name(int index);
+const char *session_permission_desc(int index);
 int         session_permission_index(const char *mode);
 
 int session_resume(struct session *s, const char *id);
@@ -67,6 +69,9 @@ const char *session_saved_model(const char *backend);
 const char *session_saved_effort(const char *backend);
 
 const char *session_model_label(const struct session *s);
+
+/* Drops the "claude-" prefix when the backend is claude. */
+const char *session_model_short(const struct session *s, const char *model);
 
 const char *session_effort_label(const struct session *s);
 

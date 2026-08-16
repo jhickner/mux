@@ -109,6 +109,7 @@ void codex_stop(codex_client *c);
 #ifdef CODEX_IMPLEMENTATION
 
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -511,6 +512,10 @@ codex_client *codex_start(const codex_opts *opts) {
         execvp(cli, (char *const *)argv); _exit(127);
     }
     close(in[0]); close(out[1]);
+    /* Keep the agent pipes out of every child we later fork (shell, git, …),
+       matching claude.h/grok.h/pi.h. */
+    fcntl(in[1], F_SETFD, FD_CLOEXEC);
+    fcntl(out[0], F_SETFD, FD_CLOEXEC);
     c->pid = pid; c->in_fd = in[1]; c->out_fd = out[0];
     atomic_init(&c->warm_state, 0);
     if (!pthread_create(&c->warm_thread, NULL, cx_warm, c))

@@ -6,4 +6,6 @@
 
 #define APP_CONFIG ".config/" APP_NAME
 
+#define COUNT(a) ((int)(sizeof(a) / sizeof(*(a))))
+
 #endif

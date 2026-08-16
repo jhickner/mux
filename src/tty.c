@@ -26,7 +26,40 @@ static volatile sig_atomic_t winch_count;
 
 static void on_winch(int sig) { (void)sig; got_winch = 1; winch_count++; }
 
+/* atexit() does not run when a signal kills us, which would leave the user's
+   terminal in raw mode with echo off. Only async-signal-safe calls here. */
+static void on_fatal(int sig)
+{
+    if (in_raw) {
+        (void)!write(STDOUT_FILENO, BRACKETED_PASTE_OFF "\x1b[?25h",
+                     sizeof(BRACKETED_PASTE_OFF "\x1b[?25h") - 1);
+        tcsetattr(STDIN_FILENO, TCSAFLUSH, &entry_mode);
+        in_raw = 0;
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
 int tty_is_raw(void) { return in_raw; }
+
+int tty_cooked_termios(struct termios *out)
+{
+    if (in_raw) {
+        *out = entry_mode;
+        return 0;
+    }
+    return tcgetattr(STDIN_FILENO, out) == 0 ? 0 : -1;
+}
+
+size_t tty_take_pending(void *buf, size_t max)
+{
+    size_t have = pending_len - pending_pos;
+    if (have > max)
+        have = max;
+    memcpy(buf, pending + pending_pos, have);
+    pending_pos += have;
+    return have;
+}
 
 unsigned tty_resize_epoch(void) { return (unsigned)winch_count; }
 
@@ -70,6 +103,15 @@ int tty_raw_begin(void)
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART;
     sigaction(SIGWINCH, &sa, NULL);
+
+    static const int FATAL[] = {SIGHUP, SIGINT, SIGTERM, SIGQUIT, SIGSEGV, SIGBUS, SIGABRT};
+    struct sigaction fs = {0};
+    fs.sa_handler = on_fatal;
+    sigemptyset(&fs.sa_mask);
+    for (size_t i = 0; i < sizeof FATAL / sizeof *FATAL; i++)
+        sigaction(FATAL[i], &fs, NULL);
+
+    signal(SIGPIPE, SIG_IGN);
 
     fputs(BRACKETED_PASTE_ON, stdout);
     fflush(stdout);
@@ -175,6 +217,10 @@ static void read_paste(tty_event *ev)
         return;
     }
     static const char END[] = "\x1b[201~";
+    /* Keep consuming to the end marker once the cap is hit, or the rest of the
+       paste would be re-read as keystrokes. */
+    const size_t PASTE_MAX = 8u << 20;
+    int full = 0;
     size_t matched = 0;
     for (;;) {
         int b = take_byte(2000);
@@ -183,6 +229,12 @@ static void read_paste(tty_event *ev)
         if ((char)b == END[matched]) {
             if (++matched == sizeof END - 1)
                 break;
+            continue;
+        }
+        if (len >= PASTE_MAX)
+            full = 1;
+        if (full) {
+            matched = 0;
             continue;
         }
 
