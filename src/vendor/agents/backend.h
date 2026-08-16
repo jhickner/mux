@@ -143,11 +143,17 @@ struct Backend {
      * the model with no prompt. idle_fd() is an fd that becomes readable when
      * such a turn produces output (-1 while there is nothing to watch, so it is
      * asked again before each wait) and idle_pump() consumes what is there,
-     * reporting it through the event sink. Both are for the gap between turns:
+     * reporting it through the event sink and returning nonzero while such a
+     * turn is still open or announced. Both are for the gap between turns:
      * calling the pump with a turn in flight would steal that turn's stream.
      * NULL for a driver whose agent only speaks when spoken to. */
     int  (*idle_fd)(Backend *b);
-    void (*idle_pump)(Backend *b);
+    int  (*idle_pump)(Backend *b);
+
+    /* Work the agent still has running with no turn in flight — background
+     * subagents and detached commands outlive the send that started them, so a
+     * turn ending is not the work ending. NULL for a driver that cannot say. */
+    int  (*busy)(Backend *b);
 
     /* NULL until known, or when the driver never reports it. */
     const char *(*session_id)(Backend *b);
@@ -413,9 +419,13 @@ static int backend_claude_idle_fd(Backend *b) {
     backend_claude *x = b->ctx;
     return x->client ? claude_idle_fd(x->client) : -1;
 }
-static void backend_claude_idle_pump(Backend *b) {
+static int backend_claude_idle_pump(Backend *b) {
     backend_claude *x = b->ctx;
-    if (x->client) claude_idle_pump(x->client);
+    return x->client ? claude_idle_pump(x->client) : 0;
+}
+static int backend_claude_busy(Backend *b) {
+    backend_claude *x = b->ctx;
+    return x->client ? claude_background_tasks(x->client) : 0;
 }
 
 static const char *backend_claude_session_id(Backend *b) {
@@ -470,6 +480,7 @@ static Backend *backend_claude_open(const backend_opts *o) {
     b->set_abort_check = backend_claude_set_abort;
     b->idle_fd = backend_claude_idle_fd;
     b->idle_pump = backend_claude_idle_pump;
+    b->busy = backend_claude_busy;
     b->session_id = backend_claude_session_id;
     b->model = backend_claude_model;
     b->effort = backend_claude_effort;

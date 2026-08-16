@@ -100,6 +100,22 @@ static int mock_cli(int argc, char **argv)
         else if (text && !strcmp(text, "continue"))
             result("done");
 
+        else if (text && !strcmp(text, "fanout")) {
+            printf("{\"type\":\"system\",\"subtype\":\"background_tasks_changed\","
+                   "\"tasks\":[{\"task_id\":\"a\"},{\"task_id\":\"b\"}]}\n");
+            fflush(stdout);
+            result("launched");
+            /* The workers report in after the turn that started them ended, and
+             * the last of them is announced without ever waking the model. */
+            printf("{\"type\":\"system\",\"subtype\":\"background_tasks_changed\","
+                   "\"tasks\":[]}\n");
+            fflush(stdout);
+            stray_turn("workers done");
+            printf("{\"type\":\"system\",\"subtype\":\"task_notification\","
+                   "\"status\":\"stopped\"}\n");
+            fflush(stdout);
+        }
+
         else if (text && !strcmp(text, "race")) {
             stray_turn("background task finished");
             turn("answered");
@@ -160,6 +176,29 @@ int main(int argc, char **argv)
         return 1;
     }
     free(reply);
+
+    reply = claude_send(client, "fanout");
+    if (!reply || claude_background_tasks(client) != 2) {
+        fprintf(stderr, "claudetest: background tasks not counted (%d)\n",
+                claude_background_tasks(client));
+        free(reply);
+        claude_stop(client);
+        return 1;
+    }
+    free(reply);
+
+    int busy = 1;
+    started = milliseconds();
+    while (milliseconds() - started < 300) {
+        busy = claude_idle_pump(client);
+        usleep(2000);
+    }
+    if (busy || claude_background_tasks(client)) {
+        fputs("claudetest: idle work never cleared once the workers finished\n", stderr);
+        claude_stop(client);
+        return 1;
+    }
+
     claude_stop(client);
     puts("claudetest: ok");
     return 0;

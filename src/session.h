@@ -36,7 +36,11 @@ int session_start(struct session *s);
 int session_turn(struct session *s, const char *text);
 
 int  session_idle_fd(const struct session *s);
-void session_idle_pump(struct session *s);
+
+/* Consume a turn the agent ran on its own. Nonzero while one is still open —
+ * a background worker reporting in after the send's own turn ended. */
+int  session_idle_pump(struct session *s);
+int  session_idle_busy(const struct session *s);
 
 int session_switch_backend(struct session *s, const char *backend);
 

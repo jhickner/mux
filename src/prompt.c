@@ -47,7 +47,8 @@ struct prompt {
     void         *hud_ud;
     int           painted_hud;
     int        (*idle_fd)(void *ud);
-    void       (*idle_render)(void *ud);
+    int        (*idle_render)(void *ud);
+    int        (*idle_busy)(void *ud);
     void        *idle_ud;
     void       (*replay)(void *ud);
     void        *replay_ud;
@@ -193,6 +194,9 @@ static const char *head_text(const struct prompt *p)
 }
 
 #define STICKY_DONE "\xe2\x9c\x93 "
+/* Same two cells as the check, so a turn still running elsewhere does not
+ * reflow the bar when it lands. */
+#define STICKY_BUSY "\xe2\x8b\xaf "
 
 static size_t sticky_budget(int cols)
 {
@@ -318,7 +322,9 @@ static void paint_bars(const char *text, size_t budget, enum ui_role role, int c
 static void paint_above(const struct prompt *p, const char *head, int cols)
 {
     if (head) {
-        paint_bars(head, sticky_budget(cols), UI_STICKY_DONE, STICKY_LINES, STICKY_DONE);
+        int busy = p->idle_busy && p->idle_busy(p->idle_ud);
+        paint_bars(head, sticky_budget(cols), busy ? UI_STICKY : UI_STICKY_DONE,
+                   STICKY_LINES, busy ? STICKY_BUSY : STICKY_DONE);
         ui_esc("\x1b[K");
         ui_put("\n");
     }
@@ -821,10 +827,11 @@ static char *take_line(struct prompt *p)
 }
 
 void prompt_set_idle(struct prompt *p, int (*fd)(void *ud),
-                     void (*render)(void *ud), void *ud)
+                     int (*render)(void *ud), int (*busy)(void *ud), void *ud)
 {
     p->idle_fd = fd;
     p->idle_render = render;
+    p->idle_busy = busy;
     p->idle_ud = ud;
 }
 

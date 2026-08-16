@@ -78,8 +78,9 @@ static void usage(void)
             choices);
 }
 
-static int idle_fd(void *ud)      { return session_idle_fd(ud); }
-static void idle_render(void *ud) { session_idle_pump(ud); }
+static int idle_fd(void *ud)     { return session_idle_fd(ud); }
+static int idle_render(void *ud) { return session_idle_pump(ud); }
+static int idle_busy(void *ud)   { return session_idle_busy(ud); }
 static void replay(void *ud)      { session_replay(ud); }
 
 static int live_command(void *ud, const char *line)
@@ -235,7 +236,7 @@ int main(int argc, char **argv)
     session_set_typeahead(prompt_live_key, prompt);
     status_set_below(prompt_live_paint, prompt_live_offset, prompt);
     prompt_set_live_command(prompt, live_command, session);
-    prompt_set_idle(prompt, idle_fd, idle_render, session);
+    prompt_set_idle(prompt, idle_fd, idle_render, idle_busy, session);
     prompt_set_hud(prompt, hud_paint_idle, session);
     prompt_set_replay(prompt, replay, session);
     status_set_hud(hud_paint_busy, session);

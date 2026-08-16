@@ -55,6 +55,7 @@ struct session {
     int      after_activity;
     int      after_tool;
     int      after_collapse;
+    int      idle_busy;
 
     struct {
         char  tool[64];
@@ -558,18 +559,41 @@ int session_idle_fd(const struct session *s)
     return s->agent->idle_fd(s->agent);
 }
 
-void session_idle_pump(struct session *s)
+/* Only report the change: the tab record is a file the tmux status bar reads. */
+static void tab_busy(struct session *s, int busy)
+{
+    busy = busy ? 1 : 0;
+    if (busy == s->idle_busy)
+        return;
+    s->idle_busy = busy;
+    if (busy)
+        agenttabs_working();
+    else
+        agenttabs_finished();
+}
+
+int session_idle_pump(struct session *s)
 {
     if (!s || !s->agent || !s->agent->idle_pump || s->quiet)
-        return;
+        return 0;
 
     cluster_forget(s);
     s->after_activity = 0;
     s->after_tool = 0;
     s->after_collapse = 0;
     live = s;
-    s->agent->idle_pump(s->agent);
+    int busy = s->agent->idle_pump(s->agent) ? 1 : 0;
     live = NULL;
+
+    tab_busy(s, busy);
+    return busy;
+}
+
+int session_idle_busy(const struct session *s)
+{
+    if (!s || !s->agent || !s->agent->busy)
+        return 0;
+    return s->agent->busy(s->agent) ? 1 : 0;
 }
 
 static session_key_fn typeahead;
@@ -1105,6 +1129,7 @@ int session_turn(struct session *s, const char *text)
     cluster_forget(s);
     live = s;
     double started = now_seconds();
+    s->idle_busy = 1;
     agenttabs_working();
     if (!s->quiet) {
         set_spin_word(s);
@@ -1125,6 +1150,7 @@ int session_turn(struct session *s, const char *text)
 
     if (!reply) {
         replace(&s->failed_prompt, text);
+        s->idle_busy = 0;
         agenttabs_errored();
         const char *detail = s->agent->last_error(s->agent);
         if (detail)
@@ -1172,7 +1198,9 @@ int session_turn(struct session *s, const char *text)
     if (meta.context_tokens > 0)
         s->context_tokens = meta.context_tokens;
 
-    agenttabs_finished();
+    /* Background workers the turn started are still going, so the turn ending
+     * is not the tab going idle. */
+    tab_busy(s, session_idle_busy(s));
 
     update_title(s);
     remember_model(s);

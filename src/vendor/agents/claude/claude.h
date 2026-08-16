@@ -138,6 +138,13 @@ void claude_set_event_cb(claude_client *c,
                          void (*cb)(void *ud, const claude_event *ev),
                          void *ud);
 
+/* How many background tasks the CLI currently has outstanding — subagents and
+ * detached bash it started and has not yet been told about. A turn can end with
+ * these still running, so a front end showing the agent as busy has to ask this
+ * rather than take the turn's result as the end of the work. The CLI reports the
+ * whole set whenever it changes, so this is a snapshot, not a running count. */
+int claude_background_tasks(claude_client *c);
+
 /* Ask the CLI to abandon the in-flight turn (the Agent SDK's interrupt control
  * request). The turn still ends with a result event, so the stream stays usable
  * for the next send. Returns nonzero on success. */
@@ -166,7 +173,8 @@ int claude_idle_fd(claude_client *c);
 
 /* Consume whatever is readable now, dispatching events to the callback set by
  * claude_set_event_cb(). Never blocks. Returns nonzero while such a turn is
- * still open, so a caller can tell "more is coming" from "that was all". */
+ * open or a background task it started is still running, so a caller can tell
+ * "more is coming" from "that was all". */
 int claude_idle_pump(claude_client *c);
 
 /* The tail of anything the CLI wrote to stderr, or NULL if it has been quiet.
@@ -233,6 +241,7 @@ struct claude_client {
     claude_result *meta;      /* filled from the in-flight turn's result event */
     int   turn_open;          /* an init has arrived with no result yet        */
     int   notified;           /* task notifications still owed a turn each     */
+    int   bg_tasks;           /* background tasks the CLI last reported open   */
     int   awaiting;           /* a send is out and has not been given its turn */
     int   turn_mine;          /* the open turn answers this client's send      */
     char *buf;                /* line-assembly buffer for out_fd       */
@@ -685,6 +694,11 @@ static int cl_handle_line(claude_client *c, const char *line, char **out) {
             }
         } else if (sub && strcmp(sub, "task_notification") == 0 && !c->turn_open) {
             c->notified++;
+        } else if (sub && strcmp(sub, "background_tasks_changed") == 0) {
+            /* The event carries the whole outstanding set, so it replaces the
+             * count rather than adjusting it. */
+            cJSON *tasks = cJSON_GetObjectItem(ev, "tasks");
+            c->bg_tasks = cJSON_IsArray(tasks) ? cJSON_GetArraySize(tasks) : 0;
         }
         const char *auth = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "apiKeySource"));
         if (auth && *auth)
@@ -943,8 +957,14 @@ int claude_idle_pump(claude_client *c) {
         if (cl_fill(c, 0) <= 0) break;
     }
     c->meta = saved;
-    return c->turn_open || c->notified;
+    /* Deliberately not c->notified: a task that ends without waking the model —
+     * one stopped at shutdown, say — is announced but never gets its turn, and
+     * counting it here would leave the caller showing work that never lands.
+     * The next send's drain is where an unanswered announcement is written off. */
+    return c->turn_open || c->bg_tasks;
 }
+
+int claude_background_tasks(claude_client *c) { return c ? c->bg_tasks : 0; }
 
 static char *cl_send(claude_client *c, const char *user_text, int content_block) {
     if (!c || !user_text) return NULL;

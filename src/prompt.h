@@ -29,8 +29,11 @@ void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud);
 typedef int (*prompt_live_fn)(void *ud, const char *line);
 void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud);
 
-void prompt_set_idle(struct prompt *p, int (*fd)(void *ud),
-                     void (*render)(void *ud), void *ud);
+/* render() consumes a turn the agent ran on its own; busy() answers whether the
+ * agent still has work running with no turn in flight, so the sticky prompt can
+ * keep showing the send as unfinished while background workers report in. */
+void prompt_set_idle(struct prompt *p, int (*fd)(void *ud), int (*render)(void *ud),
+                     int (*busy)(void *ud), void *ud);
 
 char *prompt_take_queued(struct prompt *p);
 
