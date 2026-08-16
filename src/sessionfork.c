@@ -52,7 +52,7 @@ static int run(char *const argv[], const char *out_path)
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
-int sessionfork(const struct session *s, enum fork_where where)
+int sessionfork_run(const struct session *s, enum fork_where where)
 {
     if (!getenv("TMUX")) {
         ui_error("forking needs tmux");

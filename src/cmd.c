@@ -265,7 +265,7 @@ static void do_model(struct session *s, const char *arg)
         for (int i = 0; i < count; i++)
             if (strcmp(choices[i].label, current) == 0)
                 initial = i;
-        int index = pick("select model", choices, count, initial);
+        int index = pick_run("select model", choices, count, initial);
         if (index < 0)
             return;
         chosen = choices[index].label;
@@ -294,7 +294,7 @@ static void do_effort(struct session *s, const char *arg)
         for (int i = 0; i < count; i++)
             if (!strcmp(choices[i].label, current))
                 initial = i;
-        int index = pick("set effort", choices, count, initial);
+        int index = pick_run("set effort", choices, count, initial);
         if (index < 0)
             return;
         chosen = choices[index].label;
@@ -370,7 +370,7 @@ static void do_permission(struct session *s, const char *arg)
     const char *chosen = arg;
     if (!chosen || !*chosen) {
         int initial = session_permission_index(session_permission(s));
-        int index = pick("gate tool calls", choices, count, initial < 0 ? 0 : initial);
+        int index = pick_run("gate tool calls", choices, count, initial < 0 ? 0 : initial);
         if (index < 0)
             return;
         chosen = choices[index].label;
@@ -445,20 +445,20 @@ static void do_image(const char *arg)
         long rows = strtol(arg, &end, 10);
         while (*end == ' ')
             end++;
-        if (*end || rows < IMG_ROWS_MIN || rows > IMG_ROWS_MAX) {
+        if (*end || rows < IMAGE_ROWS_MIN || rows > IMAGE_ROWS_MAX) {
             reply_error("/image takes a row count between %d and %d",
-                     IMG_ROWS_MIN, IMG_ROWS_MAX);
+                     IMAGE_ROWS_MIN, IMAGE_ROWS_MAX);
             return;
         }
-        img_set_rows((int)rows);
-        settings_set_int(SETTING_IMAGE_ROWS, img_rows());
+        image_set_rows((int)rows);
+        settings_set_int(SETTING_IMAGE_ROWS, image_rows());
     }
 
-    if (img_available())
-        reply_note("inline images: up to %d rows tall", img_rows());
+    if (image_available())
+        reply_note("inline images: up to %d rows tall", image_rows());
     else
         ui_note("inline images: up to %d rows tall, but this terminal has no "
-                "graphics support", img_rows());
+                "graphics support", image_rows());
     ui_put("\n");
     ui_flush();
 }
@@ -490,7 +490,7 @@ int cmd_resume(struct session *s)
     }
 
     int resumed = 0;
-    int index = pick("resume which conversation", items, count, 0);
+    int index = pick_run("resume which conversation", items, count, 0);
     if (index >= 0) {
         if (session_resume(s, list[index].id)) {
             status_sticky_prompt(NULL);
@@ -591,7 +591,7 @@ void cmd_dispatch_live(struct session *s, const char *line)
     const char *arg;
     enum fork_where where;
     if (split_command(line, name, sizeof name, &arg) && fork_target(name, &where))
-        sessionfork(s, where);
+        sessionfork_run(s, where);
 }
 
 enum cmd_result cmd_dispatch(struct session *s, const char *line)
@@ -625,7 +625,7 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line)
     } else if (!strcmp(name, "/resume")) {
         cmd_resume(s);
     } else if (fork_target(name, &where)) {
-        sessionfork(s, where);
+        sessionfork_run(s, where);
     } else if (!strcmp(name, "/session")) {
         session_report(s);
     } else if (!strcmp(name, "/copy")) {

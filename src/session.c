@@ -538,7 +538,7 @@ static Backend *agent(struct session *s)
     o.allow_customizations = s->customizations;
     o.permission_mode = s->permission;
 
-    if (img_available())
+    if (image_available())
         o.system =
             "This conversation is displayed in a terminal that renders images inline. "
             "To show the user an image, write a markdown image with an absolute local "

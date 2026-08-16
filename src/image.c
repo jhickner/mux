@@ -23,46 +23,46 @@ static void term_move_cursor(int col, int row) { printf("\x1b[%d;%dH", row + 1, 
 #include "vendor/kitty.h"
 #include "text.h"
 
-#define IMG_MAX_BYTES (16u * 1024u * 1024u)
+#define IMAGE_MAX_BYTES (16u * 1024u * 1024u)
 
-static int img_ready;
-static int img_ok;
-static int max_rows = IMG_ROWS_DEFAULT;
+static int image_ready;
+static int image_ok;
+static int max_rows = IMAGE_ROWS_DEFAULT;
 
-void img_set_rows(int rows)
+void image_set_rows(int rows)
 {
-    if (rows < IMG_ROWS_MIN)
-        rows = IMG_ROWS_MIN;
-    if (rows > IMG_ROWS_MAX)
-        rows = IMG_ROWS_MAX;
+    if (rows < IMAGE_ROWS_MIN)
+        rows = IMAGE_ROWS_MIN;
+    if (rows > IMAGE_ROWS_MAX)
+        rows = IMAGE_ROWS_MAX;
     max_rows = rows;
 }
 
-int img_rows(void) { return max_rows; }
+int image_rows(void) { return max_rows; }
 
-void img_init(void)
+void image_init(void)
 {
-    if (img_ready)
+    if (image_ready)
         return;
-    img_ready = 1;
+    image_ready = 1;
 
     if (!isatty(STDOUT_FILENO) || !kg_supported())
         return;
     kg_init();
     if (kg_passthrough())
         kg_tmux_allow_passthrough();
-    img_ok = 1;
+    image_ok = 1;
 }
 
-int img_available(void)
+int image_available(void)
 {
-    img_init();
-    return img_ok;
+    image_init();
+    return image_ok;
 }
 
 static unsigned char *load_file(const char *path, size_t *len)
 {
-    unsigned char *buf = (unsigned char *)text_slurp(path, IMG_MAX_BYTES, len);
+    unsigned char *buf = (unsigned char *)text_slurp(path, IMAGE_MAX_BYTES, len);
     if (buf && *len == 0) {
         free(buf);
         return NULL;
@@ -186,9 +186,9 @@ static uint32_t next_id(void)
            (uint32_t)(0x40 | (counter++ & 0x3F));
 }
 
-int img_show(const char *path, int indent)
+int image_show(const char *path, int indent)
 {
-    if (!img_available() || !path || !*path)
+    if (!image_available() || !path || !*path)
         return 0;
 
     char *expanded = path_expand_home(path);

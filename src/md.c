@@ -612,7 +612,7 @@ static char *image_line(const char *body)
 
 static void render_image(const char *path, int indent)
 {
-    if (img_show(path, indent))
+    if (image_show(path, indent))
         return;
     ui_pad(indent);
     ui_esc(ui_style(UI_DIM));

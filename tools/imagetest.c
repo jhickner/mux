@@ -15,8 +15,8 @@ int main(int argc, char **argv)
     }
 
     ui_init();
-    img_init();
-    printf("graphics: %s\n\n", img_available() ? "yes" : "no");
+    image_init();
+    printf("graphics: %s\n\n", image_available() ? "yes" : "no");
 
     char md[8192];
     size_t n = (size_t)snprintf(md, sizeof md, "Here is what came out:\n\n");

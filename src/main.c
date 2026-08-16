@@ -160,8 +160,8 @@ int main(int argc, char **argv)
 
     ui_init();
 
-    img_init();
-    img_set_rows(settings_get_int(SETTING_IMAGE_ROWS, IMG_ROWS_DEFAULT));
+    image_init();
+    image_set_rows(settings_get_int(SETTING_IMAGE_ROWS, IMAGE_ROWS_DEFAULT));
 
     agenttabs_begin(backend);
     struct session *session = session_new(backend, cwd, model, effort);

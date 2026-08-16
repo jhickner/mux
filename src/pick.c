@@ -96,7 +96,7 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
     v->rows = rows;
 }
 
-int pick(const char *title, const struct pick_item *items, int count, int initial)
+int pick_run(const char *title, const struct pick_item *items, int count, int initial)
 {
     if (count <= 0)
         return -1;

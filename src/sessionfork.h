@@ -12,7 +12,7 @@ enum fork_where {
     FORK_WINDOW,
 };
 
-int sessionfork(const struct session *s, enum fork_where where);
+int sessionfork_run(const struct session *s, enum fork_where where);
 
 void sessionfork_exit_note(const struct session *s);
 
