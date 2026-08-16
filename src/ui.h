@@ -86,7 +86,31 @@ size_t ui_cells_n(const char *s, size_t n);
 
 size_t ui_wrap_row(const char *s, size_t budget, size_t *skip);
 
-void ui_wrapped(const char *text, int indent, const char *style);
+/* One description of a wrapped block, shared by every painter so that the code
+   which paints a block and the code which later counts its rows cannot drift.
+   Row layout is: pad, style on, erase, gutter, mark (first row), text,
+   ellipsis (last row when clipped), style off, newline. */
+struct ui_wrap {
+    size_t       budget;
+    int          first_indent; /* pad cells before the first row */
+    int          indent;       /* pad cells before the rest */
+    const char  *gutter;       /* drawn before the text on every row */
+    const char  *mark;         /* drawn after the gutter, first row only */
+    enum ui_role role;         /* UI_RESET leaves the text unstyled */
+    int          max_rows;     /* 0 = unlimited; adds "…" when text remains */
+    int          erase;        /* erase to end of line before each row */
+    int          paint_empty;  /* empty text still yields one (blank) row */
+    int          measure;      /* fill widths but paint nothing */
+    int          reflow_cols;  /* non-zero: count rows as re-wrapped to this width */
+    int         *widths;       /* optional out: painted cell width per row */
+    int          widths_max;
+};
+
+/* Returns rows painted, or — when reflow_cols is set — how many terminal rows
+   those painted rows would occupy at that width. */
+int ui_wrap_paint(const char *text, const struct ui_wrap *w);
+
+void ui_wrapped(const char *text, int indent, enum ui_role role);
 
 __attribute__((format(printf, 2, 3))) void ui_bar(const char *style, const char *fmt, ...);
 

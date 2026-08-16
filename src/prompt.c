@@ -211,43 +211,39 @@ static size_t sticky_budget(int cols)
     return (size_t)(cols - 5 > 4 ? cols - 5 : 4);
 }
 
-static int wrapped_rows(const char *text, size_t budget, int cap)
+static struct ui_wrap bar_wrap(size_t budget, enum ui_role role, int cap,
+                               const char *mark)
 {
-    int rows = 0, first = 1;
-    while (*text || first) {
-        size_t skip = 0;
-        size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
-        rows++;
-        text += row + skip;
-        first = 0;
-        if (cap && rows >= cap)
-            break;
-    }
-    return rows;
+    struct ui_wrap w = {0};
+    w.budget = budget;
+    w.gutter = UI_BAR " ";
+    w.mark = mark;
+    w.role = role;
+    w.max_rows = cap;
+    w.erase = 1;
+    w.paint_empty = 1;
+    return w;
 }
 
-/* Must mirror paint_bars: the UI_BAR gutter is 2 cells, and `mark` is painted
-   on the first row only. Undercounting here moves the cursor up too few rows. */
+static int wrapped_rows(const char *text, size_t budget, int cap)
+{
+    struct ui_wrap w = {0};
+    w.budget = budget;
+    w.max_rows = cap;
+    w.paint_empty = 1;
+    w.measure = 1;
+    return ui_wrap_paint(text, &w);
+}
+
+/* Measured through the same painter that draws the block, so the gutter and
+   first-row mark cannot be accounted for differently here than there. */
 static int reflowed_rows(const char *text, size_t budget, int cols, int cap,
                          const char *mark)
 {
-    int rows = 0, first = 1, painted = 0;
-    while (*text || first) {
-        size_t skip = 0;
-        size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
-        int width = 2 + (int)ui_cells_n(text, row);
-        if (mark && first)
-            width += (int)ui_cells(mark);
-        text += row + skip;
-        painted++;
-        if (*text && cap && painted == cap)
-            width++;
-        rows += rows_for((size_t)width, cols);
-        first = 0;
-        if (cap && painted >= cap)
-            break;
-    }
-    return rows;
+    struct ui_wrap w = bar_wrap(budget, UI_RESET, cap, mark);
+    w.measure = 1;
+    w.reflow_cols = cols;
+    return ui_wrap_paint(text, &w);
 }
 
 static int caret_offset(const struct prompt *p, int cols)
@@ -310,27 +306,8 @@ static int rows_above(const struct prompt *p, const char *head, int cols)
 static void paint_bars(const char *text, size_t budget, enum ui_role role, int cap,
                        const char *mark)
 {
-    int first = 1, painted = 0;
-    while (*text || first) {
-        size_t skip = 0;
-        size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
-
-        ui_esc(ui_style(role));
-        ui_esc(UI_ERASE_EOL);
-        ui_put(UI_BAR " ");
-        if (mark && first)
-            ui_put(mark);
-        ui_putn(text, row);
-        text += row + skip;
-        painted++;
-        if (*text && cap && painted == cap)
-            ui_put("…");
-        ui_esc(ui_style(UI_RESET));
-        ui_put("\n");
-        first = 0;
-        if (cap && painted >= cap)
-            break;
-    }
+    struct ui_wrap w = bar_wrap(budget, role, cap, mark);
+    ui_wrap_paint(text, &w);
 }
 
 static void paint_above(const struct prompt *p, const char *head, int cols)
@@ -460,25 +437,10 @@ static void repaint(struct prompt *p)
 void prompt_echo_message(const char *text)
 {
     int cols = ui_columns();
-    size_t budget = (size_t)(cols - 2 > 4 ? cols - 2 : 4);
-    const char *p = text;
-    int first = 1;
     enum ui_role role = bash_is_command(text) ? UI_BASH : UI_ECHO;
 
-    while (*p || first) {
-        size_t skip = 0;
-        size_t row = *p ? ui_wrap_row(p, budget, &skip) : 0;
-
-        ui_esc(ui_style(role));
-        ui_esc(UI_ERASE_EOL);
-        ui_put(UI_BAR);
-        ui_put(" ");
-        ui_putn(p, row);
-        ui_esc(ui_style(UI_RESET));
-        ui_put("\n");
-        p += row + skip;
-        first = 0;
-    }
+    struct ui_wrap w = bar_wrap(queued_budget(cols), role, 0, NULL);
+    ui_wrap_paint(text, &w);
     ui_put("\n");
     ui_flush();
 }

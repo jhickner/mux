@@ -143,6 +143,22 @@ static void inline_scan(const char *p, struct styled *out)
     }
 }
 
+static void emit_slice(const struct styled *s, size_t from, size_t len, enum ui_role base)
+{
+    int open = -1;
+    for (size_t i = 0; i < len; i++) {
+        signed char style = s->style[from + i];
+        if (style != open) {
+            ui_esc(ui_style(UI_RESET));
+            ui_esc(ui_style(style ? (enum ui_role)(style - 1) : base));
+            open = style;
+        }
+        ui_putn(s->text + from + i, 1);
+    }
+    if (open >= 0)
+        ui_esc(ui_style(UI_RESET));
+}
+
 static void emit_styled(const struct styled *s, int first_indent, int indent)
 {
     if (!s->text)
@@ -161,18 +177,7 @@ static void emit_styled(const struct styled *s, int first_indent, int indent)
         ui_pad(row_indent);
         size_t base = (size_t)(p - s->text);
 
-        int open = -1;
-        for (size_t i = 0; i < row; i++) {
-            signed char style = s->style[base + i];
-            if (style != open) {
-                ui_esc(ui_style(UI_RESET));
-                ui_esc(ui_style(style ? (enum ui_role)(style - 1) : UI_BODY));
-                open = style;
-            }
-            ui_putn(p + i, 1);
-        }
-        if (open >= 0)
-            ui_esc(ui_style(UI_RESET));
+        emit_slice(s, base, row, UI_BODY);
         ui_put("\n");
 
         p += row + skip;
@@ -320,22 +325,6 @@ static void row_free(struct trow *r)
 {
     for (int i = 0; i < r->ncells; i++)
         styled_free(&r->cell[i]);
-}
-
-static void emit_slice(const struct styled *s, size_t from, size_t len, enum ui_role base)
-{
-    int open = -1;
-    for (size_t i = 0; i < len; i++) {
-        signed char style = s->style[from + i];
-        if (style != open) {
-            ui_esc(ui_style(UI_RESET));
-            ui_esc(ui_style(style ? (enum ui_role)(style - 1) : base));
-            open = style;
-        }
-        ui_putn(s->text + from + i, 1);
-    }
-    if (open >= 0)
-        ui_esc(ui_style(UI_RESET));
 }
 
 static void rule_row(const int *width, int ncols, int indent)

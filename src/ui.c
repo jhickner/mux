@@ -415,27 +415,70 @@ size_t ui_wrap_row(const char *s, size_t budget, size_t *skip)
     return n;
 }
 
-void ui_wrapped(const char *text, int indent, const char *style)
+int ui_wrap_paint(const char *text, const struct ui_wrap *w)
 {
-    int columns = ui_columns();
-    size_t budget = (size_t)(columns - indent > 1 ? columns - indent : 1);
-    const char *p = text;
+    const char *p = text ? text : "";
+    size_t budget = w->budget ? w->budget : 1;
+    int gutter_cells = w->gutter ? (int)ui_cells(w->gutter) : 0;
+    int mark_cells = w->mark ? (int)ui_cells(w->mark) : 0;
+    int rows = 0;
+    int reflowed = 0;
     int first = 1;
 
-    while (*p || first) {
+    while (*p || (first && w->paint_empty)) {
         size_t skip = 0;
         size_t row = *p ? ui_wrap_row(p, budget, &skip) : 0;
-        for (int k = 0; k < indent; k++)
-            ui_put(" ");
-        if (*style)
-            ui_esc(style);
-        ui_putn(p, row);
-        if (*style)
-            ui_esc(ui_style(UI_RESET));
-        ui_put("\n");
+        int indent = first ? w->first_indent : w->indent;
+        int width = gutter_cells + (first ? mark_cells : 0) + (int)ui_cells_n(p, row);
+
+        if (!w->measure) {
+            ui_pad(indent);
+            if (w->role != UI_RESET)
+                ui_esc(ui_style(w->role));
+            if (w->erase)
+                ui_esc(UI_ERASE_EOL);
+            if (w->gutter)
+                ui_put(w->gutter);
+            if (w->mark && first)
+                ui_put(w->mark);
+            ui_putn(p, row);
+        }
+
         p += row + skip;
+        rows++;
+        if (*p && w->max_rows && rows == w->max_rows) {
+            if (!w->measure)
+                ui_put("…");
+            width++;
+        }
+        if (!w->measure) {
+            if (w->role != UI_RESET)
+                ui_esc(ui_style(UI_RESET));
+            ui_put("\n");
+        }
+        if (w->widths && rows - 1 < w->widths_max)
+            w->widths[rows - 1] = width + indent;
+        if (w->reflow_cols > 0) {
+            int cells = width + indent;
+            reflowed += cells > 0 ? (cells + w->reflow_cols - 1) / w->reflow_cols : 1;
+        }
+
         first = 0;
+        if (w->max_rows && rows >= w->max_rows)
+            break;
     }
+    return w->reflow_cols > 0 ? reflowed : rows;
+}
+
+void ui_wrapped(const char *text, int indent, enum ui_role role)
+{
+    int columns = ui_columns();
+    struct ui_wrap w = {0};
+    w.budget = (size_t)(columns - indent > 1 ? columns - indent : 1);
+    w.first_indent = w.indent = indent;
+    w.role = role;
+    w.paint_empty = 1;
+    ui_wrap_paint(text, &w);
 }
 
 void ui_bar(const char *style, const char *fmt, ...)

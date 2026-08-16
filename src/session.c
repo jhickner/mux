@@ -218,23 +218,11 @@ static void print_activity(const char *marker, const char *text, enum ui_role ro
         return;
     }
 
-    const char *style = ui_style(role);
-    const char *p = text;
-    int first = 1;
-    while (*p) {
-        size_t skip = 0;
-        size_t row = ui_wrap_row(p, (size_t)budget, &skip);
-        if (!first)
-            ui_pad(indent);
-        if (*style)
-            ui_esc(style);
-        ui_putn(p, row);
-        if (*style)
-            ui_esc(ui_style(UI_RESET));
-        ui_put("\n");
-        p += row + skip;
-        first = 0;
-    }
+    struct ui_wrap w = {0};
+    w.budget = (size_t)budget;
+    w.indent = indent;
+    w.role = role;
+    ui_wrap_paint(text, &w);
 }
 
 static void tool_tag(const char *name, char *out, size_t size)
@@ -268,18 +256,12 @@ static void print_tool_call(const char *name, const char *arg)
     int budget = columns - indent;
     if (budget < 8)
         budget = 8;
-    const char *p = arg;
-    int first = 1;
-    while (*p) {
-        size_t skip = 0;
-        size_t row = ui_wrap_row(p, (size_t)budget, &skip);
-        if (!first)
-            ui_pad(indent);
-        ui_putn(p, row);
-        ui_put("\n");
-        p += row + skip;
-        first = 0;
-    }
+
+    struct ui_wrap w = {0};
+    w.budget = (size_t)budget;
+    w.indent = indent;
+    w.role = UI_RESET;
+    ui_wrap_paint(arg, &w);
 }
 
 static void cluster_forget(struct session *s)
@@ -1108,7 +1090,7 @@ static void print_footer(struct session *s, double elapsed)
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");
     if (wrapped)
-        ui_wrapped(s->title, 0, ui_style(UI_DIM));
+        ui_wrapped(s->title, 0, UI_DIM);
     ui_put("\n");
     ui_flush();
 }

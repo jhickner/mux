@@ -155,30 +155,26 @@ static void paint_sticky(void)
         return;
 
     int cols = ui_columns();
-    size_t budget = (size_t)(cols - 3 > 4 ? cols - 3 : 4);
     int max = STICKY_LINES;
     if (max > STICKY_ROWS_MAX - 1)
         max = STICKY_ROWS_MAX - 1;
 
-    const char *p = sticky_text;
-    while (*p && sticky_rows < max) {
-        size_t skip = 0;
-        size_t row = ui_wrap_row(p, budget, &skip);
-        int width = 2 + (int)ui_cells_n(p, row);
+    /* Budget leaves room for the 2-cell gutter and the clipping ellipsis.
+       prompt.c repaints this block with its own budget because it adds a
+       leading ✓ marker; both go through ui_wrap_paint. */
+    struct ui_wrap w = {0};
+    w.budget = (size_t)(cols - 3 > 4 ? cols - 3 : 4);
+    w.gutter = UI_BAR " ";
+    w.role = UI_STICKY;
+    w.max_rows = max;
+    w.erase = 1;
+    w.widths = sticky_widths;
+    w.widths_max = STICKY_ROWS_MAX - 1;
 
-        ui_esc(ui_style(UI_STICKY));
-        ui_esc(UI_ERASE_EOL);
-        ui_put(UI_BAR " ");
-        ui_putn(p, row);
-        p += row + skip;
-        if (*p && sticky_rows + 1 == max) {
-            ui_put("…");
-            width++;
-        }
-        ui_esc(ui_style(UI_RESET));
-        ui_put("\n");
-        sticky_widths[sticky_rows++] = width;
-    }
+    sticky_rows = ui_wrap_paint(sticky_text, &w);
+    if (sticky_rows > w.widths_max)
+        sticky_rows = w.widths_max;
+
     ui_esc(UI_ERASE_EOL);
     ui_put("\n");
     sticky_widths[sticky_rows++] = 0;
