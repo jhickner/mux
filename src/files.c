@@ -141,7 +141,11 @@ static void walk(struct index *ix, const char *abs, const char *rel, int depth)
         if (e->d_name[0] == '.')
             continue;
         char child_abs[4096], child_rel[4096];
-        snprintf(child_abs, sizeof child_abs, "%s/%s", abs, e->d_name);
+        /* A truncated path would be opendir'd and indexed as a completion that
+           does not resolve. */
+        if (snprintf(child_abs, sizeof child_abs, "%s/%s", abs, e->d_name) >=
+            (int)sizeof child_abs)
+            continue;
 
         int dir = e->d_type == DT_DIR;
         if (e->d_type == DT_UNKNOWN) {
@@ -150,7 +154,9 @@ static void walk(struct index *ix, const char *abs, const char *rel, int depth)
         }
         if (dir && is_skipped_dir(e->d_name))
             continue;
-        snprintf(child_rel, sizeof child_rel, "%s%s%s", rel, e->d_name, dir ? "/" : "");
+        if (snprintf(child_rel, sizeof child_rel, "%s%s%s", rel, e->d_name,
+                     dir ? "/" : "") >= (int)sizeof child_rel)
+            continue;
         index_add(ix, child_rel);
         if (dir)
             walk(ix, child_abs, child_rel, depth + 1);
@@ -164,6 +170,8 @@ static void index_build(struct index *ix, const char *root)
     if (!ix->root || strcmp(ix->root, root) != 0) {
         free(ix->root);
         ix->root = strdup(root);
+        if (!ix->root)
+            return; /* a NULL root would rebuild the index on every keystroke */
     }
     ix->built = time(NULL);
     if (!index_from_git(ix, root))
@@ -284,6 +292,38 @@ static int split_external(const char *token, const char *root, char *prefix, siz
     return snprintf(dir, dir_sz, "%s/%s", root, prefix) < (int)dir_sz;
 }
 
+/* Bounded best-N-by-score, kept sorted as entries are offered. */
+struct topn {
+    int idx[TOP_MAX];
+    int score[TOP_MAX];
+    int n, cap;
+};
+
+static void topn_init(struct topn *t, int max)
+{
+    t->n = 0;
+    t->cap = max < TOP_MAX ? max : TOP_MAX;
+}
+
+static void topn_offer(struct topn *t, int index, int score)
+{
+    if (t->cap <= 0)
+        return;
+    if (t->n == t->cap) {
+        if (score <= t->score[t->cap - 1])
+            return;
+        t->n = t->cap - 1;
+    }
+    int j = t->n++;
+    while (j > 0 && t->score[j - 1] < score) {
+        t->score[j] = t->score[j - 1];
+        t->idx[j] = t->idx[j - 1];
+        j--;
+    }
+    t->score[j] = score;
+    t->idx[j] = index;
+}
+
 static int cmp_name(const void *a, const void *b)
 {
     return strcmp(*(const char *const *)a, *(const char *const *)b);
@@ -323,33 +363,20 @@ static int complete_external(const char *token, const char *root, ReplCandidate 
     closedir(d);
     qsort(names, (size_t)count, sizeof *names, cmp_name);
 
-    int cap = max < TOP_MAX ? max : TOP_MAX;
-    int idx[TOP_MAX], score[TOP_MAX], n = 0;
-    for (int i = 0; i < count && cap > 0; i++) {
+    struct topn top;
+    topn_init(&top, max);
+    for (int i = 0; i < count; i++) {
         int sc = base[0] ? fuzzy(names[i], base) : 0;
-        if (sc < 0)
-            continue;
-        if (n == cap) {
-            if (sc <= score[cap - 1])
-                continue;
-            n = cap - 1;
-        }
-        int j = n++;
-        while (j > 0 && score[j - 1] < sc) {
-            score[j] = score[j - 1];
-            idx[j] = idx[j - 1];
-            j--;
-        }
-        score[j] = sc;
-        idx[j] = i;
+        if (sc >= 0)
+            topn_offer(&top, i, sc);
     }
-    for (int k = 0; k < n; k++) {
-        snprintf(out[k].text, REPL_CAND_TEXT, "%s%s", prefix, names[idx[k]]);
+    for (int k = 0; k < top.n; k++) {
+        snprintf(out[k].text, REPL_CAND_TEXT, "%s%s", prefix, names[top.idx[k]]);
         out[k].desc[0] = '\0';
     }
     for (int i = 0; i < count; i++)
         free(names[i]);
-    return n;
+    return top.n;
 }
 
 int files_complete(void *ctx, const char *token, ReplCandidate *out, int max)
@@ -361,35 +388,19 @@ int files_complete(void *ctx, const char *token, ReplCandidate *out, int max)
     if (!IDX.root || strcmp(IDX.root, root) != 0 || now - IDX.built > INDEX_TTL)
         index_build(&IDX, root);
 
-    int cap = max < TOP_MAX ? max : TOP_MAX;
-    if (cap <= 0)
-        return 0;
-
-    int idx[TOP_MAX], score[TOP_MAX], n = 0;
+    struct topn top;
+    topn_init(&top, max);
     for (int i = 0; i < IDX.count; i++) {
-
         if (strcmp(IDX.paths[i], token) == 0)
             continue;
         int sc = *token ? path_score(IDX.paths[i], token) : 0;
-        if (sc < 0)
-            continue;
-        if (n == cap) {
-            if (sc <= score[cap - 1])
-                continue;
-            n = cap - 1;
-        }
-        int j = n++;
-        while (j > 0 && score[j - 1] < sc) {
-            score[j] = score[j - 1];
-            idx[j] = idx[j - 1];
-            j--;
-        }
-        score[j] = sc;
-        idx[j] = i;
+        if (sc >= 0)
+            topn_offer(&top, i, sc);
     }
 
+    int n = top.n;
     for (int k = 0; k < n; k++) {
-        snprintf(out[k].text, REPL_CAND_TEXT, "%s", IDX.paths[idx[k]]);
+        snprintf(out[k].text, REPL_CAND_TEXT, "%s", IDX.paths[top.idx[k]]);
         out[k].desc[0] = '\0';
     }
     return n;

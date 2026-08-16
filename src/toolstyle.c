@@ -3,9 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "app.h"
 #include "vendor/cJSON.h"
-
-#define COUNT(a) ((int)(sizeof(a) / sizeof(*(a))))
 
 static char lower(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
 

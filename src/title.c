@@ -1,5 +1,6 @@
 #include "title.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,28 +11,17 @@
 
 #include "app.h"
 #include "vendor/agents/backend.h"
+#include "text.h"
 
 #define CLAUDE_TITLE_MODEL "claude-haiku-4-5-20251001"
 #define TITLE_MAX   80
 
 #define EXCERPT     1200
 
-static int cache_path(char *out, size_t size)
-{
-    const char *home = getenv("HOME");
-    if (!home)
-        return 0;
-    char dir[1024];
-    snprintf(dir, sizeof dir, "%s/" APP_CONFIG, home);
-    mkdir(dir, 0700);
-    snprintf(out, size, "%s/titles", dir);
-    return 1;
-}
-
 int title_lookup(const char *id, char *out, size_t size)
 {
     char path[1200];
-    if (!id || !*id || !cache_path(path, sizeof path))
+    if (!id || !*id || !path_config_file(path, sizeof path, "titles"))
         return 0;
     FILE *f = fopen(path, "r");
     if (!f)
@@ -75,7 +65,7 @@ static int tidy(char *text)
 static void write_cache(const char *id, const char *title)
 {
     char path[1200];
-    if (!cache_path(path, sizeof path))
+    if (!path_config_file(path, sizeof path, "titles"))
         return;
     int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
     if (fd < 0)
@@ -83,8 +73,22 @@ static void write_cache(const char *id, const char *title)
     char row[256];
     int n = snprintf(row, sizeof row, "%s\t%s\n", id, title);
 
-    if (n > 0)
-        (void)!write(fd, row, (size_t)n);
+    /* A short write would leave a partial line that title_lookup then
+       mis-attributes to the next id. */
+    if (n > 0 && (size_t)n < sizeof row) {
+        const char *p = row;
+        size_t left = (size_t)n;
+        while (left) {
+            ssize_t w = write(fd, p, left);
+            if (w < 0) {
+                if (errno == EINTR)
+                    continue;
+                break;
+            }
+            p += w;
+            left -= (size_t)w;
+        }
+    }
     close(fd);
 }
 

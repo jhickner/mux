@@ -1,9 +1,11 @@
 #include "cmd.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "app.h"
 #include "pick.h"
 #include "session.h"
 #include "image.h"
@@ -35,7 +37,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/help", "show this help", NULL},
     {"/quit", "leave", NULL},
 };
-const int CMD_COUNT = (int)(sizeof CMD_TABLE / sizeof *CMD_TABLE);
+const int CMD_COUNT = COUNT(CMD_TABLE);
 
 static const struct pick_item MODELS[] = {
     {"claude-opus-5", "most capable"},
@@ -45,14 +47,14 @@ static const struct pick_item MODELS[] = {
     {"claude-fable-5", "compact"},
     {"default", "whatever the claude CLI is configured to use"},
 };
-#define MODEL_COUNT ((int)(sizeof MODELS / sizeof *MODELS))
+#define MODEL_COUNT (COUNT(MODELS))
 
 static const struct pick_item GROK_MODELS[] = {
     {"grok-4.6", "latest frontier model"},
     {"grok-4.5", "the prior generation"},
     {"default", "whatever the grok CLI is configured to use"},
 };
-#define GROK_MODEL_COUNT ((int)(sizeof GROK_MODELS / sizeof *GROK_MODELS))
+#define GROK_MODEL_COUNT (COUNT(GROK_MODELS))
 
 static const struct pick_item CLAUDE_EFFORTS[] = {
     {"default", "auto: use the model's default effort"},
@@ -90,16 +92,6 @@ static const struct pick_item PI_EFFORTS[] = {
     {"max", "maximum thinking, when the model supports it"},
 };
 
-static const struct pick_item PERMISSIONS[] = {
-    {"bypassPermissions", "never refuses a tool call"},
-    {"auto", "approves the safe calls, refuses the rest"},
-    {"acceptEdits", "edits without asking, refuses the rest"},
-    {"dontAsk", "refuses anything that would ask"},
-    {"manual", "refuses everything not pre-allowed"},
-    {"plan", "read-only: research and propose, no changes"},
-};
-#define PERMISSION_COUNT ((int)(sizeof PERMISSIONS / sizeof *PERMISSIONS))
-
 static int is_claude(const struct session *s)
 {
     return strcmp(session_backend(s), "claude") == 0;
@@ -124,24 +116,45 @@ static const struct pick_item *effort_choices(const struct session *s, int *coun
 {
     const char *backend = session_backend(s);
     if (!strcmp(backend, "claude")) {
-        *count = (int)(sizeof CLAUDE_EFFORTS / sizeof *CLAUDE_EFFORTS);
+        *count = COUNT(CLAUDE_EFFORTS);
         return CLAUDE_EFFORTS;
     }
     if (!strcmp(backend, "codex")) {
-        *count = (int)(sizeof CODEX_EFFORTS / sizeof *CODEX_EFFORTS);
+        *count = COUNT(CODEX_EFFORTS);
         return CODEX_EFFORTS;
     }
     if (!strcmp(backend, "grok")) {
-        *count = (int)(sizeof GROK_EFFORTS / sizeof *GROK_EFFORTS);
+        *count = COUNT(GROK_EFFORTS);
         return GROK_EFFORTS;
     }
     if (!strcmp(backend, "pi")) {
-        *count = (int)(sizeof PI_EFFORTS / sizeof *PI_EFFORTS);
+        *count = COUNT(PI_EFFORTS);
         return PI_EFFORTS;
     }
     *count = 0;
     return NULL;
 }
+
+/* Every command reply is a styled line, a blank line, and a flush. */
+__attribute__((format(printf, 2, 3)))
+static void reply(int error, const char *fmt, ...)
+{
+    char text[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(text, sizeof text, fmt, ap);
+    va_end(ap);
+
+    if (error)
+        ui_error("%s", text);
+    else
+        ui_note("%s", text);
+    ui_put("\n");
+    ui_flush();
+}
+
+#define reply_note(...)  reply(0, __VA_ARGS__)
+#define reply_error(...) reply(1, __VA_ARGS__)
 
 static int known_backend(const char *name)
 {
@@ -216,15 +229,8 @@ static int copy_to_clipboard(const char *text)
     FILE *pipe = popen(tool, "w");
     if (!pipe)
         return 0;
-    fputs(text, pipe);
-    return pclose(pipe) == 0;
-}
-
-static const char *short_model(const struct session *s, const char *model)
-{
-    if (is_claude(s) && strncmp(model, "claude-", 7) == 0 && model[7])
-        return model + 7;
-    return model;
+    int ok = fputs(text, pipe) != EOF;
+    return pclose(pipe) == 0 && ok;
 }
 
 static void note_identity(const struct session *s)
@@ -240,7 +246,7 @@ static void note_identity(const struct session *s)
         snprintf(ctx, sizeof ctx, " \xc2\xb7 %ldK context", window / 1000);
 
     ui_note("%s \xc2\xb7 %s%s%s", session_backend(s),
-            short_model(s, session_model_label(s)), effort, ctx);
+            session_model_short(s, session_model_label(s)), effort, ctx);
     ui_put("\n");
     ui_flush();
 }
@@ -252,16 +258,14 @@ static void do_model(struct session *s, const char *arg)
         int count = 0, initial = 0;
         const struct pick_item *choices = model_choices(s, &count);
         if (!count) {
-            ui_note("/model <name> — %s has no model list here", session_backend(s));
-            ui_put("\n");
-            ui_flush();
+            reply_note("/model <name> — %s has no model list here", session_backend(s));
             return;
         }
         const char *current = session_model(s);
         for (int i = 0; i < count; i++)
             if (strcmp(choices[i].label, current) == 0)
                 initial = i;
-        int index = pick("select model", choices, count, initial);
+        int index = pick_run("select model", choices, count, initial);
         if (index < 0)
             return;
         chosen = choices[index].label;
@@ -270,7 +274,6 @@ static void do_model(struct session *s, const char *arg)
     const char *model = strcmp(chosen, "default") == 0 ? NULL : chosen;
     if (!session_set_model(s, model)) {
         ui_error("could not restart on %s", chosen);
-        ui_put("\n");
         return;
     }
     note_identity(s);
@@ -279,9 +282,7 @@ static void do_model(struct session *s, const char *arg)
 static void do_effort(struct session *s, const char *arg)
 {
     if (!session_can_set_effort(s)) {
-        ui_note("%s does not support changing effort", session_backend(s));
-        ui_put("\n");
-        ui_flush();
+        reply_note("%s does not support changing effort", session_backend(s));
         return;
     }
 
@@ -293,7 +294,7 @@ static void do_effort(struct session *s, const char *arg)
         for (int i = 0; i < count; i++)
             if (!strcmp(choices[i].label, current))
                 initial = i;
-        int index = pick("set effort", choices, count, initial);
+        int index = pick_run("set effort", choices, count, initial);
         if (index < 0)
             return;
         chosen = choices[index].label;
@@ -301,9 +302,7 @@ static void do_effort(struct session *s, const char *arg)
 
     const char *effort = !strcmp(chosen, "default") ? NULL : chosen;
     if (!session_set_effort(s, effort)) {
-        ui_error("could not set effort to %s", chosen);
-        ui_put("\n");
-        ui_flush();
+        reply_error("could not set effort to %s", chosen);
         return;
     }
     note_identity(s);
@@ -312,21 +311,15 @@ static void do_effort(struct session *s, const char *arg)
 static void do_backend(struct session *s, const char *arg)
 {
     if (!arg || !*arg) {
-        ui_note("/backend <claude|codex|grok|pi>");
-        ui_put("\n");
-        ui_flush();
+        reply_note("/backend <claude|codex|grok|pi>");
         return;
     }
     if (!known_backend(arg)) {
-        ui_error("unknown backend '%s'", arg);
-        ui_put("\n");
-        ui_flush();
+        reply_error("unknown backend '%s'", arg);
         return;
     }
     if (strcmp(arg, session_backend(s)) == 0) {
-        ui_note("already using %s", arg);
-        ui_put("\n");
-        ui_flush();
+        reply_note("already using %s", arg);
         return;
     }
 
@@ -336,15 +329,11 @@ static void do_backend(struct session *s, const char *arg)
     if (!from || (failed && !retry)) {
         free(from);
         free(retry);
-        ui_error("could not prepare the backend handoff");
-        ui_put("\n");
-        ui_flush();
+        reply_error("could not prepare the backend handoff");
         return;
     }
     if (!session_switch_backend(s, arg)) {
-        ui_error("could not start %s; still using %s", arg, from);
-        ui_put("\n");
-        ui_flush();
+        reply_error("could not start %s; still using %s", arg, from);
         free(from);
         free(retry);
         return;
@@ -354,7 +343,7 @@ static void do_backend(struct session *s, const char *arg)
     free(from);
 
     if (retry) {
-        ui_note("retrying the failed turn with %s", arg);
+        reply_note("retrying the failed turn with %s", arg);
         ui_put("\n\n");
         ui_flush();
         session_turn(s, retry);
@@ -366,107 +355,87 @@ static void do_permission(struct session *s, const char *arg)
 {
     if (!is_claude(s)) {
         ui_note("/permission only applies to claude");
-        ui_put("\n");
-        ui_flush();
         return;
+    }
+
+    int count = session_permission_count();
+    struct pick_item choices[16];
+    if (count > (int)COUNT(choices))
+        count = (int)COUNT(choices);
+    for (int i = 0; i < count; i++) {
+        choices[i].label = session_permission_name(i);
+        choices[i].detail = session_permission_desc(i);
     }
 
     const char *chosen = arg;
     if (!chosen || !*chosen) {
         int initial = session_permission_index(session_permission(s));
-        int index = pick("gate tool calls", PERMISSIONS, PERMISSION_COUNT,
-                         initial < 0 ? 0 : initial);
+        int index = pick_run("gate tool calls", choices, count, initial < 0 ? 0 : initial);
         if (index < 0)
             return;
-        chosen = PERMISSIONS[index].label;
+        chosen = choices[index].label;
     }
 
     int index = session_permission_index(chosen);
     if (index < 0) {
-        ui_error("unknown mode '%s'", chosen);
-        ui_put("\n");
-        ui_flush();
+        reply_error("unknown mode '%s'", chosen);
         return;
     }
 
     if (!session_set_permission(s, session_permission_name(index))) {
-        ui_error("could not restart in %s", chosen);
-        ui_put("\n");
+        reply_error("could not restart in %s", chosen);
         return;
     }
     settings_set_int(SETTING_PERMISSION, index);
-    ui_note("tool calls: %s", PERMISSIONS[index].detail);
-    ui_put("\n");
-    ui_flush();
+    reply_note("tool calls: %s", session_permission_desc(index));
+}
+
+/* Reads an on/off style argument, defaulting to flipping `current`. Returns -1
+   and reports the problem when the word is not one of the two. */
+static int toggle_arg(const char *arg, const char *on_word, const char *off_word,
+                      int current, const char *command)
+{
+    if (!arg || !*arg)
+        return !current;
+    if (!strcmp(arg, on_word))
+        return 1;
+    if (!strcmp(arg, off_word))
+        return 0;
+    reply_error("%s takes %s, %s, or nothing to flip it", command, on_word, off_word);
+    return -1;
 }
 
 static void do_thinking(struct session *s, const char *arg)
 {
-    int on;
-    if (!arg || !*arg)
-        on = !session_thinking(s);
-    else if (!strcmp(arg, "on"))
-        on = 1;
-    else if (!strcmp(arg, "off"))
-        on = 0;
-    else {
-        ui_error("/thinking takes on, off, or nothing to flip it");
-        ui_put("\n");
-        ui_flush();
+    int on = toggle_arg(arg, "on", "off", session_thinking(s), "/thinking");
+    if (on < 0)
         return;
-    }
 
     session_set_thinking(s, on);
     settings_set_int(SETTING_THINKING, on);
-    ui_note("reasoning %s", on ? "shown" : "hidden");
-    ui_put("\n");
-    ui_flush();
+    reply_note("reasoning %s", on ? "shown" : "hidden");
 }
 
 static void do_tools(struct session *s, const char *arg)
 {
-    int compact;
-    if (!arg || !*arg)
-        compact = !session_compact(s);
-    else if (!strcmp(arg, "compact"))
-        compact = 1;
-    else if (!strcmp(arg, "full"))
-        compact = 0;
-    else {
-        ui_error("/tools takes compact, full, or nothing to flip it");
-        ui_put("\n");
-        ui_flush();
+    int compact = toggle_arg(arg, "compact", "full", session_compact(s), "/tools");
+    if (compact < 0)
         return;
-    }
 
     session_set_compact(s, compact);
     settings_set_int(SETTING_COMPACT, compact);
-    ui_note("tool calls: %s", compact ? "one row each" : "full blocks with output");
-    ui_put("\n");
-    ui_flush();
+    reply_note("tool calls: %s", compact ? "one row each" : "full blocks with output");
 }
 
 static void do_sticky(const char *arg)
 {
-    int on;
-    if (!arg || !*arg)
-        on = !status_sticky_enabled();
-    else if (!strcmp(arg, "on"))
-        on = 1;
-    else if (!strcmp(arg, "off"))
-        on = 0;
-    else {
-        ui_error("/sticky takes on, off, or nothing to flip it");
-        ui_put("\n");
-        ui_flush();
+    int on = toggle_arg(arg, "on", "off", status_sticky_enabled(), "/sticky");
+    if (on < 0)
         return;
-    }
 
     status_sticky_set(on);
     settings_set_int(SETTING_STICKY, on);
-    ui_note("floating prompt %s", on ? "on" : "off");
-    ui_put("\n");
-    ui_flush();
+    reply_note("floating prompt %s", on ? "on" : "off");
 }
 
 static void do_image(const char *arg)
@@ -476,22 +445,20 @@ static void do_image(const char *arg)
         long rows = strtol(arg, &end, 10);
         while (*end == ' ')
             end++;
-        if (*end || rows < IMG_ROWS_MIN || rows > IMG_ROWS_MAX) {
-            ui_error("/image takes a row count between %d and %d",
-                     IMG_ROWS_MIN, IMG_ROWS_MAX);
-            ui_put("\n");
-            ui_flush();
+        if (*end || rows < IMAGE_ROWS_MIN || rows > IMAGE_ROWS_MAX) {
+            reply_error("/image takes a row count between %d and %d",
+                     IMAGE_ROWS_MIN, IMAGE_ROWS_MAX);
             return;
         }
-        img_set_rows((int)rows);
-        settings_set_int(SETTING_IMAGE_ROWS, img_rows());
+        image_set_rows((int)rows);
+        settings_set_int(SETTING_IMAGE_ROWS, image_rows());
     }
 
-    if (img_available())
-        ui_note("inline images: up to %d rows tall", img_rows());
+    if (image_available())
+        reply_note("inline images: up to %d rows tall", image_rows());
     else
         ui_note("inline images: up to %d rows tall, but this terminal has no "
-                "graphics support", img_rows());
+                "graphics support", image_rows());
     ui_put("\n");
     ui_flush();
 }
@@ -501,8 +468,6 @@ int cmd_resume(struct session *s)
 
     if (!sessionlist_available(session_backend(s))) {
         ui_note("%s keeps no transcripts to resume from", session_backend(s));
-        ui_put("\n");
-        ui_flush();
         return 0;
     }
 
@@ -510,8 +475,7 @@ int cmd_resume(struct session *s)
     int count = sessionlist_load(session_backend(s), session_cwd(s), session_id(s),
                                  &list);
     if (count == 0) {
-        ui_note("no past conversations for this directory");
-        ui_put("\n");
+        reply_note("no past conversations for this directory");
         return 0;
     }
 
@@ -526,7 +490,7 @@ int cmd_resume(struct session *s)
     }
 
     int resumed = 0;
-    int index = pick("resume which conversation", items, count, 0);
+    int index = pick_run("resume which conversation", items, count, 0);
     if (index >= 0) {
         if (session_resume(s, list[index].id)) {
             status_sticky_prompt(NULL);
@@ -534,8 +498,7 @@ int cmd_resume(struct session *s)
             ui_put("\n");
             resumed = 1;
         } else {
-            ui_error("could not resume that conversation");
-            ui_put("\n");
+            reply_error("could not resume that conversation");
         }
     }
     free(items);
@@ -547,8 +510,7 @@ int cmd_resume(struct session *s)
 static void do_new(struct session *s)
 {
     if (!session_clear(s)) {
-        ui_error("could not clear the conversation");
-        ui_put("\n");
+        reply_error("could not clear the conversation");
         return;
     }
 
@@ -629,7 +591,7 @@ void cmd_dispatch_live(struct session *s, const char *line)
     const char *arg;
     enum fork_where where;
     if (split_command(line, name, sizeof name, &arg) && fork_target(name, &where))
-        sessionfork(s, where);
+        sessionfork_run(s, where);
 }
 
 enum cmd_result cmd_dispatch(struct session *s, const char *line)
@@ -663,7 +625,7 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line)
     } else if (!strcmp(name, "/resume")) {
         cmd_resume(s);
     } else if (fork_target(name, &where)) {
-        sessionfork(s, where);
+        sessionfork_run(s, where);
     } else if (!strcmp(name, "/session")) {
         session_report(s);
     } else if (!strcmp(name, "/copy")) {

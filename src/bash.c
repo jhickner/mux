@@ -31,13 +31,14 @@ struct buf {
     int    full;
 };
 
+/* Returns 1 on success, 0 if the text could not be appended. */
 static int buf_add(struct buf *b, const char *src, size_t n, size_t cap_bytes)
 {
     if (b->len + n > cap_bytes) {
         n = b->len < cap_bytes ? cap_bytes - b->len : 0;
         b->full = 1;
         if (!n)
-            return 0;
+            return 1;
     }
     if (b->len + n + 1 > b->cap) {
         size_t want = b->cap ? b->cap : 4096;
@@ -45,17 +46,17 @@ static int buf_add(struct buf *b, const char *src, size_t n, size_t cap_bytes)
             want *= 2;
         char *p = realloc(b->data, want);
         if (!p)
-            return -1;
+            return 0;
         b->data = p;
         b->cap = want;
     }
     memcpy(b->data + b->len, src, n);
     b->len += n;
     b->data[b->len] = '\0';
-    return 0;
+    return 1;
 }
 
-const char *bash_body(const char *line)
+static const char *bash_body(const char *line)
 {
     if (!line || *line != '!')
         return NULL;
@@ -151,11 +152,20 @@ static char *elide(char *text)
     if (tail <= head)
         return text;
 
-    char *out = malloc(head + (len - tail) + 64);
+    size_t size = head + (len - tail) + 64;
+    char *out = malloc(size);
     if (!out)
         return text;
-    int n = sprintf(out, "%.*s\n… %zu bytes elided …\n", (int)head, text, tail - head);
-    memcpy(out + n, text + tail + 1, len - tail);
+    int n = snprintf(out, size, "%.*s\n… %zu bytes elided …\n", (int)head, text,
+                     tail - head);
+    if (n < 0 || (size_t)n >= size) {
+        free(out);
+        return text;
+    }
+    /* tail == len means the trailing chunk held no newline — there is no tail
+       to copy, and text + tail + 1 would be past the end of the allocation. */
+    if (tail < len)
+        memcpy(out + n, text + tail + 1, len - tail); /* includes the NUL */
     free(text);
     return out;
 }
@@ -175,26 +185,41 @@ char *bash_take_context(void)
     return out;
 }
 
+/* snprintf returns the length it *would* have written, so clamp before using
+   it as a byte count. */
+static int add_formatted(struct buf *b, const char *text, int n)
+{
+    if (n < 0)
+        return 0;
+    size_t len = (size_t)n < strlen(text) ? (size_t)n : strlen(text);
+    return buf_add(b, text, len, CTX_TOTAL);
+}
+
 static void context_add(const char *cmd, const char *out, int status)
 {
     char head[512];
     int  n;
+    int  ok = 1;
     if (!ctx.len) {
         const char *lead = "The user ran a shell command in the terminal. Respond to it and its "
                            "output; they can see the output already, so do not repeat it back.\n\n";
-        buf_add(&ctx, lead, strlen(lead), CTX_TOTAL);
+        ok = buf_add(&ctx, lead, strlen(lead), CTX_TOTAL);
     }
     n = snprintf(head, sizeof head, "<bash-input>%.400s</bash-input>\n", cmd);
-    buf_add(&ctx, head, (size_t)n, CTX_TOTAL);
+    ok = add_formatted(&ctx, head, n) && ok;
 
     if (WIFSIGNALED(status))
         n = snprintf(head, sizeof head, "<bash-output signal=\"%d\">\n", WTERMSIG(status));
     else
         n = snprintf(head, sizeof head, "<bash-output exit=\"%d\">\n",
                      WIFEXITED(status) ? WEXITSTATUS(status) : -1);
-    buf_add(&ctx, head, (size_t)n, CTX_TOTAL);
-    buf_add(&ctx, out, strlen(out), CTX_TOTAL);
-    buf_add(&ctx, "\n</bash-output>\n\n", 17, CTX_TOTAL);
+    ok = add_formatted(&ctx, head, n) && ok;
+    ok = buf_add(&ctx, out, strlen(out), CTX_TOTAL) && ok;
+    ok = buf_add(&ctx, "\n</bash-output>\n\n", 17, CTX_TOTAL) && ok;
+
+    /* A half-written record would hand the model a truncated XML tag. */
+    if (!ok)
+        bash_context_clear();
 }
 
 static void write_all(int fd, const char *p, size_t n)
@@ -244,7 +269,7 @@ void bash_run(const char *line)
     }
     ui_flush();
 
-    struct sigaction ignore, old_int, old_quit;
+    struct sigaction ignore = {0}, old_int, old_quit;
     sigemptyset(&ignore.sa_mask);
     ignore.sa_flags = 0;
     ignore.sa_handler = SIG_IGN;

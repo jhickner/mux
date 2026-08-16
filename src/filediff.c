@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 
 #include "ui.h"
+#include "text.h"
 
 #define MAX_BYTES  (1u << 20)
 #define MAX_ROWS   16
@@ -18,27 +19,6 @@ static struct {
     char  *before;
     size_t before_len;
 } snap;
-
-static char *slurp(const char *path, size_t *len)
-{
-    struct stat st;
-    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || (size_t)st.st_size > MAX_BYTES)
-        return NULL;
-
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return NULL;
-    char *buf = malloc((size_t)st.st_size + 1);
-    if (!buf) {
-        fclose(f);
-        return NULL;
-    }
-    size_t n = fread(buf, 1, (size_t)st.st_size, f);
-    fclose(f);
-    buf[n] = '\0';
-    *len = n;
-    return buf;
-}
 
 struct linevec {
     const char **p;
@@ -371,7 +351,7 @@ void filediff_snapshot(const char *path)
     if (stat(path, &st) == 0) {
         if (!S_ISREG(st.st_mode) || (size_t)st.st_size > MAX_BYTES)
             return;
-        snap.before = slurp(path, &snap.before_len);
+        snap.before = text_slurp(path, MAX_BYTES, &snap.before_len);
         if (!snap.before)
             return;
     } else {
@@ -391,7 +371,7 @@ int filediff_render(void)
         return 0;
 
     size_t after_len = 0;
-    char *after = slurp(snap.path, &after_len);
+    char *after = text_slurp(snap.path, MAX_BYTES, &after_len);
     int drew = 0;
     if (after && !(after_len == snap.before_len && memcmp(after, snap.before, after_len) == 0))
         drew = print_diff(snap.before, snap.before_len, after, after_len);

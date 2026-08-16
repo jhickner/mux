@@ -1,4 +1,5 @@
 #include "gitinfo.h"
+#include "text.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,19 +42,14 @@ static int shell_quote(const char *s, char *out, size_t size)
     return 1;
 }
 
-static void chomp(char *s)
-{
-    size_t n = strlen(s);
-    while (n && (s[n - 1] == '\n' || s[n - 1] == '\r'))
-        s[--n] = '\0';
-}
-
 static void parse_shortstat(const char *line, struct gitinfo *g)
 {
     for (const char *p = line; *p; p++) {
         if (*p < '0' || *p > '9')
             continue;
-        long value = strtol(p, (char **)&p, 10);
+        char *end;
+        long value = strtol(p, &end, 10);
+        p = end;
         while (*p == ' ')
             p++;
         if (strncmp(p, "insertion", 9) == 0)
@@ -62,6 +58,7 @@ static void parse_shortstat(const char *line, struct gitinfo *g)
             g->removed = value;
         if (!*p)
             break;
+        p--; /* the loop's p++ would otherwise skip the byte we stopped on */
     }
 }
 
@@ -74,12 +71,14 @@ static void reread(const char *dir, struct gitinfo *g)
         return;
 
     char cmd[17000];
-    snprintf(cmd, sizeof cmd,
-             "git -C %s rev-parse --abbrev-ref HEAD 2>/dev/null; echo @; "
-             "git -C %s rev-parse --short HEAD 2>/dev/null; echo @; "
-             "git -C %s diff --shortstat HEAD 2>/dev/null; echo @; "
-             "git -C %s status --porcelain 2>/dev/null",
-             quoted, quoted, quoted, quoted);
+    /* Truncation would hand a chopped-but-still-runnable command to the shell. */
+    if (snprintf(cmd, sizeof cmd,
+                 "git -C %s rev-parse --abbrev-ref HEAD 2>/dev/null; echo @; "
+                 "git -C %s rev-parse --short HEAD 2>/dev/null; echo @; "
+                 "git -C %s diff --shortstat HEAD 2>/dev/null; echo @; "
+                 "git -C %s status --porcelain 2>/dev/null",
+                 quoted, quoted, quoted, quoted) >= (int)sizeof cmd)
+        return;
 
     FILE *f = popen(cmd, "r");
     if (!f)
@@ -88,7 +87,7 @@ static void reread(const char *dir, struct gitinfo *g)
     char line[1024];
     int  section = 0;
     while (fgets(line, sizeof line, f)) {
-        chomp(line);
+        text_chomp(line);
         if (strcmp(line, "@") == 0) {
             section++;
             continue;

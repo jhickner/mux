@@ -106,12 +106,18 @@ void agenttabs_begin(const char *backend)
         return;
 
     char agents[4200];
-    snprintf(agents, sizeof agents, "%s/agents", dir);
+    if (snprintf(agents, sizeof agents, "%s/agents", dir) >= (int)sizeof agents)
+        return;
     if (mkdir(agents, 0700) != 0 && errno != EEXIST)
         return;
 
-    snprintf(hook_dir, sizeof hook_dir, "%s/state", dir);
-    snprintf(record, sizeof record, "%s/%ld.json", agents, (long)getpid());
+    /* Truncation could drop the pid suffix, so two instances would share (and
+       unlink) one record. */
+    if (snprintf(hook_dir, sizeof hook_dir, "%s/state", dir) >= (int)sizeof hook_dir)
+        return;
+    if (snprintf(record, sizeof record, "%s/%ld.json", agents, (long)getpid()) >=
+        (int)sizeof record)
+        return;
 
     setenv("AGENT_TABS_WRAPPED", "1", 1);
 

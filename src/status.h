@@ -2,7 +2,7 @@
 #ifndef STATUS_H
 #define STATUS_H
 
-#include <stddef.h>
+#include "ui.h"
 
 void   status_begin(void);
 void   status_end(void);
@@ -13,8 +13,7 @@ typedef int  (*status_offset_fn)(void *ud);
 
 void   status_set_below(status_paint_fn paint, status_offset_fn offset, void *ud);
 
-typedef int  (*status_hud_fn)(void *ud, int cols);
-void   status_set_hud(status_hud_fn paint, void *ud);
+void   status_set_hud(ui_hud_fn paint, void *ud);
 
 void   status_set_word(const char *text);
 

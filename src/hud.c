@@ -8,6 +8,7 @@
 #include "gitinfo.h"
 #include "session.h"
 #include "ui.h"
+#include "text.h"
 
 #define SEP    " \xe2\x80\xba "
 #define BRANCH "\xee\x82\xa0"
@@ -49,19 +50,10 @@ static void paint_row(const struct seg *segs, int count, int cols)
     ui_put("\n");
 }
 
-static const char *short_model(const char *model)
-{
-    if (strncmp(model, "claude-", 7) == 0 && model[7])
-        return model + 7;
-    return model;
-}
-
 static void row_identity(const struct session *s, int cols)
 {
     const char *backend = session_backend(s);
-    const char *model = session_model_label(s);
-    if (strcmp(backend, "claude") == 0)
-        model = short_model(model);
+    const char *model = session_model_short(s, session_model_label(s));
     const char *effort = session_effort_label(s);
 
     char tail[256];
@@ -76,20 +68,10 @@ static void row_identity(const struct session *s, int cols)
     paint_row(segs, (int)(sizeof segs / sizeof *segs), cols);
 }
 
-static void home_relative(const char *dir, char *out, size_t size)
-{
-    const char *home = getenv("HOME");
-    size_t n = home ? strlen(home) : 0;
-    if (n && strncmp(dir, home, n) == 0 && (dir[n] == '\0' || dir[n] == '/'))
-        snprintf(out, size, "~%s", dir + n);
-    else
-        snprintf(out, size, "%s", dir);
-}
-
 static void row_location(const struct session *s, int cols)
 {
     char path[1024];
-    home_relative(session_cwd(s), path, sizeof path);
+    path_home_relative(session_cwd(s), path, sizeof path);
 
     const struct gitinfo *g = gitinfo_get(session_cwd(s));
     char where[256] = "", added[32] = "", removed[32] = "", flags[8] = "", ctx[24] = "";

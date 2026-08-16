@@ -9,15 +9,13 @@
 
 #include "app.h"
 
-#define APP APP_NAME
-
 static int paste_dir(char *out, size_t size)
 {
     const char *home = getenv("HOME");
     if (!home)
         return 0;
     char base[1024];
-    if ((size_t)snprintf(base, sizeof base, "%s/.config/%s", home, APP) >= sizeof base)
+    if ((size_t)snprintf(base, sizeof base, "%s/.config/%s", home, APP_NAME) >= sizeof base)
         return 0;
     mkdir(base, 0700);
     if ((size_t)snprintf(out, size, "%s/pastes", base) >= size)

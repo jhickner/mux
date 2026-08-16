@@ -21,82 +21,52 @@ static void term_move_cursor(int col, int row) { printf("\x1b[%d;%dH", row + 1, 
 
 #define KITTY_IMPLEMENTATION
 #include "vendor/kitty.h"
+#include "text.h"
 
-#define IMG_MAX_BYTES (16u * 1024u * 1024u)
+#define IMAGE_MAX_BYTES (16u * 1024u * 1024u)
 
-static int img_ready;
-static int img_ok;
-static int max_rows = IMG_ROWS_DEFAULT;
+static int image_ready;
+static int image_ok;
+static int max_rows = IMAGE_ROWS_DEFAULT;
 
-void img_set_rows(int rows)
+void image_set_rows(int rows)
 {
-    if (rows < IMG_ROWS_MIN)
-        rows = IMG_ROWS_MIN;
-    if (rows > IMG_ROWS_MAX)
-        rows = IMG_ROWS_MAX;
+    if (rows < IMAGE_ROWS_MIN)
+        rows = IMAGE_ROWS_MIN;
+    if (rows > IMAGE_ROWS_MAX)
+        rows = IMAGE_ROWS_MAX;
     max_rows = rows;
 }
 
-int img_rows(void) { return max_rows; }
+int image_rows(void) { return max_rows; }
 
-void img_init(void)
+void image_init(void)
 {
-    if (img_ready)
+    if (image_ready)
         return;
-    img_ready = 1;
+    image_ready = 1;
 
     if (!isatty(STDOUT_FILENO) || !kg_supported())
         return;
     kg_init();
     if (kg_passthrough())
         kg_tmux_allow_passthrough();
-    img_ok = 1;
+    image_ok = 1;
 }
 
-int img_available(void)
+int image_available(void)
 {
-    img_init();
-    return img_ok;
-}
-
-static char *expand_home(const char *path)
-{
-    const char *home = getenv("HOME");
-    if (path[0] != '~' || (path[1] && path[1] != '/') || !home)
-        return NULL;
-    size_t n = strlen(home) + strlen(path);
-    char *out = malloc(n + 1);
-    if (out)
-        snprintf(out, n + 1, "%s%s", home, path + 1);
-    return out;
+    image_init();
+    return image_ok;
 }
 
 static unsigned char *load_file(const char *path, size_t *len)
 {
-    FILE *f = fopen(path, "rb");
-    if (!f)
-        return NULL;
-
-    struct stat st;
-    if (fstat(fileno(f), &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
-        (unsigned long long)st.st_size > IMG_MAX_BYTES) {
-        fclose(f);
-        return NULL;
-    }
-
-    size_t n = (size_t)st.st_size;
-    unsigned char *buf = malloc(n);
-    if (!buf) {
-        fclose(f);
-        return NULL;
-    }
-    if (fread(buf, 1, n, f) != n) {
+    unsigned char *buf = (unsigned char *)text_slurp(path, IMAGE_MAX_BYTES, len);
+    if (buf && *len == 0) {
         free(buf);
-        fclose(f);
         return NULL;
     }
-    fclose(f);
-    *len = n;
     return buf;
 }
 
@@ -119,17 +89,31 @@ static int png_dims(const unsigned char *d, size_t n, int *w, int *h)
     return *w > 0 && *h > 0;
 }
 
+/* The converter is handed a path, not an fd, so a shared directory would let a
+   local attacker swap the name for a symlink between here and the child's
+   open(). A private 0700 directory closes that window. */
 static char *convert_to_png(const char *path)
 {
-    char tmp[] = "/tmp/" APP_NAME "-img-XXXXXX";
-    int fd = mkstemp(tmp);
-    if (fd < 0)
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir || !*tmpdir)
+        tmpdir = "/tmp";
+
+    char dir[4096];
+    size_t n = strlen(tmpdir);
+    while (n > 1 && tmpdir[n - 1] == '/')
+        n--;
+    if (snprintf(dir, sizeof dir, "%.*s/" APP_NAME "-img-XXXXXX", (int)n, tmpdir) >=
+        (int)sizeof dir)
         return NULL;
-    close(fd);
+    if (!mkdtemp(dir))
+        return NULL;
+
+    char tmp[4200];
+    snprintf(tmp, sizeof tmp, "%s/out.png", dir);
 
     pid_t pid = fork();
     if (pid < 0) {
-        unlink(tmp);
+        rmdir(dir);
         return NULL;
     }
     if (pid == 0) {
@@ -145,9 +129,31 @@ static char *convert_to_png(const char *path)
     int status = 0;
     if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
         unlink(tmp);
+        rmdir(dir);
         return NULL;
     }
-    return strdup(tmp);
+    char *out = strdup(tmp);
+    if (!out) {
+        unlink(tmp);
+        rmdir(dir);
+    }
+    return out;
+}
+
+/* Undoes convert_to_png: removes the file and the private directory holding it. */
+static void discard_temp_png(const char *file)
+{
+    unlink(file);
+    const char *slash = strrchr(file, '/');
+    if (!slash)
+        return;
+    char dir[4096];
+    size_t n = (size_t)(slash - file);
+    if (n < sizeof dir) {
+        memcpy(dir, file, n);
+        dir[n] = '\0';
+        rmdir(dir);
+    }
 }
 
 static void cell_pixels(int *cw, int *ch, int *rows)
@@ -180,12 +186,12 @@ static uint32_t next_id(void)
            (uint32_t)(0x40 | (counter++ & 0x3F));
 }
 
-int img_show(const char *path, int indent)
+int image_show(const char *path, int indent)
 {
-    if (!img_available() || !path || !*path)
+    if (!image_available() || !path || !*path)
         return 0;
 
-    char *expanded = expand_home(path);
+    char *expanded = path_expand_home(path);
     const char *file = expanded ? expanded : path;
 
     size_t len = 0;
@@ -201,7 +207,7 @@ int img_show(const char *path, int indent)
 
     free(expanded);
     if (converted) {
-        unlink(converted);
+        discard_temp_png(converted);
         free(converted);
     }
     if (!data)

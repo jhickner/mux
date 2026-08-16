@@ -1,11 +1,13 @@
 #include "ui.h"
 
+#include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <wchar.h>
 
+#include "app.h"
 #include "settings.h"
 #include "tty.h"
 #include "vendor/screen_color.h"
@@ -80,7 +82,7 @@ static const struct {
     {COLOR_BASE12, "lightblue"}, {COLOR_BASE13, "blue"},
     {COLOR_BASE14, "violet"},  {COLOR_BASE15, "magenta"},
 };
-#define SWATCH_N ((int)(sizeof SWATCH / sizeof *SWATCH))
+#define SWATCH_N (COUNT(SWATCH))
 
 static const struct {
     const char  *key;
@@ -92,7 +94,7 @@ static const struct {
                            {UI_BOLD, UI_ITALIC, UI_CODE, UI_HEADING, UI_SPIN,
                             UI_BRAND, UI_TOOL, UI_RESET}},
 };
-#define GROUP_N ((int)(sizeof GROUPS / sizeof *GROUPS))
+#define GROUP_N (COUNT(GROUPS))
 
 static int cursor[GROUP_N];
 
@@ -141,6 +143,10 @@ const char *ui_cycle(enum ui_group group, int delta)
 
 void ui_init(void)
 {
+    /* wcwidth() reports -1 for every non-ASCII codepoint in the startup "C"
+       locale, which would make all width and wrapping math wrong. */
+    setlocale(LC_CTYPE, "");
+
     const char *no_color = getenv("NO_COLOR");
     use_color = isatty(STDOUT_FILENO) && !(no_color && *no_color);
     if (!use_color)
@@ -209,9 +215,11 @@ static void scroll_text(const char *s, size_t n)
         return;
     int cols = tty_columns();
     scroll_col += (int)ui_cells_n(s, n);
-    if (scroll_col > cols) {
-        scroll_rows += (scroll_col - 1) / cols;
-        scroll_col = (scroll_col - 1) % cols + 1;
+    /* The terminal defers the wrap until a cell past the last column, so a row
+       that ends exactly at `cols` has not scrolled yet. */
+    if (scroll_col > cols + 1) {
+        scroll_rows += (scroll_col - 2) / cols;
+        scroll_col = (scroll_col - 2) % cols + 2;
     }
 }
 
@@ -276,7 +284,23 @@ void ui_printf(const char *fmt, ...)
 
 void ui_esc(const char *s)
 {
-    fputs(s, stdout);
+    if (s)
+        fputs(s, stdout);
+}
+
+void ui_pad(int cells)
+{
+    for (int i = 0; i < cells; i++)
+        fputc(' ', stdout);
+}
+
+void ui_move(int count, char direction)
+{
+    if (count <= 0)
+        return;
+    char esc[16];
+    snprintf(esc, sizeof esc, "\x1b[%d%c", count, direction);
+    ui_esc(esc);
 }
 
 void ui_sync_begin(void) { fputs("\x1b[?2026h", stdout); }
@@ -315,6 +339,22 @@ static unsigned decode(const char *s, size_t n, size_t *i)
     return cp;
 }
 
+/* The symbol blocks are mostly narrow; only the code points that carry
+   Emoji_Presentation render double-width, so they are listed rather than
+   covered by a blanket range (which would mis-measure ✓, box drawing, …). */
+static const struct {
+    unsigned lo, hi;
+} WIDE_SYMBOLS[] = {
+    {0x231A, 0x231B}, {0x23E9, 0x23EC}, {0x23F0, 0x23F0}, {0x23F3, 0x23F3},
+    {0x25FD, 0x25FE}, {0x2614, 0x2615}, {0x2648, 0x2653}, {0x267F, 0x267F},
+    {0x2693, 0x2693}, {0x26A1, 0x26A1}, {0x26AA, 0x26AB}, {0x26BD, 0x26BE},
+    {0x26C4, 0x26C5}, {0x26CE, 0x26CE}, {0x26D4, 0x26D4}, {0x26EA, 0x26EA},
+    {0x26F2, 0x26F3}, {0x26F5, 0x26F5}, {0x26FA, 0x26FA}, {0x26FD, 0x26FD},
+    {0x2705, 0x2705}, {0x270A, 0x270B}, {0x2728, 0x2728}, {0x274C, 0x274C},
+    {0x274E, 0x274E}, {0x2753, 0x2755}, {0x2757, 0x2757}, {0x2795, 0x2797},
+    {0x27B0, 0x27B0}, {0x27BF, 0x27BF},
+};
+
 static int cell_width(unsigned cp)
 {
     if (cp == 0)
@@ -322,15 +362,20 @@ static int cell_width(unsigned cp)
     if (cp < 0x20 || cp == 0x7f)
         return 0;
 
-    if ((cp >= 0x1F300 && cp <= 0x1FAFF) || (cp >= 0x2600 && cp <= 0x27BF) ||
-        (cp >= 0x1F000 && cp <= 0x1F2FF))
+    if ((cp >= 0x1F300 && cp <= 0x1FAFF) || (cp >= 0x1F000 && cp <= 0x1F2FF))
         return 2;
+    if (cp >= 0x231A && cp <= 0x27BF)
+        for (int i = 0; i < COUNT(WIDE_SYMBOLS); i++)
+            if (cp >= WIDE_SYMBOLS[i].lo && cp <= WIDE_SYMBOLS[i].hi)
+                return 2;
     int w = wcwidth((wchar_t)cp);
     return w < 0 ? 1 : w;
 }
 
 size_t ui_cells_n(const char *s, size_t n)
 {
+    if (!s)
+        return 0;
     size_t i = 0, cells = 0;
     while (i < n)
         cells += (size_t)cell_width(decode(s, n, &i));
@@ -359,7 +404,9 @@ size_t ui_wrap_row(const char *s, size_t budget, size_t *skip)
                 *skip = 1;
                 return last_space;
             }
-            return start;
+            /* A single glyph wider than the budget still has to be consumed,
+               or the caller's `p += row + skip` walk never advances. */
+            return start ? start : i;
         }
         cells += w;
         if (s[start] == ' ')
@@ -368,27 +415,70 @@ size_t ui_wrap_row(const char *s, size_t budget, size_t *skip)
     return n;
 }
 
-void ui_wrapped(const char *text, int indent, const char *style)
+int ui_wrap_paint(const char *text, const struct ui_wrap *w)
 {
-    int columns = ui_columns();
-    size_t budget = (size_t)(columns - indent > 1 ? columns - indent : 1);
-    const char *p = text;
+    const char *p = text ? text : "";
+    size_t budget = w->budget ? w->budget : 1;
+    int gutter_cells = w->gutter ? (int)ui_cells(w->gutter) : 0;
+    int mark_cells = w->mark ? (int)ui_cells(w->mark) : 0;
+    int rows = 0;
+    int reflowed = 0;
     int first = 1;
 
-    while (*p || first) {
+    while (*p || (first && w->paint_empty)) {
         size_t skip = 0;
         size_t row = *p ? ui_wrap_row(p, budget, &skip) : 0;
-        for (int k = 0; k < indent; k++)
-            ui_put(" ");
-        if (*style)
-            ui_esc(style);
-        ui_putn(p, row);
-        if (*style)
-            ui_esc(ui_style(UI_RESET));
-        ui_put("\n");
+        int indent = first ? w->first_indent : w->indent;
+        int width = gutter_cells + (first ? mark_cells : 0) + (int)ui_cells_n(p, row);
+
+        if (!w->measure) {
+            ui_pad(indent);
+            if (w->role != UI_RESET)
+                ui_esc(ui_style(w->role));
+            if (w->erase)
+                ui_esc(UI_ERASE_EOL);
+            if (w->gutter)
+                ui_put(w->gutter);
+            if (w->mark && first)
+                ui_put(w->mark);
+            ui_putn(p, row);
+        }
+
         p += row + skip;
+        rows++;
+        if (*p && w->max_rows && rows == w->max_rows) {
+            if (!w->measure)
+                ui_put("…");
+            width++;
+        }
+        if (!w->measure) {
+            if (w->role != UI_RESET)
+                ui_esc(ui_style(UI_RESET));
+            ui_put("\n");
+        }
+        if (w->widths && rows - 1 < w->widths_max)
+            w->widths[rows - 1] = width + indent;
+        if (w->reflow_cols > 0) {
+            int cells = width + indent;
+            reflowed += cells > 0 ? (cells + w->reflow_cols - 1) / w->reflow_cols : 1;
+        }
+
         first = 0;
+        if (w->max_rows && rows >= w->max_rows)
+            break;
     }
+    return w->reflow_cols > 0 ? reflowed : rows;
+}
+
+void ui_wrapped(const char *text, int indent, enum ui_role role)
+{
+    int columns = ui_columns();
+    struct ui_wrap w = {0};
+    w.budget = (size_t)(columns - indent > 1 ? columns - indent : 1);
+    w.first_indent = w.indent = indent;
+    w.role = role;
+    w.paint_empty = 1;
+    ui_wrap_paint(text, &w);
 }
 
 void ui_bar(const char *style, const char *fmt, ...)

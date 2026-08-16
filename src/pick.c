@@ -34,13 +34,13 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
 
     if (v->rows > 0)
         printf("\x1b[%dA\r", v->rows);
-    fputs("\x1b[?25l", stdout);
+    fputs(UI_CURSOR_HIDE, stdout);
     ui_scroll_track(0);
 
     int columns = ui_columns();
     int rows = 0;
 
-    fputs("\x1b[K", stdout);
+    fputs(UI_ERASE_EOL, stdout);
     ui_esc(ui_style(UI_CHROME));
     ui_put(UI_BAR);
     ui_esc(ui_style(UI_RESET));
@@ -55,7 +55,7 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
     if (end > count)
         end = count;
     for (int i = v->top; i < end; i++) {
-        fputs("\x1b[K", stdout);
+        fputs(UI_ERASE_EOL, stdout);
         int selected = (i == sel);
         ui_esc(ui_style(selected ? UI_ACCENT : UI_RESET));
         ui_put(selected ? "  \xe2\x86\x92 " : "    ");
@@ -82,7 +82,7 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
     }
 
     if (count > v->visible) {
-        fputs("\x1b[K", stdout);
+        fputs(UI_ERASE_EOL, stdout);
         ui_esc(ui_style(UI_DIM));
         ui_printf("    %d–%d of %d", v->top + 1, end, count);
         ui_esc(ui_style(UI_RESET));
@@ -96,7 +96,7 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
     v->rows = rows;
 }
 
-int pick(const char *title, const struct pick_item *items, int count, int initial)
+int pick_run(const char *title, const struct pick_item *items, int count, int initial)
 {
     if (count <= 0)
         return -1;

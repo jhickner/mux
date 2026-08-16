@@ -7,12 +7,15 @@
 #include <time.h>
 
 #include "agenttabs.h"
+#include "app.h"
 #include "banner.h"
 #include "prompt.h"
 #include "filediff.h"
 #include "gitinfo.h"
 #include "image.h"
 #include "md.h"
+#include "sessionprefs.h"
+#include "sessionview.h"
 #include "settings.h"
 #include "status.h"
 #include "title.h"
@@ -21,6 +24,7 @@
 #include "tty.h"
 #include "ui.h"
 #include "vendor/agents/backend.h"
+#include "text.h"
 #include "vendor/cJSON.h"
 
 struct session {
@@ -41,6 +45,7 @@ struct session {
     struct transcript transcript;
     char    *last_block;
     char    *streamed;
+    size_t   streamed_len, streamed_cap;
     int      turns;
     double   cost_usd;
     long     context_tokens;
@@ -53,17 +58,9 @@ struct session {
     int      compact;
     int      customizations;
     char    *permission;
-    int      after_activity;
-    int      after_tool;
-    int      after_collapse;
     int      idle_busy;
 
-    struct {
-        char  tool[64];
-        char *line;
-        int   columns;
-        int   onscreen;
-    } cluster;
+    struct turnview view;
 };
 
 static void replace(char **slot, const char *value)
@@ -72,23 +69,32 @@ static void replace(char **slot, const char *value)
     *slot = value ? strdup(value) : NULL;
 }
 
-static void append(char **slot, const char *value)
+/* Doubling rather than an exact realloc per event: this runs once per streamed
+   assistant chunk, so an exact fit would make a long reply quadratic. */
+static void stream_append(struct session *s, const char *value)
 {
     if (!value || !*value)
         return;
-    size_t have = *slot ? strlen(*slot) : 0, add = strlen(value);
-    char *grown = realloc(*slot, have + add + 1);
-    if (!grown)
-        return;
-    memcpy(grown + have, value, add + 1);
-    *slot = grown;
+    size_t add = strlen(value);
+    if (s->streamed_len + add + 1 > s->streamed_cap) {
+        size_t want = s->streamed_cap ? s->streamed_cap : 1024;
+        while (want < s->streamed_len + add + 1)
+            want *= 2;
+        char *grown = realloc(s->streamed, want);
+        if (!grown)
+            return;
+        s->streamed = grown;
+        s->streamed_cap = want;
+    }
+    memcpy(s->streamed + s->streamed_len, value, add + 1);
+    s->streamed_len += add;
 }
 
-static double now_seconds(void)
+static void stream_reset(struct session *s)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double)tv.tv_sec + (double)tv.tv_usec / 1e6;
+    free(s->streamed);
+    s->streamed = NULL;
+    s->streamed_len = s->streamed_cap = 0;
 }
 
 static void humanize(long n, char *out, size_t size)
@@ -99,27 +105,6 @@ static void humanize(long n, char *out, size_t size)
         snprintf(out, size, "%.1fk", (double)n / 1000.0);
     else
         snprintf(out, size, "%.1fM", (double)n / 1000000.0);
-}
-
-static void one_line(const char *in, char *out, size_t max)
-{
-    size_t o = 0;
-    int space = 0;
-    for (const char *p = in; *p && o + 1 < max; p++) {
-        unsigned char c = (unsigned char)*p;
-        if (c == '\n' || c == '\t' || c == '\r' || c == ' ') {
-            if (o == 0 || space)
-                continue;
-            space = 1;
-            out[o++] = ' ';
-            continue;
-        }
-        space = 0;
-        out[o++] = (char)c;
-    }
-    while (o > 0 && out[o - 1] == ' ')
-        o--;
-    out[o] = '\0';
 }
 
 static const char *shorten_path(const struct session *s, const char *value, char *scratch,
@@ -143,38 +128,45 @@ static const char *shorten_path(const struct session *s, const char *value, char
     return value;
 }
 
+/* One list for both readers: tool_argument takes the first match in this order,
+   tool_path considers only the entries flagged as naming a file. */
+static const struct {
+    const char *key;
+    int         is_path;
+} TOOL_ARG_KEYS[] = {
+    {"command", 0},          {"file_path", 1}, {"target_file", 1},
+    {"path", 1},             {"target_directory", 0},
+    {"pattern", 0},          {"url", 0},       {"query", 0},
+    {"prompt", 0},           {"description", 0},
+    {"notebook_path", 1},
+};
+
 static void tool_argument(const struct session *s, const backend_event *ev, char *out, size_t size)
 {
-    static const char *const KEYS[] = {"command",          "file_path", "target_file",
-                                       "path",             "target_directory",
-                                       "pattern",          "url",       "query",
-                                       "prompt",           "description",
-                                       "notebook_path"};
     char arg[4096] = "";
 
     if (ev->input_json) {
         cJSON *input = cJSON_Parse(ev->input_json);
         if (input) {
-            for (size_t i = 0; i < sizeof KEYS / sizeof *KEYS; i++) {
-                const char *v = cJSON_GetStringValue(cJSON_GetObjectItem(input, KEYS[i]));
+            for (size_t i = 0; i < COUNT(TOOL_ARG_KEYS); i++) {
+                const char *v =
+                    cJSON_GetStringValue(cJSON_GetObjectItem(input, TOOL_ARG_KEYS[i].key));
                 if (v && *v) {
                     char scratch[1024];
-                    one_line(shorten_path(s, v, scratch, sizeof scratch), arg, sizeof arg);
+                    text_one_line(shorten_path(s, v, scratch, sizeof scratch), arg, sizeof arg);
                     break;
                 }
             }
             cJSON_Delete(input);
         }
     } else if (ev->arg) {
-        one_line(ev->arg, arg, sizeof arg);
+        text_one_line(ev->arg, arg, sizeof arg);
     }
     snprintf(out, size, "%s", arg);
 }
 
 static int tool_path(const struct session *s, const char *input_json, char *out, size_t size)
 {
-    static const char *const KEYS[] = {"file_path", "target_file", "path",
-                                       "notebook_path"};
     if (!input_json)
         return 0;
 
@@ -183,8 +175,11 @@ static int tool_path(const struct session *s, const char *input_json, char *out,
         return 0;
 
     const char *found = NULL;
-    for (size_t i = 0; i < sizeof KEYS / sizeof *KEYS && !found; i++) {
-        const char *v = cJSON_GetStringValue(cJSON_GetObjectItem(input, KEYS[i]));
+    for (size_t i = 0; i < COUNT(TOOL_ARG_KEYS) && !found; i++) {
+        if (!TOOL_ARG_KEYS[i].is_path)
+            continue;
+        const char *v =
+            cJSON_GetStringValue(cJSON_GetObjectItem(input, TOOL_ARG_KEYS[i].key));
         if (v && *v)
             found = v;
     }
@@ -198,232 +193,9 @@ static int tool_path(const struct session *s, const char *input_json, char *out,
     return found != NULL;
 }
 
-#define TOOL_INDENT 2
-
-static void pad(int cells)
-{
-    for (int i = 0; i < cells; i++)
-        ui_put(" ");
-}
-
-static void print_activity(const char *marker, const char *text, enum ui_role role)
-{
-    int indent = TOOL_INDENT + (int)ui_cells(marker) + 1;
-    int columns = ui_columns();
-    int budget = columns - indent;
-    if (budget < 8)
-        budget = 8;
-
-    pad(TOOL_INDENT);
-    ui_esc(ui_style(UI_CHROME));
-    ui_put(marker);
-    ui_esc(ui_style(UI_RESET));
-    ui_put(" ");
-
-    if (!text || !*text) {
-        ui_put("\n");
-        return;
-    }
-
-    const char *style = ui_style(role);
-    const char *p = text;
-    int first = 1;
-    while (*p) {
-        size_t skip = 0;
-        size_t row = ui_wrap_row(p, (size_t)budget, &skip);
-        if (!first)
-            pad(indent);
-        if (*style)
-            ui_esc(style);
-        ui_putn(p, row);
-        if (*style)
-            ui_esc(ui_style(UI_RESET));
-        ui_put("\n");
-        p += row + skip;
-        first = 0;
-    }
-}
-
-static void tool_tag(const char *name, char *out, size_t size)
-{
-    size_t t = 0;
-    out[t++] = '[';
-    for (const char *p = name; *p && t + 2 < size; p++)
-        out[t++] = (*p >= 'A' && *p <= 'Z') ? (char)(*p + 32) : *p;
-    out[t++] = ']';
-    out[t] = '\0';
-}
-
-static void print_tool_call(const char *name, const char *arg)
-{
-    char tag[64];
-    tool_tag(name, tag, sizeof tag);
-
-    int indent = TOOL_INDENT + (int)ui_cells(tag) + 1;
-    int columns = ui_columns();
-
-    pad(TOOL_INDENT);
-    ui_esc(ui_style(UI_TOOL));
-    ui_put(tag);
-    ui_esc(ui_style(UI_RESET));
-    ui_put(" ");
-
-    if (!arg || !*arg) {
-        ui_put("\n");
-        return;
-    }
-    int budget = columns - indent;
-    if (budget < 8)
-        budget = 8;
-    const char *p = arg;
-    int first = 1;
-    while (*p) {
-        size_t skip = 0;
-        size_t row = ui_wrap_row(p, (size_t)budget, &skip);
-        if (!first)
-            pad(indent);
-        ui_putn(p, row);
-        ui_put("\n");
-        p += row + skip;
-        first = 0;
-    }
-}
-
-static void cluster_forget(struct session *s)
-{
-    free(s->cluster.line);
-    s->cluster.line = NULL;
-    s->cluster.tool[0] = '\0';
-    s->cluster.onscreen = 0;
-}
-
-static int cluster_budget(void)
-{
-    int budget = ui_columns() - TOOL_INDENT - 2;
-    return budget < 8 ? 8 : budget;
-}
-
-static void cluster_start(struct session *s, const char *name, const char *arg)
-{
-    char tag[64];
-    tool_tag(name, tag, sizeof tag);
-
-    int budget = cluster_budget() - (int)ui_cells(tag) - 1;
-    if (budget < 8)
-        budget = 8;
-
-    size_t skip = 0;
-    size_t fit = arg && *arg ? ui_wrap_row(arg, (size_t)budget, &skip) : 0;
-
-    char row[4096];
-    snprintf(row, sizeof row, "%s %.*s%s", tag, (int)fit, arg ? arg : "",
-             arg && arg[fit] ? "…" : "");
-
-    cluster_forget(s);
-    snprintf(s->cluster.tool, sizeof s->cluster.tool, "%s", name);
-    s->cluster.line = strdup(row);
-    s->cluster.columns = ui_columns();
-}
-
-static int cluster_extend(struct session *s, const char *name, const char *arg)
-{
-    if (!s->cluster.line || !s->after_collapse || strcmp(s->cluster.tool, name) != 0 ||
-        s->cluster.columns != ui_columns())
-        return 0;
-    if (!arg || !*arg)
-        return 1;
-
-    char row[4096];
-    snprintf(row, sizeof row, "%s, %s", s->cluster.line, arg);
-    if ((int)ui_cells(row) > cluster_budget())
-        return 0;
-
-    free(s->cluster.line);
-    s->cluster.line = strdup(row);
-    return 1;
-}
-
-static void cluster_paint(struct session *s)
-{
-    if (!s->cluster.line)
-        return;
-    size_t tag = strcspn(s->cluster.line, "]");
-    if (s->cluster.line[tag])
-        tag++;
-
-    if (s->cluster.onscreen)
-        ui_esc("\x1b[1A\r\x1b[K");
-    pad(TOOL_INDENT);
-    ui_esc(ui_style(UI_TOOL));
-    ui_putn(s->cluster.line, tag);
-    ui_esc(ui_style(UI_RESET));
-    ui_put(s->cluster.line + tag);
-    ui_esc(ui_style(UI_RESET));
-    ui_put("\n");
-    s->cluster.onscreen = 1;
-}
-
-#define TOOL_PREVIEW_ROWS 3
-
-static void print_tool_output(const char *text, enum ui_role role)
-{
-    if (!text || !*text)
-        return;
-
-    int columns = ui_columns();
-    int budget = columns - 6;
-    if (budget < 8)
-        budget = 8;
-
-    const char *p = text;
-    int shown = 0;
-    while (*p && shown < TOOL_PREVIEW_ROWS) {
-        const char *nl = strchr(p, '\n');
-        size_t n = nl ? (size_t)(nl - p) : strlen(p);
-        char line[1024];
-        if (n >= sizeof line)
-            n = sizeof line - 1;
-        memcpy(line, p, n);
-        line[n] = '\0';
-
-        char clipped[1024];
-        one_line(line, clipped, sizeof clipped);
-        if (*clipped) {
-            size_t skip = 0;
-            size_t fit = ui_wrap_row(clipped, (size_t)budget, &skip);
-            ui_put("    ");
-            ui_esc(ui_style(role));
-            ui_putn(clipped, fit);
-            if (clipped[fit])
-                ui_put("…");
-            ui_esc(ui_style(UI_RESET));
-            ui_put("\n");
-            shown++;
-        }
-        if (!nl)
-            break;
-        p = nl + 1;
-    }
-
-    int remaining = 0;
-    for (const char *q = p; *q; q++)
-        if (*q == '\n' && q[1])
-            remaining++;
-    if (*p && shown >= TOOL_PREVIEW_ROWS)
-        remaining++;
-    if (remaining > 0) {
-        ui_put("    ");
-        ui_esc(ui_style(UI_DIM));
-        ui_printf("+%d line%s", remaining, remaining == 1 ? "" : "s");
-        ui_esc(ui_style(UI_RESET));
-        ui_put("\n");
-    }
-}
-
 static struct session *live;
 
 static void remember_model(const struct session *s);
-static void remember_choice(const char *what, const char *backend, const char *value);
 static void await_model(struct session *s);
 
 static void on_event(void *ud, const backend_event *ev)
@@ -439,7 +211,7 @@ static void on_event(void *ud, const backend_event *ev)
         return;
 
     switch (ev->kind) {
-    case BACKEND_EV_INIT:
+    case BACKEND_EV_INIT: /* handled above; listed to keep -Wswitch exhaustive */
         break;
 
     case BACKEND_EV_ASSISTANT:
@@ -447,31 +219,31 @@ static void on_event(void *ud, const backend_event *ev)
             break;
         status_pause();
 
-        if (s->after_activity)
+        if (s->view.after_activity)
             ui_put("\n");
         md_render(ev->text, 0);
         ui_put("\n");
         status_resume();
         replace(&s->last_block, ev->text);
-        append(&s->streamed, ev->text);
-        cluster_forget(s);
-        s->after_activity = 0;
-        s->after_tool = 0;
-        s->after_collapse = 0;
+        stream_append(s, ev->text);
+        view_cluster_forget(&s->view);
+        s->view.after_activity = 0;
+        s->view.after_tool = 0;
+        s->view.after_collapse = 0;
         break;
 
     case BACKEND_EV_THINKING:
         if (!s->thinking || !ev->text || !*ev->text)
             break;
         status_pause();
-        cluster_forget(s);
-        if (s->after_tool)
+        view_cluster_forget(&s->view);
+        if (s->view.after_tool)
             ui_put("\n");
-        print_activity("\xe2\x9c\xbb", ev->text, UI_THINKING);
+        view_activity("\xe2\x9c\xbb", ev->text, UI_THINKING);
         status_resume();
-        s->after_activity = 1;
-        s->after_tool = 1;
-        s->after_collapse = 0;
+        s->view.after_activity = 1;
+        s->view.after_tool = 1;
+        s->view.after_collapse = 0;
         break;
 
     case BACKEND_EV_TOOL: {
@@ -482,17 +254,17 @@ static void on_event(void *ud, const backend_event *ev)
 
         status_pause();
         if (collapsed) {
-            if (!cluster_extend(s, name, arg)) {
-                if (s->after_tool && !s->after_collapse)
+            if (!view_cluster_extend(&s->view, name, arg)) {
+                if (s->view.after_tool && !s->view.after_collapse)
                     ui_put("\n");
-                cluster_start(s, name, arg);
+                view_cluster_start(&s->view, name, arg);
             }
-            cluster_paint(s);
+            view_cluster_paint(&s->view);
         } else {
-            cluster_forget(s);
-            if (s->after_tool)
+            view_cluster_forget(&s->view);
+            if (s->view.after_tool)
                 ui_put("\n");
-            print_tool_call(name, arg);
+            view_tool_call(name, arg);
         }
         status_resume();
 
@@ -502,35 +274,35 @@ static void on_event(void *ud, const backend_event *ev)
         else
             filediff_clear();
 
-        s->after_activity = 1;
-        s->after_tool = 1;
-        s->after_collapse = collapsed;
+        s->view.after_activity = 1;
+        s->view.after_tool = 1;
+        s->view.after_collapse = collapsed;
         break;
     }
 
     case BACKEND_EV_TOOL_RESULT:
         if (ev->failed) {
             status_pause();
-            cluster_forget(s);
+            view_cluster_forget(&s->view);
             filediff_clear();
             {
                 const char *why = ev->text && *ev->text ? ev->text : NULL;
                 if (!why || !strcmp(why, "failed")) {
-                    print_tool_output("failed", UI_ERROR);
+                    view_tool_output("failed", UI_ERROR);
                 } else {
                     char line[4096];
                     snprintf(line, sizeof line, "failed: %s", why);
-                    print_tool_output(line, UI_ERROR);
+                    view_tool_output(line, UI_ERROR);
                 }
             }
             status_resume();
-            s->after_activity = 1;
-            s->after_tool = 1;
-            s->after_collapse = 0;
+            s->view.after_activity = 1;
+            s->view.after_tool = 1;
+            s->view.after_collapse = 0;
             break;
         }
 
-        if (!s->after_collapse) {
+        if (!s->view.after_collapse) {
             status_pause();
 
             int drew;
@@ -541,15 +313,15 @@ static void on_event(void *ud, const backend_event *ev)
                 drew = filediff_render();
             }
             if (!drew)
-                print_tool_output(ev->text, UI_DIM);
+                view_tool_output(ev->text, UI_DIM);
             status_resume();
         }
-        s->after_activity = 1;
-        s->after_tool = 1;
+        s->view.after_activity = 1;
+        s->view.after_tool = 1;
         break;
     }
 
-    status_gap(s->after_tool);
+    status_gap(s->view.after_tool);
     ui_flush();
 }
 
@@ -578,10 +350,10 @@ int session_idle_pump(struct session *s)
     if (!s || !s->agent || !s->agent->idle_pump || s->quiet)
         return 0;
 
-    cluster_forget(s);
-    s->after_activity = 0;
-    s->after_tool = 0;
-    s->after_collapse = 0;
+    view_cluster_forget(&s->view);
+    s->view.after_activity = 0;
+    s->view.after_tool = 0;
+    s->view.after_collapse = 0;
     live = s;
     int busy = s->agent->idle_pump(s->agent) ? 1 : 0;
     live = NULL;
@@ -724,6 +496,10 @@ struct session *session_new(const char *backend, const char *cwd, const char *mo
     if (!s)
         return NULL;
     s->backend = strdup(backend && *backend ? backend : "claude");
+    if (!s->backend) {
+        free(s);
+        return NULL;
+    }
     s->cwd = cwd ? strdup(cwd) : NULL;
     s->model = model ? strdup(model) : NULL;
     s->effort = effort ? strdup(effort) : NULL;
@@ -733,7 +509,7 @@ struct session *session_new(const char *backend, const char *cwd, const char *mo
 
 void session_replay(struct session *s)
 {
-    ui_esc("\x1b[2J\x1b[H");
+    ui_esc(UI_CLEAR_SCREEN);
     banner_hints();
     if (!s)
         return;
@@ -767,10 +543,10 @@ void session_free(struct session *s)
     free(s->last_reply);
     free(s->failed_prompt);
     free(s->last_block);
-    free(s->streamed);
+    stream_reset(s);
     free(s->prompt);
     free(s->permission);
-    free(s->cluster.line);
+    view_free(&s->view);
     transcript_free(&s->transcript);
     if (live == s)
         live = NULL;
@@ -789,7 +565,7 @@ static Backend *agent(struct session *s)
     o.allow_customizations = s->customizations;
     o.permission_mode = s->permission;
 
-    if (img_available())
+    if (image_available())
         o.system =
             "This conversation is displayed in a terminal that renders images inline. "
             "To show the user an image, write a markdown image with an absolute local "
@@ -918,13 +694,16 @@ int session_set_model(struct session *s, const char *model)
     if (!b)
         return 0;
 
+    char *next = model ? strdup(model) : NULL;
+    if (model && !next)
+        return 0;
     char *previous = s->model;
-    s->model = model ? strdup(model) : NULL;
+    s->model = next;
     b->set_model(b, s->model);
     if (restart(s, s->id[0] ? s->id : NULL)) {
         free(previous);
         replace(&s->resolved, NULL);
-        remember_choice("model", s->backend, s->model);
+        prefs_remember_choice("model", s->backend, s->model);
         await_model(s);
         remember_model(s);
         return 1;
@@ -954,7 +733,7 @@ int session_set_effort(struct session *s, const char *effort)
     if ((b->caps & BACKEND_CAP_LIVE_EFFORT) ||
         restart(s, s->id[0] ? s->id : NULL)) {
         free(previous);
-        remember_choice("effort", s->backend, s->effort);
+        prefs_remember_choice("effort", s->backend, s->effort);
         return 1;
     }
     free(s->effort);
@@ -963,27 +742,44 @@ int session_set_effort(struct session *s, const char *effort)
     return 0;
 }
 
-static const char *const PERMISSIONS[] = {
-    "bypassPermissions", "auto", "acceptEdits", "dontAsk", "manual", "plan",
+static const struct {
+    const char *name;
+    const char *desc;
+} PERMISSIONS[] = {
+    {"bypassPermissions", "never refuses a tool call"},
+    {"auto", "approves the safe calls, refuses the rest"},
+    {"acceptEdits", "edits without asking, refuses the rest"},
+    {"dontAsk", "refuses anything that would ask"},
+    {"manual", "refuses everything not pre-allowed"},
+    {"plan", "read-only: research and propose, no changes"},
 };
-#define PERMISSION_COUNT ((int)(sizeof PERMISSIONS / sizeof *PERMISSIONS))
+#define PERMISSION_COUNT (COUNT(PERMISSIONS))
+
+int session_permission_count(void) { return PERMISSION_COUNT; }
 
 const char *session_permission_name(int index)
 {
-    return (index >= 0 && index < PERMISSION_COUNT) ? PERMISSIONS[index] : NULL;
+    return (index >= 0 && index < PERMISSION_COUNT) ? PERMISSIONS[index].name : NULL;
+}
+
+const char *session_permission_desc(int index)
+{
+    return (index >= 0 && index < PERMISSION_COUNT) ? PERMISSIONS[index].desc : NULL;
 }
 
 int session_permission_index(const char *mode)
 {
-    for (int i = 0; mode && i < PERMISSION_COUNT; i++)
-        if (strcmp(PERMISSIONS[i], mode) == 0)
+    if (!mode)
+        return -1;
+    for (int i = 0; i < PERMISSION_COUNT; i++)
+        if (strcmp(PERMISSIONS[i].name, mode) == 0)
             return i;
     return -1;
 }
 
 const char *session_permission(const struct session *s)
 {
-    return (s && s->permission) ? s->permission : PERMISSIONS[0];
+    return (s && s->permission) ? s->permission : PERMISSIONS[0].name;
 }
 
 int session_set_permission(struct session *s, const char *mode)
@@ -1112,7 +908,7 @@ static void print_footer(struct session *s, double elapsed)
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");
     if (wrapped)
-        ui_wrapped(s->title, 0, ui_style(UI_DIM));
+        ui_wrapped(s->title, 0, UI_DIM);
     ui_put("\n");
     ui_flush();
 }
@@ -1123,12 +919,12 @@ int session_turn(struct session *s, const char *text)
         return 0;
 
     replace(&s->last_block, NULL);
-    replace(&s->streamed, NULL);
+    stream_reset(s);
     replace(&s->prompt, text);
-    s->after_activity = 0;
-    s->after_tool = 0;
-    s->after_collapse = 0;
-    cluster_forget(s);
+    s->view.after_activity = 0;
+    s->view.after_tool = 0;
+    s->view.after_collapse = 0;
+    view_cluster_forget(&s->view);
     live = s;
     double started = now_seconds();
     s->idle_busy = 1;
@@ -1171,7 +967,7 @@ int session_turn(struct session *s, const char *text)
             ui_put("\n");
         }
     } else if (*reply && !shown) {
-        if (s->after_activity)
+        if (s->view.after_activity)
             ui_put("\n");
         md_render(reply, 0);
         ui_put("\n");
@@ -1229,42 +1025,14 @@ const char *session_effort(const struct session *s)
     return s->effort && *s->effort ? s->effort : "default";
 }
 
-static void model_cache_key(const struct session *s, char *out, size_t n)
-{
-    snprintf(out, n, "model.%s.%s", s->backend,
-             s->model && *s->model ? s->model : "default");
-}
-
-static void choice_key(const char *what, const char *backend, char *out, size_t n)
-{
-    snprintf(out, n, "%s.%s", what, backend);
-}
-
-static const char *saved_choice(const char *what, const char *backend)
-{
-    if (!backend || !*backend)
-        return NULL;
-    char key[MAX_SETTING_KEY];
-    choice_key(what, backend, key, sizeof key);
-    const char *saved = settings_get_str(key, NULL);
-    return saved && strcmp(saved, "default") != 0 ? saved : NULL;
-}
-
-static void remember_choice(const char *what, const char *backend, const char *value)
-{
-    char key[MAX_SETTING_KEY];
-    choice_key(what, backend, key, sizeof key);
-    settings_set_str(key, value && *value ? value : "default");
-}
-
 const char *session_saved_model(const char *backend)
 {
-    return saved_choice("model", backend);
+    return prefs_saved_choice("model", backend);
 }
 
 const char *session_saved_effort(const char *backend)
 {
-    return saved_choice("effort", backend);
+    return prefs_saved_choice("effort", backend);
 }
 
 static const char *backend_model(const struct session *s)
@@ -1278,11 +1046,7 @@ static const char *backend_model(const struct session *s)
 static void remember_model(const struct session *s)
 {
     const char *id = s->resolved && *s->resolved ? s->resolved : backend_model(s);
-    if (!id || !*id)
-        return;
-    char key[MAX_SETTING_KEY];
-    model_cache_key(s, key, sizeof key);
-    settings_set_str(key, id);
+    prefs_remember_resolved_model(s->backend, s->model, id);
 }
 
 static void await_model(struct session *s)
@@ -1296,6 +1060,13 @@ static void await_model(struct session *s)
     }
 }
 
+const char *session_model_short(const struct session *s, const char *model)
+{
+    if (strcmp(s->backend, "claude") == 0 && strncmp(model, "claude-", 7) == 0 && model[7])
+        return model + 7;
+    return model;
+}
+
 const char *session_model_label(const struct session *s)
 {
     if (s->resolved && *s->resolved)
@@ -1306,9 +1077,7 @@ const char *session_model_label(const struct session *s)
         if (got && *got)
             return got;
     }
-    char key[MAX_SETTING_KEY];
-    model_cache_key(s, key, sizeof key);
-    const char *cached = settings_get_str(key, NULL);
+    const char *cached = prefs_resolved_model(s->backend, s->model);
     if (cached)
         return cached;
     if (s->model && *s->model)
@@ -1316,18 +1085,9 @@ const char *session_model_label(const struct session *s)
     return "default";
 }
 
-static void window_cache_key(const struct session *s, char *out, size_t n)
-{
-    snprintf(out, n, "window.%s.%s", s->backend, session_model_label(s));
-}
-
 static void remember_window(const struct session *s)
 {
-    if (s->context_window <= 0)
-        return;
-    char key[MAX_SETTING_KEY];
-    window_cache_key(s, key, sizeof key);
-    settings_set_int(key, (int)s->context_window);
+    prefs_remember_window(s->backend, session_model_label(s), s->context_window);
 }
 
 long session_context_window(const struct session *s)
@@ -1340,9 +1100,7 @@ long session_context_window(const struct session *s)
         if (window > 0)
             return window;
     }
-    char key[MAX_SETTING_KEY];
-    window_cache_key(s, key, sizeof key);
-    return settings_get_int(key, 0);
+    return prefs_window(s->backend, session_model_label(s));
 }
 
 const char *session_effort_label(const struct session *s)

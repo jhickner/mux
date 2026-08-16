@@ -1,5 +1,6 @@
 #include "prompt.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,7 @@
 #include "status.h"
 #include "tty.h"
 #include "ui.h"
+#include "text.h"
 
 #define REPL_STYLE_NONE ((signed char)-1)
 
@@ -43,7 +45,7 @@ struct prompt {
     int          queued_count;
     int          queued_cap;
     char        *file_root;
-    prompt_hud_fn hud;
+    ui_hud_fn hud;
     void         *hud_ud;
     int           painted_hud;
     int        (*idle_fd)(void *ud);
@@ -53,7 +55,7 @@ struct prompt {
     void       (*replay)(void *ud);
     void        *replay_ud;
     int          live_block;
-    const char  *painted_head;
+    char        *painted_head;   /* owned: status.c frees the string we copy */
 };
 
 static void history_append(struct prompt *p, const char *line)
@@ -74,6 +76,8 @@ void prompt_history_open(struct prompt *p, const char *path)
 {
     free(p->history_path);
     p->history_path = strdup(path);
+    if (!p->history_path)
+        return;
 
     FILE *f = fopen(path, "r");
     if (!f)
@@ -93,11 +97,19 @@ void prompt_history_open(struct prompt *p, const char *path)
 
 static void frame_size(struct frame *f, int rows, int cols)
 {
+    if (rows < 0 || cols < 0 || (cols > 0 && rows > INT_MAX / cols)) {
+        f->rows = f->cols = 0;
+        return;
+    }
     int need = rows * cols;
     if (need > f->cap) {
         struct cell *grown = realloc(f->cells, (size_t)need * sizeof *grown);
-        if (!grown)
+        if (!grown) {
+            /* Leave no geometry claiming cells we do not have — callers size
+               their loops from f->rows/f->cols. */
+            f->rows = f->cols = 0;
             return;
+        }
         f->cells = grown;
         f->cap = need;
     }
@@ -203,38 +215,39 @@ static size_t sticky_budget(int cols)
     return (size_t)(cols - 5 > 4 ? cols - 5 : 4);
 }
 
-static int wrapped_rows(const char *text, size_t budget, int cap)
+static struct ui_wrap bar_wrap(size_t budget, enum ui_role role, int cap,
+                               const char *mark)
 {
-    int rows = 0, first = 1;
-    while (*text || first) {
-        size_t skip = 0;
-        size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
-        rows++;
-        text += row + skip;
-        first = 0;
-        if (cap && rows >= cap)
-            break;
-    }
-    return rows;
+    struct ui_wrap w = {0};
+    w.budget = budget;
+    w.gutter = UI_BAR " ";
+    w.mark = mark;
+    w.role = role;
+    w.max_rows = cap;
+    w.erase = 1;
+    w.paint_empty = 1;
+    return w;
 }
 
-static int reflowed_rows(const char *text, size_t budget, int cols, int cap)
+static int wrapped_rows(const char *text, size_t budget, int cap)
 {
-    int rows = 0, first = 1, painted = 0;
-    while (*text || first) {
-        size_t skip = 0;
-        size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
-        int width = 2 + (int)ui_cells_n(text, row);
-        text += row + skip;
-        painted++;
-        if (*text && cap && painted == cap)
-            width++;
-        rows += rows_for((size_t)width, cols);
-        first = 0;
-        if (cap && painted >= cap)
-            break;
-    }
-    return rows;
+    struct ui_wrap w = {0};
+    w.budget = budget;
+    w.max_rows = cap;
+    w.paint_empty = 1;
+    w.measure = 1;
+    return ui_wrap_paint(text, &w);
+}
+
+/* Measured through the same painter that draws the block, so the gutter and
+   first-row mark cannot be accounted for differently here than there. */
+static int reflowed_rows(const char *text, size_t budget, int cols, int cap,
+                         const char *mark)
+{
+    struct ui_wrap w = bar_wrap(budget, UI_RESET, cap, mark);
+    w.measure = 1;
+    w.reflow_cols = cols;
+    return ui_wrap_paint(text, &w);
 }
 
 static int caret_offset(const struct prompt *p, int cols)
@@ -246,9 +259,9 @@ static int caret_offset(const struct prompt *p, int cols)
     size_t budget = queued_budget(p->painted_cols);
     if (p->painted_head)
         up += reflowed_rows(p->painted_head, sticky_budget(p->painted_cols),
-                            cols, STICKY_LINES) + 1;
+                            cols, STICKY_LINES, STICKY_DONE) + 1;
     for (int i = 0; i < p->queued_count; i++)
-        up += reflowed_rows(p->queued[i], budget, cols, 0);
+        up += reflowed_rows(p->queued[i], budget, cols, 0, NULL);
     up += p->painted_hud;
     for (int y = 0; y < p->caret_frame_row && y < p->frame.rows; y++)
         up += rows_for((size_t)row_extent(&p->frame, y), cols);
@@ -272,9 +285,10 @@ static void erase_block(struct prompt *p)
     if (p->painted_rows == 0)
         return;
     goto_origin(p);
-    ui_esc("\x1b[J");
+    ui_esc(UI_ERASE_BELOW);
     fflush(stdout);
     p->painted_rows = 0;
+    free(p->painted_head);
     p->painted_head = NULL;
     p->painted_hud = 0;
 }
@@ -296,27 +310,8 @@ static int rows_above(const struct prompt *p, const char *head, int cols)
 static void paint_bars(const char *text, size_t budget, enum ui_role role, int cap,
                        const char *mark)
 {
-    int first = 1, painted = 0;
-    while (*text || first) {
-        size_t skip = 0;
-        size_t row = *text ? ui_wrap_row(text, budget, &skip) : 0;
-
-        ui_esc(ui_style(role));
-        ui_esc("\x1b[K");
-        ui_put(UI_BAR " ");
-        if (mark && first)
-            ui_put(mark);
-        ui_putn(text, row);
-        text += row + skip;
-        painted++;
-        if (*text && cap && painted == cap)
-            ui_put("…");
-        ui_esc(ui_style(UI_RESET));
-        ui_put("\n");
-        first = 0;
-        if (cap && painted >= cap)
-            break;
-    }
+    struct ui_wrap w = bar_wrap(budget, role, cap, mark);
+    ui_wrap_paint(text, &w);
 }
 
 static void paint_above(const struct prompt *p, const char *head, int cols)
@@ -325,7 +320,7 @@ static void paint_above(const struct prompt *p, const char *head, int cols)
         int busy = p->idle_busy && p->idle_busy(p->idle_ud);
         paint_bars(head, sticky_budget(cols), busy ? UI_STICKY : UI_STICKY_DONE,
                    STICKY_LINES, busy ? STICKY_BUSY : STICKY_DONE);
-        ui_esc("\x1b[K");
+        ui_esc(UI_ERASE_EOL);
         ui_put("\n");
     }
     size_t budget = queued_budget(cols);
@@ -348,10 +343,11 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
     *caret_col = 0;
 
     frame_size(&p->frame, rows, cols);
-    if (!p->frame.cells) {
+    if (!p->frame.cells || p->frame.rows < rows || p->frame.cols < cols) {
         *rows_out = 1;
         *caret_row = 0;
         p->painted_cols = cols;
+        free(p->painted_head);
         p->painted_head = NULL;
         p->painted_hud = 0;
         p->caret_row = p->caret_col = p->caret_frame_row = 0;
@@ -372,13 +368,14 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
     *caret_col = p->frame.have_cursor ? p->frame.cursor_x : 0;
 
     p->painted_cols = cols;
-    p->painted_head = head;
+    free(p->painted_head);
+    p->painted_head = head ? strdup(head) : NULL;
     p->caret_row = *caret_row;
     p->caret_col = *caret_col;
     p->caret_frame_row = p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
 
     for (int y = 0; y < rows; y++) {
-        ui_esc("\x1b[K");
+        ui_esc(UI_ERASE_EOL);
         int extent = row_extent(&p->frame, y);
         const char *open = "";
         for (int x = 0; x < extent; x++) {
@@ -407,7 +404,7 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
             ui_put("\n");
     }
 
-    ui_esc("\x1b[J");
+    ui_esc(UI_ERASE_BELOW);
 }
 
 static void repaint(struct prompt *p)
@@ -420,7 +417,7 @@ static void repaint(struct prompt *p)
 
     ui_scroll_track(0);
     goto_origin(p);
-    ui_esc("\x1b[?25l");
+    ui_esc(UI_CURSOR_HIDE);
     paint_block(p, &rows, &caret_row, &caret_col);
 
     int up = (rows - 1) - caret_row;
@@ -435,7 +432,7 @@ static void repaint(struct prompt *p)
         snprintf(esc, sizeof esc, "\x1b[%dC", caret_col);
         ui_esc(esc);
     }
-    ui_esc("\x1b[?25h");
+    ui_esc(UI_CURSOR_SHOW);
     ui_scroll_track(1);
     ui_sync_end();
     fflush(stdout);
@@ -446,25 +443,10 @@ static void repaint(struct prompt *p)
 void prompt_echo_message(const char *text)
 {
     int cols = ui_columns();
-    size_t budget = (size_t)(cols - 2 > 4 ? cols - 2 : 4);
-    const char *p = text;
-    int first = 1;
     enum ui_role role = bash_is_command(text) ? UI_BASH : UI_ECHO;
 
-    while (*p || first) {
-        size_t skip = 0;
-        size_t row = *p ? ui_wrap_row(p, budget, &skip) : 0;
-
-        ui_esc(ui_style(role));
-        ui_esc("\x1b[K");
-        ui_put(UI_BAR);
-        ui_put(" ");
-        ui_putn(p, row);
-        ui_esc(ui_style(UI_RESET));
-        ui_put("\n");
-        p += row + skip;
-        first = 0;
-    }
+    struct ui_wrap w = bar_wrap(queued_budget(cols), role, 0, NULL);
+    ui_wrap_paint(text, &w);
     ui_put("\n");
     ui_flush();
 }
@@ -497,6 +479,7 @@ void prompt_free(struct prompt *p)
     free(p->frame.cells);
     free(p->file_root);
     free(p->history_path);
+    free(p->painted_head);
     for (int i = 0; i < p->queued_count; i++)
         free(p->queued[i]);
     free(p->queued);
@@ -560,27 +543,10 @@ static int editor_temp(char *out, size_t size)
 
 static char *read_whole(const char *path)
 {
-    FILE *f = fopen(path, "r");
-    if (!f)
+    size_t got = 0;
+    char *buf = text_slurp(path, 0, &got);
+    if (!buf)
         return NULL;
-    if (fseek(f, 0, SEEK_END) != 0) {
-        fclose(f);
-        return NULL;
-    }
-    long n = ftell(f);
-    if (n < 0) {
-        fclose(f);
-        return NULL;
-    }
-    rewind(f);
-    char *buf = malloc((size_t)n + 1);
-    if (!buf) {
-        fclose(f);
-        return NULL;
-    }
-    size_t got = fread(buf, 1, (size_t)n, f);
-    fclose(f);
-    buf[got] = '\0';
 
     if (got && buf[got - 1] == '\n')
         buf[--got] = '\0';
@@ -656,7 +622,11 @@ static void edit_in_editor(struct prompt *p, int live)
 
     int status = system(cmd);
 
-    tty_raw_begin();
+    if (tty_raw_begin() != 0) {
+        /* Without raw mode the REPL cannot read keys; nothing sane is left. */
+        fprintf(stderr, "could not return the terminal to raw mode\n");
+        exit(1);
+    }
     ui_raw(1);
     ui_cursor_plain();
 
@@ -762,7 +732,7 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
             status_sticky_erased();
             p->painted_rows = 0;
             p->caret_row = 0;
-            ui_esc("\x1b[2J\x1b[H");
+            ui_esc(UI_CLEAR_SCREEN);
             fflush(stdout);
             return KEY_OK;
         }
@@ -835,18 +805,15 @@ void prompt_set_idle(struct prompt *p, int (*fd)(void *ud),
     p->idle_ud = ud;
 }
 
-static struct prompt *waiting;
-
 static int idle_fd_hook(void *ud)
 {
-    (void)ud;
-    return waiting && waiting->idle_fd ? waiting->idle_fd(waiting->idle_ud) : -1;
+    struct prompt *p = ud;
+    return p && p->idle_fd ? p->idle_fd(p->idle_ud) : -1;
 }
 
 static void idle_ready_hook(void *ud)
 {
-    (void)ud;
-    struct prompt *p = waiting;
+    struct prompt *p = ud;
     if (!p || !p->idle_render)
         return;
     erase_block(p);
@@ -901,11 +868,9 @@ static char *read_loop(struct prompt *p)
 char *prompt_read(struct prompt *p)
 {
 
-    waiting = p;
-    tty_watch(p->idle_fd ? idle_fd_hook : NULL, idle_ready_hook, NULL);
+    tty_watch(p->idle_fd ? idle_fd_hook : NULL, idle_ready_hook, p);
     char *out = read_loop(p);
     tty_watch(NULL, NULL, NULL);
-    waiting = NULL;
     return out;
 }
 
@@ -956,7 +921,7 @@ void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud)
     p->replay_ud = ud;
 }
 
-void prompt_set_hud(struct prompt *p, prompt_hud_fn fn, void *ud)
+void prompt_set_hud(struct prompt *p, ui_hud_fn fn, void *ud)
 {
     p->hud = fn;
     p->hud_ud = ud;

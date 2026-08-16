@@ -40,16 +40,42 @@ static void styled_push(struct styled *s, const char *bytes, size_t n, int role)
             free(y ? y : s->style);
             s->text = NULL;
             s->style = NULL;
+            s->len = 0;
             return;
         }
         s->text = t;
         s->style = y;
         s->cap = want;
     }
-    memcpy(s->text + s->len, bytes, n);
-    memset(s->style + s->len, role, n);
-    s->len += n;
+    /* Rendered text is untrusted model/tool output. A raw ESC would let it
+       drive the terminal — OSC 52 clipboard writes, or a status query whose
+       reply the terminal types back into our raw-mode stdin. */
+    size_t out = s->len;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)bytes[i];
+        if (c == 0x7f || (c < 0x20 && c != '\t' && c != '\n'))
+            continue;
+        s->text[out] = (char)c;
+        s->style[out] = (signed char)role;
+        out++;
+    }
+    s->len = out;
     s->text[s->len] = '\0';
+}
+
+static void put_safe(const char *s)
+{
+    const char *run = s;
+    for (const char *p = s;; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (*p && !(c == 0x7f || (c < 0x20 && c != '\t')))
+            continue;
+        if (p > run)
+            ui_putn(run, (size_t)(p - run));
+        if (!*p)
+            return;
+        run = p + 1;
+    }
 }
 
 static int is_url_start(const char *p)
@@ -117,10 +143,20 @@ static void inline_scan(const char *p, struct styled *out)
     }
 }
 
-static void pad(int n)
+static void emit_slice(const struct styled *s, size_t from, size_t len, enum ui_role base)
 {
-    for (int i = 0; i < n; i++)
-        ui_put(" ");
+    int open = -1;
+    for (size_t i = 0; i < len; i++) {
+        signed char style = s->style[from + i];
+        if (style != open) {
+            ui_esc(ui_style(UI_RESET));
+            ui_esc(ui_style(style ? (enum ui_role)(style - 1) : base));
+            open = style;
+        }
+        ui_putn(s->text + from + i, 1);
+    }
+    if (open >= 0)
+        ui_esc(ui_style(UI_RESET));
 }
 
 static void emit_styled(const struct styled *s, int first_indent, int indent)
@@ -138,21 +174,10 @@ static void emit_styled(const struct styled *s, int first_indent, int indent)
         size_t skip = 0;
         size_t row = *p ? ui_wrap_row(p, (size_t)budget, &skip) : 0;
 
-        pad(row_indent);
+        ui_pad(row_indent);
         size_t base = (size_t)(p - s->text);
 
-        int open = -1;
-        for (size_t i = 0; i < row; i++) {
-            signed char style = s->style[base + i];
-            if (style != open) {
-                ui_esc(ui_style(UI_RESET));
-                ui_esc(ui_style(style ? (enum ui_role)(style - 1) : UI_BODY));
-                open = style;
-            }
-            ui_putn(p + i, 1);
-        }
-        if (open >= 0)
-            ui_esc(ui_style(UI_RESET));
+        emit_slice(s, base, row, UI_BODY);
         ui_put("\n");
 
         p += row + skip;
@@ -302,25 +327,9 @@ static void row_free(struct trow *r)
         styled_free(&r->cell[i]);
 }
 
-static void emit_slice(const struct styled *s, size_t from, size_t len, enum ui_role base)
-{
-    int open = -1;
-    for (size_t i = 0; i < len; i++) {
-        signed char style = s->style[from + i];
-        if (style != open) {
-            ui_esc(ui_style(UI_RESET));
-            ui_esc(ui_style(style ? (enum ui_role)(style - 1) : base));
-            open = style;
-        }
-        ui_putn(s->text + from + i, 1);
-    }
-    if (open >= 0)
-        ui_esc(ui_style(UI_RESET));
-}
-
 static void rule_row(const int *width, int ncols, int indent)
 {
-    pad(indent);
+    ui_pad(indent);
     ui_esc(ui_style(UI_CHROME));
     for (int c = 0; c < ncols; c++) {
         if (c)
@@ -340,7 +349,7 @@ static void render_row(const struct trow *r, const int *width, const enum align 
 
     while (more) {
         more = 0;
-        pad(indent);
+        ui_pad(indent);
         for (int c = 0; c < ncols; c++) {
             const struct styled *s = &r->cell[c];
             size_t take = 0, skip = 0;
@@ -369,11 +378,11 @@ static void render_row(const struct trow *r, const int *width, const enum align 
                     ui_put(" ");
             }
             if (!(last && blank)) {
-                pad(before);
+                ui_pad(before);
                 if (take)
                     emit_slice(s, off[c], take, header ? UI_BOLD : UI_BODY);
                 if (!last)
-                    pad(slack - before);
+                    ui_pad(slack - before);
             }
 
             off[c] += take + skip;
@@ -551,7 +560,7 @@ static char *take_line(const char **text)
 
 static void render_ansi_line(const char *line, int indent)
 {
-    pad(indent);
+    ui_pad(indent);
     for (const char *p = line; *p; ) {
         if (p[0] != '\\') {
             ui_putn(p, 1);
@@ -603,21 +612,21 @@ static char *image_line(const char *body)
 
 static void render_image(const char *path, int indent)
 {
-    if (img_show(path, indent))
+    if (image_show(path, indent))
         return;
-    pad(indent);
+    ui_pad(indent);
     ui_esc(ui_style(UI_DIM));
     ui_put("[image] ");
-    ui_put(path);
+    put_safe(path);
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");
 }
 
 static void render_code_line(const char *line, int indent)
 {
-    pad(indent);
+    ui_pad(indent);
     ui_esc(ui_style(UI_CODE));
-    ui_put(line);
+    put_safe(line);
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");
 }
@@ -684,7 +693,7 @@ void md_render(const char *text, int indent)
 
         if (is_rule(body)) {
             int width = ui_columns() - indent;
-            pad(indent);
+            ui_pad(indent);
             ui_esc(ui_style(UI_DIM));
             for (int i = 0; i < width && i < 60; i++)
                 ui_put("\xe2\x94\x80");
@@ -696,16 +705,16 @@ void md_render(const char *text, int indent)
                 h++;
             while (*h == ' ')
                 h++;
-            pad(indent);
+            ui_pad(indent);
             ui_esc(ui_style(UI_HEADING));
-            ui_put(h);
+            put_safe(h);
             ui_esc(ui_style(UI_RESET));
             ui_put("\n");
         } else if (*body == '>') {
             const char *q = body + 1;
             if (*q == ' ')
                 q++;
-            pad(indent);
+            ui_pad(indent);
             ui_esc(ui_style(UI_DIM));
             ui_put("\xe2\x94\x82 ");
             ui_esc(ui_style(UI_RESET));
@@ -715,13 +724,13 @@ void md_render(const char *text, int indent)
             size_t marker = 0;
             int item_indent = indent + lead;
             if (is_bullet(body, &rest)) {
-                pad(item_indent);
+                ui_pad(item_indent);
                 ui_esc(ui_style(UI_CHROME));
                 ui_put("\xe2\x80\xa2 ");
                 ui_esc(ui_style(UI_RESET));
                 render_paragraph(rest, 0, item_indent + 2);
             } else if (is_ordered(body, &marker)) {
-                pad(item_indent);
+                ui_pad(item_indent);
                 ui_esc(ui_style(UI_CHROME));
                 ui_putn(body, marker - 1);
                 ui_esc(ui_style(UI_RESET));

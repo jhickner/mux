@@ -1,3 +1,4 @@
+#include "app.h"
 #include "status.h"
 
 #include <stdio.h>
@@ -7,9 +8,10 @@
 
 #include "tty.h"
 #include "ui.h"
+#include "text.h"
 
 static const char *const FRAMES[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
-#define FRAME_COUNT ((int)(sizeof FRAMES / sizeof *FRAMES))
+#define FRAME_COUNT (COUNT(FRAMES))
 
 #define FRAME_MS 90
 
@@ -24,7 +26,7 @@ static char    note[128];
 static status_paint_fn  below;
 static status_offset_fn below_offset;
 static void            *below_ud;
-static status_hud_fn    hud;
+static ui_hud_fn    hud;
 static void            *hud_ud;
 static int              hud_rows;
 static int              caret_row;
@@ -45,13 +47,6 @@ static int   block_tallest;
 
 static unsigned resize_epoch;
 static double   resize_at;
-
-static double now_seconds(void)
-{
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (double)tv.tv_sec + (double)tv.tv_usec / 1e6;
-}
 
 double status_elapsed(void)
 {
@@ -89,7 +84,7 @@ void status_set_below(status_paint_fn paint_fn, status_offset_fn offset_fn, void
     below_ud = ud;
 }
 
-void status_set_hud(status_hud_fn paint_fn, void *ud)
+void status_set_hud(ui_hud_fn paint_fn, void *ud)
 {
     hud = paint_fn;
     hud_ud = ud;
@@ -104,15 +99,6 @@ static int size_changing(void)
         dirty = 1;
     }
     return resize_at > 0 && (now_seconds() - resize_at) * 1000.0 < TTY_RESIZE_SETTLE_MS;
-}
-
-static void move(int count, char direction)
-{
-    if (count <= 0)
-        return;
-    char esc[16];
-    snprintf(esc, sizeof esc, "\x1b[%d%c", count, direction);
-    ui_esc(esc);
 }
 
 static int rows_above_caret(void)
@@ -130,9 +116,9 @@ static int rows_above_caret(void)
 
 static void erase_block(void)
 {
-    ui_esc("\x1b[?25l");
+    ui_esc(UI_CURSOR_HIDE);
     if (painted)
-        move(rows_above_caret(), 'A');
+        ui_move(rows_above_caret(), 'A');
     ui_esc("\r\x1b[J");
     caret_row = 0;
     spin_width = 0;
@@ -169,31 +155,27 @@ static void paint_sticky(void)
         return;
 
     int cols = ui_columns();
-    size_t budget = (size_t)(cols - 3 > 4 ? cols - 3 : 4);
     int max = STICKY_LINES;
     if (max > STICKY_ROWS_MAX - 1)
         max = STICKY_ROWS_MAX - 1;
 
-    const char *p = sticky_text;
-    while (*p && sticky_rows < max) {
-        size_t skip = 0;
-        size_t row = ui_wrap_row(p, budget, &skip);
-        int width = 2 + (int)ui_cells_n(p, row);
+    /* Budget leaves room for the 2-cell gutter and the clipping ellipsis.
+       prompt.c repaints this block with its own budget because it adds a
+       leading ✓ marker; both go through ui_wrap_paint. */
+    struct ui_wrap w = {0};
+    w.budget = (size_t)(cols - 3 > 4 ? cols - 3 : 4);
+    w.gutter = UI_BAR " ";
+    w.role = UI_STICKY;
+    w.max_rows = max;
+    w.erase = 1;
+    w.widths = sticky_widths;
+    w.widths_max = STICKY_ROWS_MAX - 1;
 
-        ui_esc(ui_style(UI_STICKY));
-        ui_esc("\x1b[K");
-        ui_put(UI_BAR " ");
-        ui_putn(p, row);
-        p += row + skip;
-        if (*p && sticky_rows + 1 == max) {
-            ui_put("…");
-            width++;
-        }
-        ui_esc(ui_style(UI_RESET));
-        ui_put("\n");
-        sticky_widths[sticky_rows++] = width;
-    }
-    ui_esc("\x1b[K");
+    sticky_rows = ui_wrap_paint(sticky_text, &w);
+    if (sticky_rows > w.widths_max)
+        sticky_rows = w.widths_max;
+
+    ui_esc(UI_ERASE_EOL);
     ui_put("\n");
     sticky_widths[sticky_rows++] = 0;
 }
@@ -260,13 +242,13 @@ static void paint(void)
         int rows = 1, row = 0, col = 0;
         ui_put("\n");
         below(below_ud, &rows, &row, &col);
-        move((rows - 1) - row, 'A');
+        ui_move((rows - 1) - row, 'A');
         ui_esc("\r");
-        move(col, 'C');
+        ui_move(col, 'C');
         caret_row = 1 + row;
         caret_col = col;
         below_rows = rows;
-        ui_esc("\x1b[?25h");
+        ui_esc(UI_CURSOR_SHOW);
     }
     block_rows(below_rows);
     painted = 1;
@@ -288,14 +270,14 @@ static int paint_spin_only(void)
     int down = 1 + (below_offset ? below_offset(below_ud) : caret_row - 1);
     ui_sync_begin();
     ui_scroll_track(0);
-    ui_esc("\x1b[?25l");
-    move(down, 'A');
+    ui_esc(UI_CURSOR_HIDE);
+    ui_move(down, 'A');
     ui_esc("\r\x1b[K");
     paint_spin();
     ui_esc("\r");
-    move(down, 'B');
-    move(caret_col, 'C');
-    ui_esc("\x1b[?25h");
+    ui_move(down, 'B');
+    ui_move(caret_col, 'C');
+    ui_esc(UI_CURSOR_SHOW);
     ui_scroll_track(1);
     ui_sync_end();
     ui_flush();
@@ -409,6 +391,6 @@ void status_end(void)
     visible = 0;
     active = 0;
     started = 0;
-    ui_esc("\x1b[?25h");
+    ui_esc(UI_CURSOR_SHOW);
 
 }

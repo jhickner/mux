@@ -7,6 +7,7 @@
 #include <sys/stat.h>
 
 #include "title.h"
+#include "text.h"
 #include "vendor/cJSON.h"
 
 #define MAX_SESSIONS 40
@@ -25,27 +26,6 @@ static void encode_cwd(const char *cwd, char *out, size_t size)
     out[o] = '\0';
 }
 
-static void flatten(const char *in, char *out, size_t size)
-{
-    size_t o = 0;
-    int space = 0;
-    for (const char *p = in; *p && o + 1 < size; p++) {
-        unsigned char c = (unsigned char)*p;
-        if (c == '\n' || c == '\r' || c == '\t' || c == ' ') {
-            if (o == 0 || space)
-                continue;
-            space = 1;
-            out[o++] = ' ';
-            continue;
-        }
-        space = 0;
-        out[o++] = (char)c;
-    }
-    while (o > 0 && out[o - 1] == ' ')
-        o--;
-    out[o] = '\0';
-}
-
 static void relative_time(time_t then, char *out, size_t size)
 {
     long secs = (long)(time(NULL) - then);
@@ -57,6 +37,23 @@ static void relative_time(time_t then, char *out, size_t size)
         snprintf(out, size, "%ldh ago", secs / 3600);
     else
         snprintf(out, size, "%ldd ago", secs / 86400);
+}
+
+/* A message "content" is either a plain string or an array of blocks; take the
+   first piece of text either way. */
+static const char *json_first_text(const cJSON *content)
+{
+    if (cJSON_IsString(content))
+        return content->valuestring;
+    if (cJSON_IsArray(content)) {
+        const cJSON *block;
+        cJSON_ArrayForEach(block, content) {
+            const char *t = cJSON_GetStringValue(cJSON_GetObjectItem(block, "text"));
+            if (t)
+                return t;
+        }
+    }
+    return NULL;
 }
 
 static int usable_label(const char *text)
@@ -89,27 +86,15 @@ static int transcript_label(const char *path, char *out, size_t size)
         if (type && strcmp(type, "ai-title") == 0) {
             const char *title = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "aiTitle"));
             if (title && *title) {
-                flatten(title, out, size);
+                text_one_line(title, out, size);
                 titled = 1;
             }
         } else if (!spoke && type && strcmp(type, "user") == 0 && !cJSON_IsTrue(meta)) {
             cJSON *message = cJSON_GetObjectItem(ev, "message");
             cJSON *content = message ? cJSON_GetObjectItem(message, "content") : NULL;
-            const char *text = NULL;
-            if (cJSON_IsString(content)) {
-                text = content->valuestring;
-            } else if (cJSON_IsArray(content)) {
-                cJSON *block;
-                cJSON_ArrayForEach(block, content) {
-                    const char *t = cJSON_GetStringValue(cJSON_GetObjectItem(block, "text"));
-                    if (t) {
-                        text = t;
-                        break;
-                    }
-                }
-            }
+            const char *text = json_first_text(content);
             if (usable_label(text)) {
-                flatten(text, out, size);
+                text_one_line(text, out, size);
                 spoke = 1;
             }
         }
@@ -155,17 +140,14 @@ static int finish_list(struct past_session *list, int count, struct past_session
     return count;
 }
 
-static int load_claude(const char *cwd, const char *skip_id, struct past_session **out)
+/* Fills a candidate's id and label from one directory entry, or returns 0 to
+   skip it. The three backends differ only in this step. */
+typedef int (*scan_fill_fn)(const char *name, const char *path, const struct stat *st,
+                            const void *ctx, struct past_session *candidate);
+
+static int scan_dir(const char *dir, const char *skip_id, scan_fill_fn fill,
+                    const void *ctx, struct past_session **out)
 {
-    const char *home = getenv("HOME");
-    if (!home || !cwd)
-        return 0;
-
-    char encoded[1024];
-    encode_cwd(cwd, encoded, sizeof encoded);
-
-    char dir[2048];
-    snprintf(dir, sizeof dir, "%s/.claude/projects/%s", home, encoded);
     DIR *d = opendir(dir);
     if (!d)
         return 0;
@@ -179,38 +161,63 @@ static int load_claude(const char *cwd, const char *skip_id, struct past_session
     int count = 0;
     struct dirent *entry;
     while ((entry = readdir(d))) {
-        size_t len = strlen(entry->d_name);
-        if (len < 7 || strcmp(entry->d_name + len - 6, ".jsonl") != 0)
-            continue;
-
-        char id[128];
-        size_t id_len = len - 6;
-        if (id_len >= sizeof id)
-            continue;
-        memcpy(id, entry->d_name, id_len);
-        id[id_len] = '\0';
-        if (skip_id && strcmp(id, skip_id) == 0)
-            continue;
-
         char path[3072];
-        snprintf(path, sizeof path, "%s/%s", dir, entry->d_name);
+        if (snprintf(path, sizeof path, "%s/%s", dir, entry->d_name) >= (int)sizeof path)
+            continue;
         struct stat st;
-        if (stat(path, &st) != 0 || st.st_size == 0)
+        if (stat(path, &st) != 0)
             continue;
 
         struct past_session candidate = {0};
-        struct past_session *s = &candidate;
-
-        if (!title_lookup(id, s->label, sizeof s->label) &&
-            !transcript_label(path, s->label, sizeof s->label))
+        if (!fill(entry->d_name, path, &st, ctx, &candidate))
             continue;
-        snprintf(s->id, sizeof s->id, "%s", id);
-        s->modified = st.st_mtime;
-        relative_time(s->modified, s->when, sizeof s->when);
-        keep_recent(list, &count, s);
+        if (skip_id && strcmp(candidate.id, skip_id) == 0)
+            continue;
+        candidate.modified = st.st_mtime;
+        relative_time(candidate.modified, candidate.when, sizeof candidate.when);
+        keep_recent(list, &count, &candidate);
     }
     closedir(d);
     return finish_list(list, count, out);
+}
+
+/* "<id>.jsonl" -> id, when it fits. */
+static int jsonl_id(const char *name, char *out, size_t size)
+{
+    size_t len = strlen(name);
+    if (len < 7 || strcmp(name + len - 6, ".jsonl") != 0)
+        return 0;
+    size_t id_len = len - 6;
+    if (id_len >= size)
+        return 0;
+    memcpy(out, name, id_len);
+    out[id_len] = '\0';
+    return 1;
+}
+
+static int claude_fill(const char *name, const char *path, const struct stat *st,
+                       const void *ctx, struct past_session *c)
+{
+    (void)ctx;
+    if (!jsonl_id(name, c->id, sizeof c->id) || st->st_size == 0)
+        return 0;
+    return title_lookup(c->id, c->label, sizeof c->label) ||
+           transcript_label(path, c->label, sizeof c->label);
+}
+
+static int load_claude(const char *cwd, const char *skip_id, struct past_session **out)
+{
+    const char *home = getenv("HOME");
+    if (!home || !cwd)
+        return 0;
+
+    char encoded[1024];
+    encode_cwd(cwd, encoded, sizeof encoded);
+
+    char dir[2048];
+    if (snprintf(dir, sizeof dir, "%s/.claude/projects/%s", home, encoded) >= (int)sizeof dir)
+        return 0;
+    return scan_dir(dir, skip_id, claude_fill, NULL, out);
 }
 
 static void encode_cwd_grok(const char *cwd, char *out, size_t size)
@@ -295,28 +302,14 @@ static int grok_group_dir(const char *cwd, char *out, size_t size)
 static int grok_label(const char *dir, char *out, size_t size)
 {
     char path[3072];
-    snprintf(path, sizeof path, "%s/summary.json", dir);
-    FILE *f = fopen(path, "r");
-    if (!f)
+    if (snprintf(path, sizeof path, "%s/summary.json", dir) >= (int)sizeof path)
         return 0;
-    if (fseek(f, 0, SEEK_END) != 0) {
-        fclose(f);
-        return 0;
-    }
-    long n = ftell(f);
-    if (n <= 0 || n > 1 << 20) {
-        fclose(f);
+    size_t got = 0;
+    char *buf = text_slurp(path, 1 << 20, &got);
+    if (!buf || got == 0) {
+        free(buf);
         return 0;
     }
-    rewind(f);
-    char *buf = malloc((size_t)n + 1);
-    if (!buf) {
-        fclose(f);
-        return 0;
-    }
-    size_t got = fread(buf, 1, (size_t)n, f);
-    fclose(f);
-    buf[got] = '\0';
 
     int ok = 0;
     cJSON *root = cJSON_ParseWithLength(buf, got);
@@ -327,11 +320,24 @@ static int grok_label(const char *dir, char *out, size_t size)
     if (!title || !*title)
         title = cJSON_GetStringValue(cJSON_GetObjectItem(root, "session_summary"));
     if (title && *title) {
-        flatten(title, out, size);
+        text_one_line(title, out, size);
         ok = out[0] != '\0';
     }
     cJSON_Delete(root);
     return ok;
+}
+
+static int grok_fill(const char *name, const char *path, const struct stat *st,
+                     const void *ctx, struct past_session *c)
+{
+    (void)ctx;
+    if (name[0] == '.' || strlen(name) >= sizeof c->id || !S_ISDIR(st->st_mode))
+        return 0;
+    if (!title_lookup(name, c->label, sizeof c->label) &&
+        !grok_label(path, c->label, sizeof c->label))
+        return 0;
+    snprintf(c->id, sizeof c->id, "%s", name);
+    return 1;
 }
 
 static int load_grok(const char *cwd, const char *skip_id, struct past_session **out)
@@ -339,44 +345,7 @@ static int load_grok(const char *cwd, const char *skip_id, struct past_session *
     char dir[2048];
     if (!grok_group_dir(cwd, dir, sizeof dir))
         return 0;
-    DIR *d = opendir(dir);
-    if (!d)
-        return 0;
-
-    struct past_session *list = calloc(MAX_SESSIONS, sizeof *list);
-    if (!list) {
-        closedir(d);
-        return 0;
-    }
-
-    int count = 0;
-    struct dirent *entry;
-    while ((entry = readdir(d))) {
-        if (entry->d_name[0] == '.')
-            continue;
-        if (strlen(entry->d_name) >= sizeof list[0].id)
-            continue;
-        if (skip_id && strcmp(entry->d_name, skip_id) == 0)
-            continue;
-
-        char path[3072];
-        snprintf(path, sizeof path, "%s/%s", dir, entry->d_name);
-        struct stat st;
-        if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode))
-            continue;
-
-        struct past_session candidate = {0};
-        struct past_session *s = &candidate;
-        if (!title_lookup(entry->d_name, s->label, sizeof s->label) &&
-            !grok_label(path, s->label, sizeof s->label))
-            continue;
-        snprintf(s->id, sizeof s->id, "%s", entry->d_name);
-        s->modified = st.st_mtime;
-        relative_time(s->modified, s->when, sizeof s->when);
-        keep_recent(list, &count, s);
-    }
-    closedir(d);
-    return finish_list(list, count, out);
+    return scan_dir(dir, skip_id, grok_fill, NULL, out);
 }
 
 static void encode_cwd_pi(const char *cwd, char *out, size_t size)
@@ -466,7 +435,7 @@ static int pi_transcript(const char *path, const char *cwd, int filter_cwd,
         } else if (type && strcmp(type, "session_info") == 0) {
             const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "name"));
             if (name && *name) {
-                flatten(name, label, label_size);
+                text_one_line(name, label, label_size);
                 titled = label[0] != '\0';
             }
         } else if (!spoke && type && strcmp(type, "message") == 0) {
@@ -476,22 +445,9 @@ static int pi_transcript(const char *path, const char *cwd, int filter_cwd,
                 : NULL;
             if (role && strcmp(role, "user") == 0) {
                 cJSON *content = cJSON_GetObjectItem(message, "content");
-                const char *text = NULL;
-                if (cJSON_IsString(content)) {
-                    text = content->valuestring;
-                } else if (cJSON_IsArray(content)) {
-                    cJSON *block;
-                    cJSON_ArrayForEach(block, content) {
-                        const char *t =
-                            cJSON_GetStringValue(cJSON_GetObjectItem(block, "text"));
-                        if (t) {
-                            text = t;
-                            break;
-                        }
-                    }
-                }
+                const char *text = json_first_text(content);
                 if (usable_label(text)) {
-                    flatten(text, label, label_size);
+                    text_one_line(text, label, label_size);
                     spoke = 1;
                 }
             }
@@ -505,50 +461,34 @@ static int pi_transcript(const char *path, const char *cwd, int filter_cwd,
     return id[0] && (titled || spoke);
 }
 
+struct pi_scan {
+    const char *cwd;
+    int         filter_cwd;
+};
+
+static int pi_fill(const char *name, const char *path, const struct stat *st,
+                   const void *ctx, struct past_session *c)
+{
+    const struct pi_scan *pi = ctx;
+    size_t len = strlen(name);
+    if (len < 7 || strcmp(name + len - 6, ".jsonl") != 0)
+        return 0;
+    if (!S_ISREG(st->st_mode) || st->st_size == 0)
+        return 0;
+    if (!pi_transcript(path, pi->cwd, pi->filter_cwd, c->id, sizeof c->id,
+                       c->label, sizeof c->label))
+        return 0;
+    /* title_lookup overwrites the label when it has one of its own. */
+    return title_lookup(c->id, c->label, sizeof c->label) || c->label[0] != '\0';
+}
+
 static int load_pi(const char *cwd, const char *skip_id, struct past_session **out)
 {
     char dir[2048];
-    int filter_cwd = 0;
-    if (!pi_session_dir(cwd, dir, sizeof dir, &filter_cwd))
+    struct pi_scan pi = {cwd, 0};
+    if (!pi_session_dir(cwd, dir, sizeof dir, &pi.filter_cwd))
         return 0;
-    DIR *d = opendir(dir);
-    if (!d)
-        return 0;
-
-    struct past_session *list = calloc(MAX_SESSIONS, sizeof *list);
-    if (!list) {
-        closedir(d);
-        return 0;
-    }
-
-    int count = 0;
-    struct dirent *entry;
-    while ((entry = readdir(d))) {
-        size_t len = strlen(entry->d_name);
-        if (len < 7 || strcmp(entry->d_name + len - 6, ".jsonl") != 0)
-            continue;
-
-        char path[3072];
-        snprintf(path, sizeof path, "%s/%s", dir, entry->d_name);
-        struct stat st;
-        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size == 0)
-            continue;
-
-        struct past_session candidate = {0};
-        if (!pi_transcript(path, cwd, filter_cwd, candidate.id, sizeof candidate.id,
-                           candidate.label, sizeof candidate.label))
-            continue;
-        if (skip_id && strcmp(candidate.id, skip_id) == 0)
-            continue;
-        if (!title_lookup(candidate.id, candidate.label, sizeof candidate.label) &&
-            !candidate.label[0])
-            continue;
-        candidate.modified = st.st_mtime;
-        relative_time(candidate.modified, candidate.when, sizeof candidate.when);
-        keep_recent(list, &count, &candidate);
-    }
-    closedir(d);
-    return finish_list(list, count, out);
+    return scan_dir(dir, skip_id, pi_fill, &pi, out);
 }
 
 int sessionlist_available(const char *backend)
