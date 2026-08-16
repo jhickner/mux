@@ -10,6 +10,7 @@
 #include "banner.h"
 #include "bash.h"
 #include "cmd.h"
+#include "gitinfo.h"
 #include "hud.h"
 #include "image.h"
 #include "prompt.h"
@@ -261,6 +262,7 @@ int main(int argc, char **argv)
 
         if (bash_is_command(line)) {
             bash_run(line);
+            gitinfo_forget();
             char *text = bash_take_context();
             if (text) {
                 status_sticky_prompt(line);

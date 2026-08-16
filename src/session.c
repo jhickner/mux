@@ -10,6 +10,7 @@
 #include "banner.h"
 #include "prompt.h"
 #include "filediff.h"
+#include "gitinfo.h"
 #include "image.h"
 #include "md.h"
 #include "settings.h"
@@ -586,6 +587,7 @@ int session_idle_pump(struct session *s)
     live = NULL;
 
     tab_busy(s, busy);
+    gitinfo_forget(); /* a background worker's turn edits the tree too */
     return busy;
 }
 
@@ -1201,6 +1203,9 @@ int session_turn(struct session *s, const char *text)
     /* Background workers the turn started are still going, so the turn ending
      * is not the tab going idle. */
     tab_busy(s, session_idle_busy(s));
+
+    /* The turn is the likeliest thing to have touched the tree. */
+    gitinfo_forget();
 
     update_title(s);
     remember_model(s);

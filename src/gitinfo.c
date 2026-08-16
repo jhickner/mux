@@ -119,6 +119,8 @@ static void reread(const char *dir, struct gitinfo *g)
     pclose(f);
 }
 
+void gitinfo_forget(void) { read_at = 0; }
+
 const struct gitinfo *gitinfo_get(const char *dir)
 {
     if (!dir || !*dir) {
