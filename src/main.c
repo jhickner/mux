@@ -260,6 +260,12 @@ int main(int argc, char **argv)
 
         if (bash_is_command(line)) {
             bash_run(line);
+            char *text = bash_take_context();
+            if (text) {
+                status_sticky_prompt(line);
+                session_turn(session, text);
+                free(text);
+            }
             free(line);
             continue;
         }

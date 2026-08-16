@@ -28,6 +28,25 @@ static void on_winch(int sig) { (void)sig; got_winch = 1; winch_count++; }
 
 int tty_is_raw(void) { return in_raw; }
 
+int tty_cooked_termios(struct termios *out)
+{
+    if (in_raw) {
+        *out = entry_mode;
+        return 0;
+    }
+    return tcgetattr(STDIN_FILENO, out) == 0 ? 0 : -1;
+}
+
+size_t tty_take_pending(void *buf, size_t max)
+{
+    size_t have = pending_len - pending_pos;
+    if (have > max)
+        have = max;
+    memcpy(buf, pending + pending_pos, have);
+    pending_pos += have;
+    return have;
+}
+
 unsigned tty_resize_epoch(void) { return (unsigned)winch_count; }
 
 int tty_columns(void)

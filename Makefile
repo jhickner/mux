@@ -14,8 +14,13 @@ DEP     := $(OBJ:.o=.d)
 
 all: $(BIN)
 
+# forkpty lives in libutil outside the BSDs.
+ifneq ($(shell uname -s),Darwin)
+LIBS += -lutil
+endif
+
 $(BIN): $(OBJ)
-	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LDFLAGS) $(LIBS)
 
 # -MMD -MP emits the .d files that keep object files in step with header edits.
 # -Isrc/vendor lets the agent drivers find the single shared cJSON.h.
