@@ -30,6 +30,10 @@ void            session_replay(struct session *s);
  * output and one-shot runs. */
 void session_set_quiet(struct session *s, int quiet);
 
+/* Ask the naming helper for a short conversation name. Off for one-shot runs,
+ * which exit before anything shows it; /resume then lists them untitled. */
+void session_set_naming(struct session *s, int on);
+
 /* Keep the turn summary instead of printing it into scrollback: the HUD paints
  * it in the row the spinner leaves behind. */
 void        session_hold_footer(struct session *s, int on);

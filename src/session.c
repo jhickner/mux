@@ -45,6 +45,7 @@ struct session {
     long     context_tokens;
     long     context_window;
     int      quiet;          /* suppress activity, spinner, and footer      */
+    int      skip_naming;    /* one-shot: nothing displays the name, so skip it */
     char     footer[384];    /* the last turn's summary row                 */
     int      hold_footer;    /* keep it for the HUD instead of printing it  */
     int      thinking;       /* show the model's reasoning rows             */
@@ -660,6 +661,10 @@ static void name_poll(struct session *s)
         if (s->title[0] || !s->id[0])
             return;
     }
+    /* The id is picked up above either way; only the helper run is skipped. */
+    if (s->skip_naming)
+        return;
+
     if (!s->named) {
         if (!s->prompt)
             return;
@@ -903,6 +908,8 @@ int session_switch_backend(struct session *s, const char *backend)
 }
 
 void session_set_quiet(struct session *s, int quiet) { s->quiet = quiet; }
+
+void session_set_naming(struct session *s, int on) { s->skip_naming = !on; }
 
 void session_hold_footer(struct session *s, int on) { s->hold_footer = on; }
 

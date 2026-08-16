@@ -215,6 +215,7 @@ int main(int argc, char **argv)
             strcat(text, argv[i]);
         }
         session_set_quiet(session, !isatty(STDOUT_FILENO));
+        session_set_naming(session, 0);
         int ok = session_turn(session, text);
         free(text);
         session_free(session);
