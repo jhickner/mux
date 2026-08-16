@@ -8,6 +8,7 @@
 #include "agenttabs.h"
 #include "app.h"
 #include "banner.h"
+#include "bash.h"
 #include "cmd.h"
 #include "hud.h"
 #include "image.h"
@@ -256,6 +257,12 @@ int main(int argc, char **argv)
             line = prompt_read(prompt);
         if (!line)
             break;
+
+        if (bash_is_command(line)) {
+            bash_run(line);
+            free(line);
+            continue;
+        }
 
         enum cmd_result r = cmd_dispatch(session, line);
         if (r == CMD_QUIT) {

@@ -184,6 +184,7 @@ static void show_help(void)
     }
     ui_put("\n");
     help_heading("shortcuts");
+    help_row("!cmd", "run cmd in $SHELL instead of sending it to the agent");
     help_row("enter", "submit prompt, or queue it while a turn is running");
     help_row("ctrl-j", "insert a newline");
     help_row("ctrl-g", "edit the prompt in $EDITOR");

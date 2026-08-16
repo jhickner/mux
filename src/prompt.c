@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "app.h"
+#include "bash.h"
 #include "files.h"
 #include "paste.h"
 #include "status.h"
@@ -442,12 +443,13 @@ void prompt_echo_message(const char *text)
     size_t budget = (size_t)(cols - 2 > 4 ? cols - 2 : 4);
     const char *p = text;
     int first = 1;
+    enum ui_role role = bash_is_command(text) ? UI_BASH : UI_ECHO;
 
     while (*p || first) {
         size_t skip = 0;
         size_t row = *p ? ui_wrap_row(p, budget, &skip) : 0;
 
-        ui_esc(ui_style(UI_ECHO));
+        ui_esc(ui_style(role));
         ui_esc("\x1b[K");
         ui_put(UI_BAR);
         ui_put(" ");

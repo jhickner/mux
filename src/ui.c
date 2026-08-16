@@ -38,6 +38,7 @@ static const struct {
     [UI_THINKING] = { "3", COLOR_BASE14, 0 },
     [UI_TOOL]    = { NULL, COLOR_BASE12, 0 },
     [UI_SPIN]    = { NULL, COLOR_BASE12, 0 },
+    [UI_BASH]    = { NULL, COLOR_BASE8, 90 },
 };
 
 static char styles[UI_RESET][64];

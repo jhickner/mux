@@ -40,7 +40,7 @@ static int   sticky_on;
 static char *sticky_text;
 static int   sticky_widths[STICKY_ROWS_MAX];
 static int   sticky_rows;
-static int   sticky_screen;
+static int   sticky_tracking;
 static int   block_tallest;
 
 static unsigned resize_epoch;
@@ -101,6 +101,7 @@ static int size_changing(void)
     if (epoch != resize_epoch) {
         resize_epoch = epoch;
         resize_at = now_seconds();
+        dirty = 1;
     }
     return resize_at > 0 && (now_seconds() - resize_at) * 1000.0 < TTY_RESIZE_SETTLE_MS;
 }
@@ -156,7 +157,9 @@ static void humanize(double seconds, char *out, size_t n)
 
 static int sticky_gone(void)
 {
-    int gone_at = sticky_screen - 2 - (block_tallest > 0 ? block_tallest - 1 : 0);
+    if (!sticky_tracking)
+        return 1;
+    int gone_at = tty_rows() - 2 - (block_tallest > 0 ? block_tallest - 1 : 0);
     return ui_scroll_rows() >= (gone_at > 0 ? gone_at : 0);
 }
 
@@ -383,11 +386,11 @@ void status_sticky_prompt(const char *text)
     sticky_text = text && *text ? strdup(text) : NULL;
     dirty = 1;
 
-    sticky_screen = tty_rows();
+    sticky_tracking = 1;
     ui_scroll_mark();
 }
 
-void status_sticky_erased(void) { sticky_screen = 0; }
+void status_sticky_erased(void) { sticky_tracking = 0; }
 
 const char *status_sticky_offscreen(void)
 {

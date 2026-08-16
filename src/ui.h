@@ -25,6 +25,7 @@ enum ui_role {
     UI_THINKING,
     UI_TOOL,
     UI_SPIN,
+    UI_BASH,
     UI_RESET,
 };
 
