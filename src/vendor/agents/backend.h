@@ -274,10 +274,6 @@ static void backend_delta(backend_state *st, backend_event_kind kind, const char
 static void backend_set_model_generic(Backend *b, const char *model) {
     backend_set(&((backend_state *)b->ctx)->model, model);
 }
-static int backend_set_effort_generic(Backend *b, const char *effort) {
-    backend_set(&((backend_state *)b->ctx)->effort, effort);
-    return 1;
-}
 static const char *backend_stored_effort(Backend *b) {
     return ((backend_state *)b->ctx)->effort;
 }
@@ -605,6 +601,15 @@ static const char *backend_codex_session_id(Backend *b) {
     return x->client ? codex_session_id(x->client) : NULL;
 }
 
+static const char *backend_codex_model(Backend *b) {
+    backend_codex *x = b->ctx;
+    if (x->client) {
+        const char *m = codex_model(x->client);
+        if (m) return m;
+    }
+    return x->st.model;
+}
+
 static const char *backend_codex_effort(Backend *b) {
     backend_codex *x = b->ctx;
     if (x->client) {
@@ -641,7 +646,7 @@ static Backend *backend_codex_open(const backend_opts *o) {
     b->set_event_cb = backend_codex_set_event_cb;
     b->set_abort_check = backend_codex_set_abort;
     b->session_id = backend_codex_session_id;
-    b->model = backend_none;
+    b->model = backend_codex_model;
     b->effort = backend_codex_effort;
     b->auth_source = backend_none;
     b->last_error = backend_none;
@@ -744,8 +749,31 @@ static const char *backend_grok_session_id(Backend *b) {
     return x->client ? grok_session_id(x->client) : NULL;
 }
 
+static int backend_grok_set_effort(Backend *b, const char *effort) {
+    backend_grok *x = b->ctx;
+    if (x->client && !grok_set_effort(x->client, effort)) return 0;
+    backend_set(&x->st.effort, effort);
+    return 1;
+}
+
+static const char *backend_grok_model(Backend *b) {
+    backend_grok *x = b->ctx;
+    if (x->client) {
+        const char *m = grok_model(x->client);
+        if (m && *m) return m;
+    }
+    return x->st.model;
+}
+
 static const char *backend_grok_effort(Backend *b) {
     backend_grok *x = b->ctx;
+    if (x->client) {
+        const char *e = grok_effort(x->client);
+        if (e && *e) return e;
+        /* Once a session is live the client is authoritative, and nothing in
+         * force means the CLI's own default. */
+        if (grok_session_id(x->client)) return NULL;
+    }
     if (x->st.effort && *x->st.effort)
         return x->st.effort;
     const char *env = getenv("GROK_EFFORT");
@@ -765,19 +793,19 @@ static Backend *backend_grok_open(const backend_opts *o) {
     if (!x || !b) { free(x); free(b); return NULL; }
     backend_state_init(&x->st, o);
     b->ctx = x;
-    b->caps = BACKEND_CAP_RESUME | BACKEND_CAP_EFFORT;
+    b->caps = BACKEND_CAP_RESUME | BACKEND_CAP_EFFORT | BACKEND_CAP_LIVE_EFFORT;
     b->ask = backend_grok_ask;
     b->reset = backend_grok_reset;
     b->close = backend_grok_close;
     b->start = backend_grok_start;
     b->ask_ex = backend_grok_ask_ex;
     b->set_model = backend_set_model_generic;
-    b->set_effort = backend_set_effort_generic;
+    b->set_effort = backend_grok_set_effort;
     b->set_permission = backend_set_permission_none;
     b->set_event_cb = backend_grok_set_event_cb;
     b->set_abort_check = backend_grok_set_abort;
     b->session_id = backend_grok_session_id;
-    b->model = backend_none;
+    b->model = backend_grok_model;
     b->effort = backend_grok_effort;
     b->auth_source = backend_none;
     b->last_error = backend_none;

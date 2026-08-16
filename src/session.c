@@ -853,6 +853,9 @@ static Backend *agent(struct session *s)
     return s->agent;
 }
 
+static void await_model(struct session *s);
+static void remember_window(const struct session *s);
+
 int session_switch_backend(struct session *s, const char *backend)
 {
     if (!s || !backend || !*backend)
@@ -904,6 +907,9 @@ int session_switch_backend(struct session *s, const char *backend)
     s->context_window = 0;
     if (previous)
         previous->close(previous);
+    /* The caller names the new backend's model right away, so wait for the
+     * handshake that answers with it rather than fall back to a cached id. */
+    await_model(s);
     return 1;
 }
 
@@ -1285,6 +1291,7 @@ int session_turn(struct session *s, const char *text)
 
     update_title(s);
     remember_model(s);
+    remember_window(s);
     if (!s->quiet)
         print_footer(s, elapsed);
     return 1;
@@ -1401,6 +1408,38 @@ const char *session_model_label(const struct session *s)
     if (s->model && *s->model)
         return s->model;
     return "default";
+}
+
+/* A model's window is a property of the model, so it is worth remembering:
+ * usage only arrives with a turn's final event, and the size is wanted before
+ * one has run. Keyed by the id the backend resolved, not the request. */
+static void window_cache_key(const struct session *s, char *out, size_t n)
+{
+    snprintf(out, n, "window.%s.%s", s->backend, session_model_label(s));
+}
+
+static void remember_window(const struct session *s)
+{
+    if (s->context_window <= 0)
+        return;
+    char key[MAX_SETTING_KEY];
+    window_cache_key(s, key, sizeof key);
+    settings_set_int(key, (int)s->context_window);
+}
+
+long session_context_window(const struct session *s)
+{
+    if (s->context_window > 0)
+        return s->context_window;
+    if (s->agent && s->agent->usage) {
+        long used = 0, window = 0;
+        s->agent->usage(s->agent, &used, &window);
+        if (window > 0)
+            return window;
+    }
+    char key[MAX_SETTING_KEY];
+    window_cache_key(s, key, sizeof key);
+    return settings_get_int(key, 0);
 }
 
 const char *session_effort_label(const struct session *s)

@@ -37,7 +37,7 @@ const ReplCommand CMD_TABLE[] = {
 };
 const int CMD_COUNT = (int)(sizeof CMD_TABLE / sizeof *CMD_TABLE);
 
-/* The picker only knows Claude's line-up; every other backend takes a name. */
+/* The picker knows the Claude and Grok line-ups; codex and pi take a name. */
 static const struct pick_item MODELS[] = {
     {"claude-opus-5", "most capable"},
     {"claude-opus-5[1m]", "opus with a 1M-token context"},
@@ -47,6 +47,13 @@ static const struct pick_item MODELS[] = {
     {"default", "whatever the claude CLI is configured to use"},
 };
 #define MODEL_COUNT ((int)(sizeof MODELS / sizeof *MODELS))
+
+static const struct pick_item GROK_MODELS[] = {
+    {"grok-4.6", "latest frontier model"},
+    {"grok-4.5", "the prior generation"},
+    {"default", "whatever the grok CLI is configured to use"},
+};
+#define GROK_MODEL_COUNT ((int)(sizeof GROK_MODELS / sizeof *GROK_MODELS))
 
 static const struct pick_item CLAUDE_EFFORTS[] = {
     {"default", "auto: use the model's default effort"},
@@ -71,6 +78,7 @@ static const struct pick_item GROK_EFFORTS[] = {
     {"low", "faster, lighter reasoning"},
     {"medium", "balanced reasoning"},
     {"high", "more thorough reasoning"},
+    {"xhigh", "extra-high reasoning, grok-4.6 only"},
 };
 static const struct pick_item PI_EFFORTS[] = {
     {"default", "the thinking level active when pi started"},
@@ -98,6 +106,21 @@ static const struct pick_item PERMISSIONS[] = {
 static int is_claude(const struct session *s)
 {
     return strcmp(session_backend(s), "claude") == 0;
+}
+
+static const struct pick_item *model_choices(const struct session *s, int *count)
+{
+    const char *backend = session_backend(s);
+    if (!strcmp(backend, "claude")) {
+        *count = MODEL_COUNT;
+        return MODELS;
+    }
+    if (!strcmp(backend, "grok")) {
+        *count = GROK_MODEL_COUNT;
+        return GROK_MODELS;
+    }
+    *count = 0;
+    return NULL;
 }
 
 static const struct pick_item *effort_choices(const struct session *s, int *count)
@@ -201,27 +224,56 @@ static int copy_to_clipboard(const char *text)
     return pclose(pipe) == 0;
 }
 
+/* Model ids are all "claude-"-prefixed, so the prefix carries no information. */
+static const char *short_model(const struct session *s, const char *model)
+{
+    if (is_claude(s) && strncmp(model, "claude-", 7) == 0 && model[7])
+        return model + 7;
+    return model;
+}
+
+/* "claude · opus-5[1m] · high · 1M context" — everything a switch changes, said
+ * once, whichever of /backend, /model and /effort did the switching. */
+static void note_identity(const struct session *s)
+{
+    char effort[64] = "", ctx[32] = "";
+    if (session_can_set_effort(s))
+        snprintf(effort, sizeof effort, " \xc2\xb7 %s effort", session_effort(s));
+
+    long window = session_context_window(s);
+    if (window >= 1000000)
+        snprintf(ctx, sizeof ctx, " \xc2\xb7 %.3gM context", (double)window / 1e6);
+    else if (window > 0)
+        snprintf(ctx, sizeof ctx, " \xc2\xb7 %ldK context", window / 1000);
+
+    ui_note("%s \xc2\xb7 %s%s%s", session_backend(s),
+            short_model(s, session_model_label(s)), effort, ctx);
+    ui_put("\n");
+    ui_flush();
+}
+
 /* ---------- commands ---------- */
 
 static void do_model(struct session *s, const char *arg)
 {
     const char *chosen = arg;
-    if ((!chosen || !*chosen) && !is_claude(s)) {
-        ui_note("/model <name> — the picker only lists claude's models");
-        ui_put("\n");
-        ui_flush();
-        return;
-    }
     if (!chosen || !*chosen) {
-        int initial = 0;
+        int count = 0, initial = 0;
+        const struct pick_item *choices = model_choices(s, &count);
+        if (!count) {
+            ui_note("/model <name> — %s has no model list here", session_backend(s));
+            ui_put("\n");
+            ui_flush();
+            return;
+        }
         const char *current = session_model(s);
-        for (int i = 0; i < MODEL_COUNT; i++)
-            if (strcmp(MODELS[i].label, current) == 0)
+        for (int i = 0; i < count; i++)
+            if (strcmp(choices[i].label, current) == 0)
                 initial = i;
-        int index = pick("select model", MODELS, MODEL_COUNT, initial);
+        int index = pick("select model", choices, count, initial);
         if (index < 0)
             return;
-        chosen = MODELS[index].label;
+        chosen = choices[index].label;
     }
 
     const char *model = strcmp(chosen, "default") == 0 ? NULL : chosen;
@@ -230,11 +282,7 @@ static void do_model(struct session *s, const char *arg)
         ui_put("\n");
         return;
     }
-    /* The HUD above the caret already carries the new model, so this only says
-     * that the switch went through. */
-    ui_note("model: %s", chosen);
-    ui_put("\n");
-    ui_flush();
+    note_identity(s);
 }
 
 static void do_effort(struct session *s, const char *arg)
@@ -267,9 +315,7 @@ static void do_effort(struct session *s, const char *arg)
         ui_flush();
         return;
     }
-    ui_note("effort: %s", session_effort(s));
-    ui_put("\n");
-    ui_flush();
+    note_identity(s);
 }
 
 static void do_backend(struct session *s, const char *arg)
@@ -313,7 +359,7 @@ static void do_backend(struct session *s, const char *arg)
         return;
     }
 
-    ui_flush();
+    note_identity(s);
     free(from);
 
     /* A provider limit commonly rejects the whole preceding prompt. Once the

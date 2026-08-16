@@ -96,6 +96,8 @@ void codex_set_abort_check(codex_client *c, int (*cb)(void));
 int codex_set_effort(codex_client *c, const char *effort);
 /* Override if one was set, else the config/stream default, or NULL. */
 const char *codex_effort(codex_client *c);
+/* The model id the app-server resolved, else the requested one, or NULL. */
+const char *codex_model(codex_client *c);
 /* Latest context occupancy reported by thread/tokenUsage/updated. */
 void codex_usage(codex_client *c, long *context_tokens, long *context_window);
 /* Latest primary subscription window from the account rate-limit methods. */
@@ -134,6 +136,7 @@ struct codex_client {
     int effort_changed, ephemeral;
     char session_id[128];
     char resolved[32];         /* config or stream effort when none was set */
+    char resolved_model[64];   /* the model id the app-server picked          */
     long context_tokens, context_window;
     codex_rate_limit rate_limit;
     char *buf;
@@ -196,6 +199,10 @@ static void cx_note_effort(codex_client *c, cJSON *obj) {
     if (!cJSON_IsObject(obj)) return;
     const char *e = cJSON_GetStringValue(
         cJSON_GetObjectItemCaseSensitive(obj, "effort"));
+    /* thread/start and thread/resume answer with the camelCase spelling. */
+    if (!e || !*e)
+        e = cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(obj, "reasoningEffort"));
     if (!e || !*e) {
         cJSON *mode = cJSON_GetObjectItemCaseSensitive(obj, "collaboration_mode");
         cJSON *settings = cJSON_IsObject(mode) ?
@@ -205,6 +212,16 @@ static void cx_note_effort(codex_client *c, cJSON *obj) {
     }
     if (e && *e)
         snprintf(c->resolved, sizeof c->resolved, "%s", e);
+}
+
+/* The caller's model option is a request; the app-server answers with the id it
+ * actually resolved, which is what a caller naming the model should show. */
+static void cx_note_model(codex_client *c, cJSON *obj) {
+    if (!cJSON_IsObject(obj)) return;
+    const char *m = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(obj, "model"));
+    if (m && *m)
+        snprintf(c->resolved_model, sizeof c->resolved_model, "%s", m);
 }
 
 static void cx_emit(codex_client *c, const codex_event *ev) {
@@ -337,8 +354,11 @@ static int cx_handle_notification(codex_client *c, cJSON *msg) {
         cJSON_GetObjectItemCaseSensitive(msg, "method"));
     cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
     if (params) {
+        cJSON *turn = cJSON_GetObjectItemCaseSensitive(params, "turn");
         cx_note_effort(c, params);
-        cx_note_effort(c, cJSON_GetObjectItemCaseSensitive(params, "turn"));
+        cx_note_effort(c, turn);
+        cx_note_model(c, params);
+        cx_note_model(c, turn);
     }
     if (method && !strcmp(method, "thread/tokenUsage/updated")) {
         cx_note_usage(c, params);
@@ -419,6 +439,9 @@ static int cx_open_thread(codex_client *c, const char *resume) {
         cJSON_GetObjectItemCaseSensitive(thread, "id")) : NULL;
     if (sid) snprintf(c->session_id, sizeof c->session_id, "%s", sid);
     cx_note_effort(c, thread);
+    cx_note_effort(c, result);      /* the settled model/effort sit beside the
+                                       thread rather than inside it */
+    cx_note_model(c, result);
     cJSON_Delete(r); return sid != NULL;
 }
 
@@ -503,6 +526,12 @@ const char *codex_effort(codex_client *c) {
     if (!c) return NULL;
     if (c->effort && *c->effort) return c->effort;
     return c->resolved[0] ? c->resolved : NULL;
+}
+
+const char *codex_model(codex_client *c) {
+    if (!c) return NULL;
+    if (c->resolved_model[0]) return c->resolved_model;
+    return c->model && *c->model ? c->model : NULL;
 }
 
 int codex_set_effort(codex_client *c, const char *effort) {

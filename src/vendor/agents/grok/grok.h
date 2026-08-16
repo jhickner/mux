@@ -69,6 +69,22 @@ char *grok_send_ex(grok_client *c, const char *user_text, grok_result *meta);
 /* The ACP session id, or NULL until the first turn has established one. */
 const char *grok_session_id(grok_client *c);
 
+/* The model id the CLI resolved for this session (e.g. "grok-4.6"), falling
+ * back to the requested one before the handshake has run, or NULL when neither
+ * is known. */
+const char *grok_model(grok_client *c);
+
+/* The reasoning effort in force, or NULL for the CLI's own default. */
+const char *grok_effort(grok_client *c);
+
+/* Change the reasoning effort on the live session, without restarting the
+ * process. NULL/"" restores the current model's default. Before the handshake
+ * this only records the level, which is then applied once the session exists.
+ * The level is checked against the efforts the CLI advertised for the current
+ * model, because session/set_mode accepts an unknown id silently. Returns
+ * nonzero on success. */
+int grok_set_effort(grok_client *c, const char *effort);
+
 /* When on, grok_send echoes a readable trace of the stream to stderr. */
 void grok_set_verbose(grok_client *c, int on);
 
@@ -129,11 +145,24 @@ void grok_stop(grok_client *c);
 #define GK_TOOL_CAP 64
 #define GK_TOOL_ID  80
 
+/* The line-up the handshake advertises: two models today, four efforts each. */
+#define GK_MODEL_CAP  8
+#define GK_EFFORT_CAP 8
+
 /* How long the turn loop waits on the child before running the abort predicate
  * again. Also the worst-case delay before a key the caller reads from that
  * predicate reaches the screen, so it sits below the ~30ms an echo can take
  * without being felt as lag. */
 #define GK_TICK_MS 20
+
+/* One entry of the model line-up the handshake reports, with the reasoning
+ * efforts that model accepts. They differ per model: only 4.6 has xhigh. */
+typedef struct {
+    char id[64];
+    char efforts[GK_EFFORT_CAP][16];
+    int  n_efforts;
+    char default_effort[16];
+} gk_model;
 
 struct grok_client {
     pid_t pid;
@@ -147,6 +176,13 @@ struct grok_client {
     char *cwd;                /* session/new working directory copy         */
     char *sys;                /* append_system copy, prepended to each turn */
     char *resume;             /* session/resume this id; NULL -> session/new */
+    char *model;              /* the -m value asked for; NULL -> CLI default */
+    char  model_id[64];       /* what the handshake said the CLI resolved   */
+    char *effort;             /* effort in force; NULL -> the CLI default   */
+    char  launch_effort[16];  /* the effort the session came up with        */
+    int   effort_pending;     /* set before a session existed; apply on connect */
+    gk_model models[GK_MODEL_CAP];
+    int   n_models;
     int   no_session;         /* use an ephemeral session/new                */
     int   handshake_failed;   /* the deferred handshake was tried and lost  */
     int   next_id;            /* JSON-RPC request id counter                */
@@ -678,6 +714,62 @@ static int gk_handle(grok_client *c, cJSON *ev, int want_id, char **acc, int *ok
     return 0;
 }
 
+/* Remember the model line-up from a handshake result. initialize reports it
+ * under _meta.modelState, session/new and session/resume under models; the two
+ * bodies are otherwise the same shape. */
+static void gk_capture_models(grok_client *c, cJSON *res) {
+    if (!res) return;
+    cJSON *state = cJSON_GetObjectItem(res, "models");
+    if (!state) {
+        cJSON *meta = cJSON_GetObjectItem(res, "_meta");
+        state = meta ? cJSON_GetObjectItem(meta, "modelState") : NULL;
+    }
+    if (!state) return;
+
+    const char *cur = cJSON_GetStringValue(cJSON_GetObjectItem(state, "currentModelId"));
+    if (cur && *cur) snprintf(c->model_id, sizeof c->model_id, "%s", cur);
+
+    /* The mode marked selected is the effort the process launched with, which
+     * is the level "default" has to restore. The per-model default_effort below
+     * ignores --reasoning-effort, so it is only the fallback. */
+    cJSON *meta = cJSON_GetObjectItem(res, "_meta");
+    cJSON *cfg = meta ? cJSON_GetObjectItem(meta, "x.ai/sessionConfig") : NULL;
+    cJSON *opts = cfg ? cJSON_GetObjectItem(cfg, "options") : NULL;
+    cJSON *opt;
+    cJSON_ArrayForEach(opt, opts) {
+        const char *cat = cJSON_GetStringValue(cJSON_GetObjectItem(opt, "category"));
+        const char *oid = cJSON_GetStringValue(cJSON_GetObjectItem(opt, "id"));
+        if (!c->launch_effort[0] && oid && cat && !strcmp(cat, "mode") &&
+            cJSON_IsTrue(cJSON_GetObjectItem(opt, "selected")))
+            snprintf(c->launch_effort, sizeof c->launch_effort, "%s", oid);
+    }
+
+    cJSON *avail = cJSON_GetObjectItem(state, "availableModels");
+    if (!cJSON_IsArray(avail)) return;
+    c->n_models = 0;
+    cJSON *m;
+    cJSON_ArrayForEach(m, avail) {
+        if (c->n_models >= GK_MODEL_CAP) break;
+        const char *id = cJSON_GetStringValue(cJSON_GetObjectItem(m, "modelId"));
+        if (!id || !*id) continue;
+        gk_model *slot = &c->models[c->n_models++];
+        memset(slot, 0, sizeof *slot);
+        snprintf(slot->id, sizeof slot->id, "%s", id);
+
+        cJSON *meta = cJSON_GetObjectItem(m, "_meta");
+        const char *def = meta ? cJSON_GetStringValue(cJSON_GetObjectItem(meta, "reasoningEffort")) : NULL;
+        if (def && *def) snprintf(slot->default_effort, sizeof slot->default_effort, "%s", def);
+        cJSON *efforts = meta ? cJSON_GetObjectItem(meta, "reasoningEfforts") : NULL;
+        cJSON *e;
+        cJSON_ArrayForEach(e, efforts) {
+            if (slot->n_efforts >= GK_EFFORT_CAP) break;
+            const char *eid = cJSON_GetStringValue(cJSON_GetObjectItem(e, "id"));
+            if (eid && *eid)
+                snprintf(slot->efforts[slot->n_efforts++], sizeof slot->efforts[0], "%s", eid);
+        }
+    }
+}
+
 /* Read/parse lines until the response to `want_id`. On session/new we need the
  * result body, so `sid_out` (if non-NULL) is filled from result.sessionId.
  * Accumulates assistant text into *acc when non-NULL. Returns 1 on a successful
@@ -719,9 +811,12 @@ static int gk_await(grok_client *c, int want_id, char **acc,
             int done = 0, ok = 0;
             if (ev) {
                 done = gk_handle(c, ev, want_id, acc, &ok);
-                if (done && ok && sid_out) {
+                if (done && ok) {
                     cJSON *res = cJSON_GetObjectItem(ev, "result");
-                    const char *sid = res ? cJSON_GetStringValue(cJSON_GetObjectItem(res, "sessionId")) : NULL;
+                    gk_capture_models(c, res);
+                    const char *sid = res && sid_out
+                                        ? cJSON_GetStringValue(cJSON_GetObjectItem(res, "sessionId"))
+                                        : NULL;
                     if (sid) snprintf(sid_out, sid_sz, "%s", sid);
                 }
                 cJSON_Delete(ev);
@@ -794,6 +889,8 @@ grok_client *grok_start(const grok_opts *opts) {
     c->cwd = (o.cwd && *o.cwd) ? strdup(o.cwd) : NULL;
     c->sys = (o.append_system && *o.append_system) ? strdup(o.append_system) : NULL;
     c->resume = (o.resume_session && *o.resume_session) ? strdup(o.resume_session) : NULL;
+    c->model = (o.model && *o.model) ? strdup(o.model) : NULL;
+    c->effort = (o.reasoning_effort && *o.reasoning_effort) ? strdup(o.reasoning_effort) : NULL;
     c->no_session = o.no_session;
 
     return c;
@@ -803,6 +900,9 @@ grok_client *grok_start(const grok_opts *opts) {
  * booted, which is over a second of Node startup that an interactive caller
  * would otherwise wait out before it could show anything. Returns nonzero once
  * the session is live. */
+static int gk_apply_effort(grok_client *c);
+static int gk_apply_model(grok_client *c);
+
 static int gk_handshake(grok_client *c) {
     if (c->session_id[0]) return 1;
     if (c->handshake_failed) return 0;
@@ -844,7 +944,115 @@ static int gk_handshake(grok_client *c) {
         snprintf(c->session_id, sizeof c->session_id, "%s", resume);
 
     c->handshake_failed = 0;
+
+    int repinned = c->model && *c->model && gk_apply_model(c);
+    /* An effort chosen while the process was still lazy predates this session,
+     * and a model change resets the session's mode, so either way the level
+     * has to be replayed against what is now live. */
+    if (c->effort_pending || repinned) {
+        c->effort_pending = 0;
+        /* A level chosen before the model was known can turn out not to exist
+         * on it (only 4.6 has xhigh). Forget it rather than report it. */
+        if (!gk_apply_effort(c)) {
+            free(c->effort);
+            c->effort = NULL;
+        }
+    }
     return 1;
+}
+
+const char *grok_model(grok_client *c) {
+    if (!c) return NULL;
+    if (c->model_id[0]) return c->model_id;
+    return (c->model && *c->model) ? c->model : NULL;
+}
+
+const char *grok_effort(grok_client *c) {
+    return (c && c->effort && *c->effort) ? c->effort : NULL;
+}
+
+static const gk_model *gk_current_model(grok_client *c) {
+    const char *id = c->model_id[0] ? c->model_id : c->model;
+    if (!id || !*id) return NULL;
+    for (int i = 0; i < c->n_models; i++)
+        if (strcmp(c->models[i].id, id) == 0) return &c->models[i];
+    return NULL;
+}
+
+/* Unknown before the handshake, and unknown for a model the CLI did not
+ * describe — in both cases the caller is trusted rather than blocked. */
+static int gk_effort_known(grok_client *c, const char *effort) {
+    const gk_model *m = gk_current_model(c);
+    if (!m || !m->n_efforts) return 1;
+    for (int i = 0; i < m->n_efforts; i++)
+        if (strcmp(m->efforts[i], effort) == 0) return 1;
+    return 0;
+}
+
+/* ACP calls the reasoning-effort selector a "mode". */
+static int gk_apply_effort(grok_client *c) {
+    const char *mode = c->effort;
+    if (!mode) {
+        const gk_model *m = gk_current_model(c);
+        mode = c->launch_effort[0]  ? c->launch_effort
+             : (m && m->default_effort[0]) ? m->default_effort
+             : NULL;
+        if (!mode) return 1; /* no default to name; leave the session alone */
+    } else if (!gk_effort_known(c, mode)) {
+        return 0;
+    }
+
+    int id = c->next_id++;
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "jsonrpc", "2.0");
+    cJSON_AddNumberToObject(req, "id", id);
+    cJSON_AddStringToObject(req, "method", "session/set_mode");
+    cJSON *p = cJSON_AddObjectToObject(req, "params");
+    cJSON_AddStringToObject(p, "sessionId", c->session_id);
+    cJSON_AddStringToObject(p, "modeId", mode);
+    if (!gk_write(c, req)) return 0;
+    return gk_await(c, id, NULL, NULL, 0, 0);
+}
+
+/* `grok agent -m X` reaches initialize but not the session that session/new
+ * then opens, which comes up on the CLI's own default. Pinning the model over
+ * ACP once the session exists is what actually makes -m stick. */
+static int gk_apply_model(grok_client *c) {
+    if (!c->model || !*c->model) return 1;
+
+    int id = c->next_id++;
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "jsonrpc", "2.0");
+    cJSON_AddNumberToObject(req, "id", id);
+    cJSON_AddStringToObject(req, "method", "session/set_model");
+    cJSON *p = cJSON_AddObjectToObject(req, "params");
+    cJSON_AddStringToObject(p, "sessionId", c->session_id);
+    cJSON_AddStringToObject(p, "modelId", c->model);
+    if (!gk_write(c, req) || !gk_await(c, id, NULL, NULL, 0, 0)) {
+        fprintf(stderr, "grok: could not select model %s\n", c->model);
+        return 0;
+    }
+    snprintf(c->model_id, sizeof c->model_id, "%s", c->model);
+    return 1;
+}
+
+int grok_set_effort(grok_client *c, const char *effort) {
+    if (!c) return 0;
+    const char *want = (effort && *effort) ? effort : NULL;
+    if (want && !gk_effort_known(c, want)) return 0;
+
+    char *copy = want ? strdup(want) : NULL;
+    if (want && !copy) return 0;
+    free(c->effort);
+    c->effort = copy;
+
+    if (!c->session_id[0]) {
+        /* The launch flag already fixed the effort of the running process, so
+         * the change has to be replayed once the session comes up. */
+        c->effort_pending = 1;
+        return 1;
+    }
+    return gk_apply_effort(c);
 }
 
 int grok_connect(grok_client *c) {
@@ -932,6 +1140,8 @@ void grok_stop(grok_client *c) {
     free(c->cwd);
     free(c->sys);
     free(c->resume);
+    free(c->model);
+    free(c->effort);
     free(c->buf);
     free(c);
 }

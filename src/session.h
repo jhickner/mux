@@ -147,6 +147,11 @@ const char *session_last_reply(const struct session *s);
  * usage as it goes, so it is safe to call from a repaint. */
 int session_context_percent(const struct session *s);
 
+/* The active model's context window in tokens, from the running session where a
+ * turn has reported one and otherwise from what that model reported last run,
+ * or 0 when it has never been seen. */
+long session_context_window(const struct session *s);
+
 /* Print the /session report: model, id, cwd, turns, tokens, cost. */
 void session_report(const struct session *s);
 
