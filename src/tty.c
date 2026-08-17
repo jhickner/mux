@@ -59,6 +59,14 @@ size_t tty_take_pending(void *buf, size_t max)
     return have;
 }
 
+int tty_input_waiting(void)
+{
+    int n = 0;
+    if (pending_pos < pending_len)
+        return 1;
+    return ioctl(STDIN_FILENO, FIONREAD, &n) == 0 && n > 0;
+}
+
 unsigned tty_resize_epoch(void) { return (unsigned)winch_count; }
 
 int tty_columns(void)
@@ -92,7 +100,9 @@ int tty_raw_begin(void)
     raw.c_lflag &= ~(unsigned long)(ECHO | ICANON | IEXTEN | ISIG);
     raw.c_cc[VMIN] = 1;
     raw.c_cc[VTIME] = 0;
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0)
+    // TCSANOW, not TCSAFLUSH: anything typed ahead of raw mode stays in the
+    // queue so the caller can render it at the prompt instead of losing it.
+    if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0)
         return -1;
 
     in_raw = 1;

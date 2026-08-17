@@ -51,6 +51,8 @@ int tty_cooked_termios(struct termios *out);
 
 size_t tty_take_pending(void *buf, size_t max);
 
+int tty_input_waiting(void);
+
 unsigned tty_resize_epoch(void);
 
 #define TTY_RESIZE_SETTLE_MS 250

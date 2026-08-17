@@ -165,6 +165,27 @@ int main(int argc, char **argv)
     image_init();
     image_set_rows(settings_get_int(SETTING_IMAGE_ROWS, IMAGE_ROWS_DEFAULT));
 
+    int interactive = optind >= argc;
+
+    if (interactive) {
+        if (tty_raw_begin() != 0) {
+            fprintf(stderr, APP_NAME ": not a terminal — pass a prompt as arguments instead\n");
+            return 1;
+        }
+        atexit(restore_terminal);
+        ui_raw(1);
+        ui_cursor_plain();
+
+        // Whatever was typed before raw mode landed was echoed by the terminal
+        // onto the line we are about to draw on. Wipe it: the bytes themselves
+        // are still queued and surface at the prompt once it opens.
+        if (tty_input_waiting()) {
+            ui_esc("\r");
+            ui_esc(UI_ERASE_BELOW);
+            ui_flush();
+        }
+    }
+
     agenttabs_begin(backend);
     struct session *session = session_new(backend, cwd, model, effort);
     if (session) {
@@ -177,12 +198,13 @@ int main(int argc, char **argv)
         session_adopt_id(session, session_arg);
     }
     if (!session || !session_start(session)) {
+        tty_raw_end();
         fprintf(stderr, APP_NAME ": could not start the %s CLI — is it on PATH?\n", backend);
         session_free(session);
         return 1;
     }
 
-    if (optind < argc) {
+    if (!interactive) {
         size_t need = 1;
         for (int i = optind; i < argc; i++)
             need += strlen(argv[i]) + 1;
@@ -208,14 +230,6 @@ int main(int argc, char **argv)
         return ok ? 0 : 1;
     }
 
-    if (tty_raw_begin() != 0) {
-        fprintf(stderr, APP_NAME ": not a terminal — pass a prompt as arguments instead\n");
-        session_free(session);
-        return 1;
-    }
-    atexit(restore_terminal);
-    ui_raw(1);
-    ui_cursor_plain();
     status_sticky_set(settings_get_int(SETTING_STICKY, 0));
 
     struct prompt *prompt = prompt_new(CMD_TABLE, CMD_COUNT);

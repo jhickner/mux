@@ -248,6 +248,14 @@ static int reflowed_rows(const char *text, size_t budget, int cols, int cap,
     return ui_wrap_paint(text, &w);
 }
 
+static int input_offset(const struct prompt *p, int cols)
+{
+    int up = 0;
+    for (int y = 0; y < p->caret_frame_row && y < p->frame.rows; y++)
+        up += rows_for((size_t)row_extent(&p->frame, y), cols);
+    return up + p->caret_col / cols;
+}
+
 static int caret_offset(const struct prompt *p, int cols)
 {
     if (p->painted_rows == 0 || cols == p->painted_cols || p->painted_cols <= 0)
@@ -264,9 +272,7 @@ static int caret_offset(const struct prompt *p, int cols)
     int hud_known = p->painted_hud < UI_HUD_ROWS_MAX ? p->painted_hud : UI_HUD_ROWS_MAX;
     up += ui_reflow_rows(p->painted_hud_widths, hud_known, cols) +
           (p->painted_hud - hud_known);
-    for (int y = 0; y < p->caret_frame_row && y < p->frame.rows; y++)
-        up += rows_for((size_t)row_extent(&p->frame, y), cols);
-    return up + p->caret_col / cols;
+    return up + input_offset(p, cols);
 }
 
 static void goto_origin(struct prompt *p)
@@ -286,6 +292,22 @@ static void erase_block(struct prompt *p)
     if (p->painted_rows == 0)
         return;
     goto_origin(p);
+    ui_esc(UI_ERASE_BELOW);
+    fflush(stdout);
+    p->painted_rows = 0;
+    free(p->painted_head);
+    p->painted_head = NULL;
+    p->painted_hud = 0;
+}
+
+static void erase_input(struct prompt *p)
+{
+    if (p->painted_rows == 0)
+        return;
+    int up = input_offset(p, ui_columns());
+    if (up > 0)
+        ui_move(up, 'A');
+    ui_esc("\r");
     ui_esc(UI_ERASE_BELOW);
     fflush(stdout);
     p->painted_rows = 0;
@@ -851,7 +873,7 @@ static char *read_loop(struct prompt *p)
 
         switch (feed_key(p, &ev, 0)) {
         case KEY_EOF:
-            erase_block(p);
+            erase_input(p);
             return NULL;
 
         case KEY_SUBMIT: {
