@@ -86,6 +86,7 @@ struct board {
 };
 
 static atomic_int      aborted;
+static atomic_int      show_thinking;
 static pthread_mutex_t board_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int fan_aborted(void) { return atomic_load(&aborted); }
@@ -160,7 +161,7 @@ static void fan_event(void *ud, const backend_event *ev)
     }
 
     case BACKEND_EV_THINKING: {
-        if (!ev->text || !*ev->text)
+        if (!atomic_load(&show_thinking) || !ev->text || !*ev->text)
             break;
         struct entry *e = log_add(w, FAN_THOUGHT, ev->text);
         if (e)
@@ -615,6 +616,7 @@ int fanout_run(struct session *s, const char *prompt)
     }
 
     atomic_store(&aborted, 0);
+    atomic_store(&show_thinking, session_thinking(s));
     for (int i = 0; i < n; i++) {
         if (pthread_create(&w[i].thread, NULL, fan_work, &w[i]) == 0) {
             w[i].started = 1;
