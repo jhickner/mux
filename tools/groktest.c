@@ -9,6 +9,9 @@ static int tool_starts, tool_results, tool_fails;
 static char last_result[256];
 static char last_tool[64];
 static char last_input[256];
+static char diffs[4][1024];
+static char texts[4][256];
+static int nrec;
 static int last_failed;
 
 static void on_event(void *ud, const grok_event *ev)
@@ -20,6 +23,11 @@ static void on_event(void *ud, const grok_event *ev)
         snprintf(last_input, sizeof last_input, "%s", ev->input_json ? ev->input_json : "");
     }
     if (ev->kind == GROK_EV_TOOL_RESULT) {
+        if (nrec < 4) {
+            snprintf(diffs[nrec], sizeof diffs[0], "%s", ev->diff ? ev->diff : "");
+            snprintf(texts[nrec], sizeof texts[0], "%s", ev->text ? ev->text : "");
+            nrec++;
+        }
         tool_results++;
         last_failed = ev->failed;
         snprintf(last_result, sizeof last_result, "%s", ev->text ? ev->text : "");
@@ -136,6 +144,35 @@ static int mock_server(int argc, char **argv)
             } else if (text && strstr(text, "type-only")) {
                 emit_tool("edit-type", "failed", "[]",
                           "{\"type\":\"PermissionDenied\"}");
+            } else if (text && strstr(text, "search-replace")) {
+                /* Two edits announced together, completing out of order: the
+                 * shape parallel search_replace calls actually arrive in. */
+                static const char *ids[] = { "sr-1", "sr-2" };
+                static const char *olds[] = { "int a;\\nint b;", "int x;" };
+                static const char *news[] = { "int a;\\nint mid;\\nint b;", "long x;" };
+                for (int t = 0; t < 2; t++) {
+                    printf("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\","
+                           "\"params\":{\"update\":{\"sessionUpdate\":\"tool_call\","
+                           "\"toolCallId\":\"%s\",\"title\":\"search_replace\","
+                           "\"rawInput\":{\"file_path\":\"/tmp/sr%d.c\"}}}}\n",
+                           ids[t], t);
+                    printf("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\","
+                           "\"params\":{\"update\":{\"sessionUpdate\":"
+                           "\"tool_call_update\",\"toolCallId\":\"%s\","
+                           "\"kind\":\"edit\",\"title\":\"Edit `/tmp/sr%d.c`\","
+                           "\"content\":[{\"type\":\"diff\",\"path\":\"/tmp/sr%d.c\","
+                           "\"oldText\":\"%s\",\"newText\":\"%s\"}]}}}\n",
+                           ids[t], t, t, olds[t], news[t]);
+                }
+                for (int t = 1; t >= 0; t--)
+                    printf("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\","
+                           "\"params\":{\"update\":{\"sessionUpdate\":"
+                           "\"tool_call_update\",\"toolCallId\":\"%s\","
+                           "\"status\":\"completed\",\"rawOutput\":{"
+                           "\"type\":\"SearchReplace\",\"EditsApplied\":{"
+                           "\"tool_output_for_prompt\":\"wrote /tmp/sr%d.c\"}}}}}\n",
+                           ids[t], t);
+                fflush(stdout);
             } else if (text && strstr(text, "web-search")) {
                 printf("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\","
                        "\"params\":{\"update\":{\"sessionUpdate\":\"tool_call\","
@@ -260,6 +297,23 @@ int main(int argc, char **argv)
     if (!last_failed || strcmp(last_result, "PermissionDenied")) {
         fprintf(stderr, "groktest: type-only rawOutput was dropped (%s)\n",
                 last_result);
+        grok_stop(client);
+        return 1;
+    }
+
+    nrec = 0;
+    reply = grok_send(client, "search-replace edits");
+    free(reply);
+    if (nrec != 2 ||
+        !strstr(diffs[0], "@@file /tmp/sr1.c") ||
+        !strstr(diffs[0], "-int x;") || !strstr(diffs[0], "+long x;") ||
+        !strstr(diffs[1], "@@file /tmp/sr0.c") ||
+        !strstr(diffs[1], "+int mid;") || strstr(diffs[1], "-int a;") ||
+        strcmp(texts[0], "wrote /tmp/sr1.c") ||
+        strcmp(texts[1], "wrote /tmp/sr0.c")) {
+        fprintf(stderr, "groktest: parallel edit results lost their patch/text\n"
+                "  [0] %s | %s\n  [1] %s | %s\n",
+                texts[0], diffs[0], texts[1], diffs[1]);
         grok_stop(client);
         return 1;
     }

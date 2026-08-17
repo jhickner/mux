@@ -732,7 +732,7 @@ static void backend_grok_event(void *ud, const grok_event *e) {
     }
     case GROK_EV_TOOL_RESULT: {
         backend_event ev = { .kind = BACKEND_EV_TOOL_RESULT, .text = e->text,
-                             .failed = e->failed };
+                             .diff = e->diff, .failed = e->failed };
         backend_flush(&x->st);
         backend_emit(&x->st, &ev);
         return;

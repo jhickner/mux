@@ -102,6 +102,7 @@ typedef struct {
     const char *text;       /* NULL unless the kind documents it */
     const char *name;       /* tool name, for TOOL               */
     const char *input_json; /* tool input as compact JSON, TOOL  */
+    const char *diff;       /* TOOL_RESULT: patch the edit applied, or NULL */
     int failed;             /* TOOL_RESULT: status was "failed"  */
 } grok_event;
 
@@ -196,6 +197,7 @@ struct grok_client {
     char  tool_id[GK_TOOL_CAP][GK_TOOL_ID];
     unsigned tool_flags[GK_TOOL_CAP]; /* bit0 announced, bit1 resulted      */
     char *tool_text[GK_TOOL_CAP];     /* reason/output accumulated per call */
+    char *tool_diff[GK_TOOL_CAP];     /* patch an edit reported, per call     */
     char  tool_name[GK_TOOL_CAP][64]; /* name resolved across split updates */
     int   n_tools;
 };
@@ -259,6 +261,8 @@ static void gk_reset_tools(grok_client *c) {
     for (int i = 0; i < c->n_tools; i++) {
         free(c->tool_text[i]);
         c->tool_text[i] = NULL;
+        free(c->tool_diff[i]);
+        c->tool_diff[i] = NULL;
     }
     c->n_tools = 0;
     memset(c->tool_flags, 0, sizeof c->tool_flags);
@@ -273,6 +277,7 @@ static int gk_tool_slot(grok_client *c, const char *id) {
     snprintf(c->tool_id[i], sizeof c->tool_id[i], "%s", id);
     c->tool_flags[i] = 0;
     c->tool_text[i] = NULL;
+    c->tool_diff[i] = NULL;
     c->tool_name[i][0] = '\0';
     return i;
 }
@@ -411,29 +416,39 @@ static char *gk_dup_reason(cJSON *v) {
 }
 
 /* Grok parks the reason on rawOutput.message, or under a variant key
- * ({"type":"NotFound","NotFound":"…"} / FileReadError:{message}). */
-static char *gk_mine_reason(cJSON *raw) {
+ * ({"type":"NotFound","NotFound":"…"} / FileReadError:{message} /
+ * SearchReplace:{EditsApplied:{tool_output_for_prompt}}), so the search
+ * descends into variant payloads before falling back to the discriminant. */
+static char *gk_mine_at(cJSON *raw, int depth) {
     char *got = gk_dup_reason(raw);
     if (got) return got;
     if (!cJSON_IsObject(raw)) return NULL;
 
     static const char *keys[] = {
-        "message", "error", "output_for_prompt", "output", "content", "text", "result", NULL
+        "message", "error", "tool_output_for_prompt", "output_for_prompt",
+        "output", "content", "text", "result", NULL
     };
     for (int i = 0; keys[i]; i++) {
         got = gk_dup_reason(cJSON_GetObjectItem(raw, keys[i]));
         if (got) return got;
     }
-    cJSON *child;
-    cJSON_ArrayForEach(child, raw) {
-        if (!child->string || !strcmp(child->string, "type")) continue;
-        got = gk_dup_reason(child);
-        if (got) return got;
+    if (depth < 2) {
+        cJSON *child;
+        cJSON_ArrayForEach(child, raw) {
+            if (!child->string || !strcmp(child->string, "type")) continue;
+            got = gk_mine_at(child, depth + 1);
+            if (got) return got;
+        }
     }
     /* A variant with only its discriminant still names the failure. */
-    const char *typ = gk_str(raw, "type");
-    return typ ? strdup(typ) : NULL;
+    if (depth == 0) {
+        const char *typ = gk_str(raw, "type");
+        if (typ) return strdup(typ);
+    }
+    return NULL;
 }
+
+static char *gk_mine_reason(cJSON *raw) { return gk_mine_at(raw, 0); }
 
 static char *gk_raw_text(cJSON *raw) {
     if (!raw) return NULL;
@@ -441,6 +456,104 @@ static char *gk_raw_text(cJSON *raw) {
     if (mined) return mined;
     if (cJSON_IsString(raw)) return strdup(raw->valuestring ? raw->valuestring : "");
     return cJSON_PrintUnformatted(raw);
+}
+
+/* Line count of s, counting a missing trailing newline as ending a line. */
+static int gk_count_lines(const char *s) {
+    int n = 0;
+    for (const char *p = s; *p; ) {
+        const char *nl = strchr(p, '\n');
+        n++;
+        if (!nl) break;
+        p = nl + 1;
+    }
+    return n;
+}
+
+/* Start of line `idx` in s, with its length (excluding the newline). */
+static const char *gk_line_at(const char *s, int idx, size_t *len) {
+    const char *p = s;
+    for (int i = 0; i < idx; i++) {
+        const char *nl = strchr(p, '\n');
+        if (!nl) { *len = 0; return NULL; }
+        p = nl + 1;
+    }
+    const char *nl = strchr(p, '\n');
+    *len = nl ? (size_t)(nl - p) : strlen(p);
+    return p;
+}
+
+static int gk_line_eq(const char *a, int ai, const char *b, int bi) {
+    size_t an, bn;
+    const char *ap = gk_line_at(a, ai, &an);
+    const char *bp = gk_line_at(b, bi, &bn);
+    if (!ap || !bp) return 0;
+    return an == bn && memcmp(ap, bp, an) == 0;
+}
+
+static void gk_put_line(char **patch, char sign, const char *s, int idx) {
+    size_t len;
+    const char *p = gk_line_at(s, idx, &len);
+    if (!p) return;
+    char *line = malloc(len + 3);
+    if (!line) return;
+    line[0] = sign;
+    memcpy(line + 1, p, len);
+    line[len + 1] = '\n';
+    line[len + 2] = '\0';
+    gk_concat(patch, line);
+    free(line);
+}
+
+/* A search/replace result reports the replaced region as oldText/newText rather
+ * than a patch, and the two usually share most of their lines. Trimming the
+ * shared head and tail turns them into one hunk with context. */
+static void gk_diff_hunk(char **patch, const char *path,
+                         const char *old_text, const char *new_text) {
+    if (!old_text) old_text = "";
+    if (!new_text) new_text = "";
+    int an = gk_count_lines(old_text), bn = gk_count_lines(new_text);
+
+    int limit = an < bn ? an : bn;
+    int pre = 0;
+    while (pre < limit && gk_line_eq(old_text, pre, new_text, pre)) pre++;
+    int post = 0;
+    while (post < limit - pre && gk_line_eq(old_text, an - 1 - post, new_text, bn - 1 - post))
+        post++;
+    if (pre == an && an == bn) return;   /* nothing changed */
+
+    if (path && *path) {
+        gk_concat(patch, "@@file ");
+        gk_concat(patch, path);
+        gk_concat(patch, "\n");
+    }
+    gk_concat(patch, "@@\n");
+
+    const int CTX = 3;
+    for (int i = pre - CTX < 0 ? 0 : pre - CTX; i < pre; i++)
+        gk_put_line(patch, ' ', old_text, i);
+    for (int i = pre; i < an - post; i++)
+        gk_put_line(patch, '-', old_text, i);
+    for (int i = pre; i < bn - post; i++)
+        gk_put_line(patch, '+', new_text, i);
+    for (int i = an - post; i < an && i < an - post + CTX; i++)
+        gk_put_line(patch, ' ', old_text, i);
+}
+
+/* The patch every diff item in this update describes, or NULL if it has none. */
+static char *gk_content_diff(cJSON *content) {
+    if (!cJSON_IsArray(content)) return NULL;
+    char *patch = NULL;
+    cJSON *item;
+    cJSON_ArrayForEach(item, content) {
+        const char *type = cJSON_GetStringValue(cJSON_GetObjectItem(item, "type"));
+        if (!type || strcmp(type, "diff") != 0) continue;
+        gk_diff_hunk(&patch,
+                     cJSON_GetStringValue(cJSON_GetObjectItem(item, "path")),
+                     cJSON_GetStringValue(cJSON_GetObjectItem(item, "oldText")),
+                     cJSON_GetStringValue(cJSON_GetObjectItem(item, "newText")));
+    }
+    return patch;
 }
 
 /* Text this update actually carries — never the word "failed", and never a
@@ -609,6 +722,11 @@ static void gk_tool_update(grok_client *c, cJSON *u) {
 
     gk_keep_reason(c, slot, gk_extract_reason(u));
 
+    /* The diff rides the kind=edit update as often as the completed one, and
+     * parallel edits complete out of order, so keep it with its call. */
+    if (slot >= 0 && !c->tool_diff[slot])
+        c->tool_diff[slot] = gk_content_diff(cJSON_GetObjectItem(u, "content"));
+
     if (slot >= 0 && done && !(c->tool_flags[slot] & 2)) {
         c->tool_flags[slot] |= 2;
         char *owned = NULL;
@@ -622,6 +740,7 @@ static void gk_tool_update(grok_client *c, cJSON *u) {
         grok_event ev = {
             .kind = GROK_EV_TOOL_RESULT,
             .text = text,
+            .diff = failed ? NULL : c->tool_diff[slot],
             .failed = failed,
         };
         gk_emit(c, &ev);
