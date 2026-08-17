@@ -25,6 +25,14 @@ enum ui_role {
     UI_TOOL,
     UI_SPIN,
     UI_BASH,
+    UI_SYN_CMD,
+    UI_SYN_KEYWORD,
+    UI_SYN_STRING,
+    UI_SYN_COMMENT,
+    UI_SYN_VAR,
+    UI_SYN_OP,
+    UI_SYN_FLAG,
+    UI_SYN_NUMBER,
     UI_RESET,
 };
 
@@ -88,6 +96,8 @@ size_t ui_cells_visible(const char *s, size_t n);
 
 size_t ui_fit_visible(const char *s, size_t n, size_t budget);
 
+void ui_put_spans(const char *s, size_t n, const unsigned char *roles, enum ui_role base);
+
 void  ui_capture_begin(int columns);
 char *ui_capture_end(void);
 
@@ -100,6 +110,7 @@ struct ui_wrap {
     int          gutters_n;
     const char  *mark;
     enum ui_role role;
+    const unsigned char *spans;
     int          max_rows;
     int          erase;
     int          paint_empty;

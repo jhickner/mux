@@ -4,7 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "highlight.h"
 #include "text.h"
+#include "toolstyle.h"
 #include "vendor/cJSON.h"
 
 #define TOOL_INDENT 2
@@ -134,6 +136,18 @@ static void tool_tag(const char *name, char *out, size_t size)
 
 #define TOOL_CALL_ROWS 24
 
+/* Per-byte highlight roles for a shell command, or NULL for other tools. */
+static unsigned char *shell_spans(const char *name, const char *text, size_t len)
+{
+    if (!toolstyle_is_shell(name) || !len)
+        return NULL;
+
+    unsigned char *spans = malloc(len);
+    if (spans)
+        highlight_shell(text, len, spans);
+    return spans;
+}
+
 void view_tool_call(const char *name, const char *arg)
 {
     char tag[64];
@@ -156,20 +170,41 @@ void view_tool_call(const char *name, const char *arg)
     if (budget < 8)
         budget = 8;
 
+    unsigned char *spans = shell_spans(name, arg, strlen(arg));
+
     struct ui_wrap w = {0};
     w.budget = (size_t)budget;
     w.indent = indent;
     w.role = UI_RESET;
     w.max_rows = TOOL_CALL_ROWS;
+    w.spans = spans;
     ui_wrap_paint(arg, &w);
+    free(spans);
 }
 
 void view_cluster_forget(struct turnview *v)
 {
     free(v->line);
+    free(v->spans);
     v->line = NULL;
+    v->spans = NULL;
     v->tool[0] = '\0';
     v->onscreen = 0;
+}
+
+/* Highlights the command that follows `prefix` bytes of chrome in `row`. */
+static unsigned char *row_spans(const char *name, const char *row, size_t prefix)
+{
+    size_t len = strlen(row);
+    if (!toolstyle_is_shell(name) || len <= prefix)
+        return NULL;
+
+    unsigned char *spans = malloc(len);
+    if (!spans)
+        return NULL;
+    memset(spans, (unsigned char)UI_RESET, prefix);
+    highlight_shell(row + prefix, len - prefix, spans + prefix);
+    return spans;
 }
 
 static int cluster_budget(void)
@@ -199,6 +234,7 @@ void view_cluster_start(struct turnview *v, const char *name, const char *arg)
     view_cluster_forget(v);
     snprintf(v->tool, sizeof v->tool, "%s", name);
     v->line = strdup(row);
+    v->spans = v->line ? row_spans(name, row, strlen(tag) + 1) : NULL;
     v->columns = ui_columns();
 }
 
@@ -221,8 +257,18 @@ int view_cluster_extend(struct turnview *v, const char *name, const char *arg)
     char *grown = strdup(row);
     if (!grown)
         return 0;
+
+    unsigned char *spans = NULL;
+    if (v->spans) {
+        size_t kept = strlen(v->line);
+        spans = row_spans(name, row, kept + 2);
+        if (spans)
+            memcpy(spans, v->spans, kept);
+    }
     free(v->line);
+    free(v->spans);
     v->line = grown;
+    v->spans = spans;
     return 1;
 }
 
@@ -240,7 +286,10 @@ void view_cluster_paint(struct turnview *v)
     ui_esc(ui_style(UI_TOOL));
     ui_putn(v->line, tag);
     ui_esc(ui_style(UI_RESET));
-    ui_put(v->line + tag);
+    if (v->spans)
+        ui_put_spans(v->line + tag, strlen(v->line) - tag, v->spans + tag, UI_RESET);
+    else
+        ui_put(v->line + tag);
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");
     v->onscreen = 1;
@@ -393,5 +442,7 @@ void view_tool_output(const char *text, enum ui_role role)
 void view_free(struct turnview *v)
 {
     free(v->line);
+    free(v->spans);
     v->line = NULL;
+    v->spans = NULL;
 }

@@ -88,12 +88,15 @@ $(BUILD)/pastetest: tools/pastetest.c src/paste.o | $(BUILD)
 $(BUILD)/transcripttest: tools/transcripttest.c src/transcript.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
-$(BUILD)/sessionviewtest: tools/sessionviewtest.c src/sessionview.o src/ui.o src/settings.o src/tty.o src/text.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
+$(BUILD)/sessionviewtest: tools/sessionviewtest.c src/sessionview.o src/highlight.o src/toolstyle.o src/ui.o src/settings.o src/tty.o src/text.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
+	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
+
+$(BUILD)/highlighttest: tools/highlighttest.c src/highlight.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
 CHECKS  := reflowtest toolstyletest sessionlisttest claudetest codextest \
            groktest filedifftest pitest agenttabstest statustest transcripttest \
-           sessionviewtest
+           sessionviewtest highlighttest
 
 check: $(addprefix $(BUILD)/,$(CHECKS))
 	@for t in $^; do echo "$$t"; ./$$t || exit 1; done

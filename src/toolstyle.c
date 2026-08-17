@@ -337,6 +337,11 @@ int toolstyle_shell_reads(const char *command)
     return reads;
 }
 
+int toolstyle_is_shell(const char *name)
+{
+    return name && *name && in_list(SHELL_TOOLS, COUNT(SHELL_TOOLS), name);
+}
+
 static const char *shell_command(const char *input_json, const char *arg, char **owned)
 {
     *owned = NULL;

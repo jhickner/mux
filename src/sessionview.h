@@ -10,6 +10,7 @@
 struct turnview {
     char  tool[64];
     char *line;
+    unsigned char *spans;
     int   columns;
     int   onscreen;
 

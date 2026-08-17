@@ -41,6 +41,14 @@ static const struct {
     [UI_TOOL]    = { NULL, COLOR_BASE12, 0 },
     [UI_SPIN]    = { NULL, COLOR_BASE12, 0 },
     [UI_BASH]    = { NULL, COLOR_BASE8, 90 },
+    [UI_SYN_CMD]     = { NULL, COLOR_BASE13, 0 },
+    [UI_SYN_KEYWORD] = { NULL, COLOR_BASE14, 0 },
+    [UI_SYN_STRING]  = { NULL, COLOR_BASE11, 0 },
+    [UI_SYN_COMMENT] = { NULL, COLOR_UI_DIM, 0 },
+    [UI_SYN_VAR]     = { NULL, COLOR_BASE9, 0 },
+    [UI_SYN_OP]      = { NULL, COLOR_BASE5, 0 },
+    [UI_SYN_FLAG]    = { NULL, COLOR_BASE4, 0 },
+    [UI_SYN_NUMBER]  = { NULL, COLOR_BASE10, 0 },
 };
 
 static char styles[UI_RESET][64];
@@ -498,6 +506,19 @@ size_t ui_fit_bytes(const char *s, size_t budget)
     return fit;
 }
 
+void ui_put_spans(const char *s, size_t n, const unsigned char *roles, enum ui_role base)
+{
+    for (size_t i = 0; i < n;) {
+        enum ui_role role = (enum ui_role)roles[i];
+        size_t       j = i;
+        while (j < n && (enum ui_role)roles[j] == role)
+            j++;
+        ui_esc(ui_style(role == UI_RESET ? base : role));
+        ui_putn(s + i, j - i);
+        i = j;
+    }
+}
+
 size_t ui_wrap_row(const char *s, size_t n, size_t budget, size_t *skip, size_t *cells_out)
 {
     if (skip)
@@ -573,7 +594,10 @@ int ui_wrap_paint(const char *text, const struct ui_wrap *w)
                 ui_put(gutter);
             if (w->mark && first)
                 ui_put(w->mark);
-            ui_putn(p, row);
+            if (w->spans)
+                ui_put_spans(p, row, w->spans + (size_t)(p - text), w->role);
+            else
+                ui_putn(p, row);
         }
 
         size_t used = row + skip;
@@ -586,7 +610,7 @@ int ui_wrap_paint(const char *text, const struct ui_wrap *w)
             width++;
         }
         if (!w->measure) {
-            if (w->role != UI_RESET)
+            if (w->role != UI_RESET || w->spans)
                 ui_esc(ui_style(UI_RESET));
             ui_put("\n");
         }
