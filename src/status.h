@@ -40,6 +40,10 @@ int    status_sticky_enabled(void);
 
 void   status_sticky_prompt(const char *text);
 
+/* Rows the floating prompt drew in the last paint, 0 when it was not drawn.
+   The gutter it draws them with animates, so this is the only stable count. */
+int    status_sticky_rows(void);
+
 const char *status_sticky_offscreen(void);
 
 void   status_sticky_erased(void);

@@ -16,16 +16,6 @@ static void fail(const char *what)
     failures++;
 }
 
-static int count_bars(const char *s)
-{
-    int n = 0;
-    while (s && (s = strstr(s, UI_BAR))) {
-        n++;
-        s += strlen(UI_BAR);
-    }
-    return n;
-}
-
 static char *slurp_fd(int fd)
 {
     char *buf = NULL;
@@ -158,7 +148,7 @@ static void check_sticky(void)
     char *fits = capture(turn_with_prompt);
     if (!fits)
         fail("capture a three-line floating prompt");
-    else if (count_bars(fits) != STICKY_LINES)
+    else if (status_sticky_rows() != STICKY_LINES)
         fail("a three-line prompt is not drawn in full");
     else if (strstr(fits, "…"))
         fail("a three-line prompt is clipped");
@@ -169,7 +159,7 @@ static void check_sticky(void)
     char *over = capture(turn_with_prompt);
     if (!over)
         fail("capture a four-line floating prompt");
-    else if (count_bars(over) != STICKY_LINES)
+    else if (status_sticky_rows() != STICKY_LINES)
         fail("a four-line prompt is not clipped to three rows");
     else if (!strstr(over, "…"))
         fail("a clipped prompt has no ellipsis");
@@ -185,7 +175,7 @@ static void check_sticky(void)
     char *clipped = capture(turn_with_prompt);
     if (!clipped)
         fail("capture a wrapped floating prompt");
-    else if (count_bars(clipped) != STICKY_LINES)
+    else if (status_sticky_rows() != STICKY_LINES)
         fail("a wrapping prompt is not clipped to three rows");
     else if (!strstr(clipped, "…"))
         fail("a wrapping prompt has no ellipsis");

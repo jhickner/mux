@@ -43,6 +43,7 @@ static int   sticky_on;
 static char *sticky_text;
 static int   sticky_widths[STICKY_ROWS_MAX];
 static int   sticky_rows;
+static int   sticky_drawn;
 static int   sticky_tracking;
 static int   block_tallest;
 static int   stack_tick;
@@ -193,6 +194,7 @@ static void stack_frame(int tick, int rows, char out[][8], const char *ptrs[])
 
 static void paint_sticky(void)
 {
+    sticky_drawn = 0;
     if (!sticky_on || !sticky_text || !*sticky_text || !sticky_gone())
         return;
 
@@ -231,9 +233,16 @@ static void paint_sticky(void)
     if (sticky_rows > w.widths_max)
         sticky_rows = w.widths_max;
 
+    sticky_drawn = sticky_rows;
+
     ui_esc(UI_ERASE_EOL);
     ui_put("\n");
     sticky_widths[sticky_rows++] = 0;
+}
+
+int status_sticky_rows(void)
+{
+    return sticky_drawn;
 }
 
 static void block_rows(int below_rows)
