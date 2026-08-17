@@ -29,6 +29,8 @@ int  session_compact(const struct session *s);
 
 void session_set_customizations(struct session *s, int on);
 
+void session_set_fork(struct session *s, int on);
+
 int session_start(struct session *s);
 
 int session_trust_project(struct session *s);

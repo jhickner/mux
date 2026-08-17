@@ -34,6 +34,9 @@ typedef struct {
     const char *effort;          /* --effort value; NULL -> CLI default           */
     const char *permission_mode; /* --permission-mode (e.g. "bypassPermissions")  */
     const char *resume_session;  /* --resume <id> to continue a prior session     */
+    int fork_session;            /* with resume_session: --fork-session, so the
+                                    resumed context is copied into a new session
+                                    id and the original transcript is untouched  */
     const char *append_system;   /* --append-system-prompt text; NULL -> none     */
     const char *session_name;    /* --name value; NULL -> let Claude name it      */
     const char *tools;           /* --tools value; NULL -> flag omitted (all tools);
@@ -462,7 +465,8 @@ claude_client *claude_start(const claude_opts *opts) {
         if (o.model && *o.model)           { argv[n++] = "--model";           argv[n++] = o.model; }
         if (o.effort && *o.effort)         { argv[n++] = "--effort";          argv[n++] = o.effort; }
         if (o.permission_mode && *o.permission_mode) { argv[n++] = "--permission-mode"; argv[n++] = o.permission_mode; }
-        if (o.resume_session && *o.resume_session)   { argv[n++] = "--resume"; argv[n++] = o.resume_session; }
+        if (o.resume_session && *o.resume_session)   { argv[n++] = "--resume"; argv[n++] = o.resume_session;
+                                                       if (o.fork_session) argv[n++] = "--fork-session"; }
         if (o.append_system && *o.append_system)     { argv[n++] = "--append-system-prompt"; argv[n++] = o.append_system; }
         if (o.tools)                                 { argv[n++] = "--tools";                argv[n++] = o.tools; }
         argv[n] = NULL;

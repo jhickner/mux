@@ -30,8 +30,8 @@ void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud);
 void prompt_set_restart(struct prompt *p, int (*pending)(void *ud), int (*run)(void *ud),
                         void *ud);
 
-void prompt_set_idle(struct prompt *p, int (*fd)(void *ud), int (*render)(void *ud),
-                     int (*busy)(void *ud), void *ud);
+void prompt_set_idle(struct prompt *p, int (*fds)(void *ud, int *out, int max),
+                     int (*render)(void *ud), int (*busy)(void *ud), void *ud);
 
 char *prompt_take_queued(struct prompt *p);
 

@@ -136,13 +136,14 @@ void tty_raw_end(void)
     in_raw = 0;
 }
 
-static int  (*watch_fd)(void *ud);
+static int  (*watch_fds)(void *ud, int *out, int max);
 static void (*watch_ready)(void *ud);
 static void *watch_ud;
 
-void tty_watch(int (*fd)(void *ud), void (*ready)(void *ud), void *ud)
+void tty_watch(int (*fds)(void *ud, int *out, int max), void (*ready)(void *ud),
+               void *ud)
 {
-    watch_fd = fd;
+    watch_fds = fds;
     watch_ready = ready;
     watch_ud = ud;
 }
@@ -150,15 +151,21 @@ void tty_watch(int (*fd)(void *ud), void (*ready)(void *ud), void *ud)
 static int wait_readable(int timeout_ms)
 {
     for (;;) {
-        int extra = watch_fd ? watch_fd(watch_ud) : -1;
+        int extra[TTY_WATCH_MAX];
+        int count = watch_fds ? watch_fds(watch_ud, extra, TTY_WATCH_MAX) : 0;
+        if (count < 0)
+            count = 0;
+
         fd_set fds;
         FD_ZERO(&fds);
         FD_SET(STDIN_FILENO, &fds);
         int last = STDIN_FILENO;
-        if (extra >= 0) {
-            FD_SET(extra, &fds);
-            if (extra > last)
-                last = extra;
+        for (int i = 0; i < count; i++) {
+            if (extra[i] < 0 || extra[i] >= FD_SETSIZE)
+                continue;
+            FD_SET(extra[i], &fds);
+            if (extra[i] > last)
+                last = extra[i];
         }
         struct timeval tv = {timeout_ms / 1000, (timeout_ms % 1000) * 1000};
         int r = select(last + 1, &fds, NULL, NULL, timeout_ms < 0 ? NULL : &tv);
@@ -168,7 +175,11 @@ static int wait_readable(int timeout_ms)
             return 0;
         if (FD_ISSET(STDIN_FILENO, &fds))
             return 1;
-        if (extra < 0 || !FD_ISSET(extra, &fds))
+
+        int woke = 0;
+        for (int i = 0; i < count && !woke; i++)
+            woke = extra[i] >= 0 && extra[i] < FD_SETSIZE && FD_ISSET(extra[i], &fds);
+        if (!woke)
             return 0;
         watch_ready(watch_ud);
 

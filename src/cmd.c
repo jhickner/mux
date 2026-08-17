@@ -14,6 +14,7 @@
 #include "image.h"
 #include "sessionfork.h"
 #include "sessionlist.h"
+#include "sidechannel.h"
 #include "settings.h"
 #include "status.h"
 #include "ui.h"
@@ -26,6 +27,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/effort", "set reasoning/thinking effort", "[level]"},
     {"/backend", "continue with another backend", "<name>"},
     {"/mux", "ask several backends the same thing", "<prompt>"},
+    {"/btw", "answer this on the side, without waiting", "<prompt>"},
     {"/thinking", "show or hide the model's reasoning", "[on|off]"},
     {"/tools", "how much of each tool call to show", "[compact|full]"},
     {"/sticky", "float the prompt above the spinner", "[on|off]"},
@@ -405,6 +407,17 @@ static void do_mux(struct session *s, const char *arg)
     fanout_run(s, arg);
 }
 
+static void do_btw(struct session *s, const char *arg)
+{
+    if (!arg || !*arg) {
+        reply_note("/btw <prompt> — answers on a one-turn fork of this "
+                   "conversation, without waiting for the current turn");
+        return;
+    }
+    sidechannel_start(s, arg);
+    ui_flush();
+}
+
 static int toggle_arg(const char *arg, const char *on_word, const char *off_word,
                       int current, const char *command)
 {
@@ -589,31 +602,94 @@ static int fork_target(const char *name, enum fork_where *where)
     return 0;
 }
 
+// What a command can do while a turn is in flight. NOW covers the ones that
+// only touch mux's own display or spawn something of their own; LATER covers
+// the ones that reload or talk to the agent CLI, which would trample the turn,
+// so they are acknowledged straight away and applied once it ends.
+enum live_class { LIVE_NO, LIVE_NOW, LIVE_LATER };
+
+static enum live_class live_class(const char *name)
+{
+    static const char *const NOW[] = {
+        "/help", "/status", "/session", "/copy", "/thinking",
+        "/tools", "/sticky", "/image", "/btw",
+    };
+    static const char *const LATER[] = {"/model", "/effort", "/permission"};
+
+    for (size_t i = 0; i < COUNT(NOW); i++)
+        if (!strcmp(name, NOW[i]))
+            return LIVE_NOW;
+    for (size_t i = 0; i < COUNT(LATER); i++)
+        if (!strcmp(name, LATER[i]))
+            return LIVE_LATER;
+    return fork_target(name, NULL) ? LIVE_NOW : LIVE_NO;
+}
+
+#define DEFERRED_MAX 8
+static char *deferred[DEFERRED_MAX];
+static int   deferred_count;
+
 int cmd_is_live(const char *line)
 {
     char name[32];
     const char *arg;
     if (!split_command(line, name, sizeof name, &arg))
         return 0;
-    return fork_target(name, NULL);
+    return live_class(name) != LIVE_NO;
 }
+
+static enum cmd_result run_command(struct session *s, const char *name,
+                                   const char *arg);
 
 void cmd_dispatch_live(struct session *s, const char *line)
 {
     char name[32];
     const char *arg;
-    enum fork_where where;
-    if (split_command(line, name, sizeof name, &arg) && fork_target(name, &where))
-        sessionfork_run(s, where);
+    if (!split_command(line, name, sizeof name, &arg))
+        return;
+
+    if (live_class(name) == LIVE_NOW) {
+        run_command(s, name, arg);
+        return;
+    }
+
+    if (deferred_count == DEFERRED_MAX) {
+        reply_error("too many settings changes are already waiting");
+        return;
+    }
+    char *copy = strdup(line);
+    if (!copy) {
+        reply_error("could not hold %s until the turn ends", name);
+        return;
+    }
+    deferred[deferred_count++] = copy;
+    reply_note("%s applies when this turn ends", name);
+}
+
+void cmd_run_deferred(struct session *s)
+{
+    int count = deferred_count;
+    deferred_count = 0;
+    for (int i = 0; i < count; i++) {
+        cmd_dispatch(s, deferred[i]);
+        free(deferred[i]);
+        deferred[i] = NULL;
+    }
 }
 
 enum cmd_result cmd_dispatch(struct session *s, const char *line)
 {
     char name[32];
     const char *arg;
-    enum fork_where where;
     if (!split_command(line, name, sizeof name, &arg))
         return CMD_NOT_A_COMMAND;
+    return run_command(s, name, arg);
+}
+
+static enum cmd_result run_command(struct session *s, const char *name,
+                                   const char *arg)
+{
+    enum fork_where where;
 
     if (!strcmp(name, "/help")) {
         show_help();
@@ -627,6 +703,8 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line)
         do_backend(s, arg);
     } else if (!strcmp(name, "/mux")) {
         do_mux(s, arg);
+    } else if (!strcmp(name, "/btw")) {
+        do_btw(s, arg);
     } else if (!strcmp(name, "/thinking")) {
         do_thinking(s, arg);
     } else if (!strcmp(name, "/image")) {

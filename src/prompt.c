@@ -46,7 +46,7 @@ struct prompt {
     int          queued_count;
     int          queued_cap;
     char        *file_root;
-    int        (*idle_fd)(void *ud);
+    int        (*idle_fds)(void *ud, int *out, int max);
     int        (*idle_render)(void *ud);
     int        (*idle_busy)(void *ud);
     void        *idle_ud;
@@ -839,10 +839,10 @@ static char *take_line(struct prompt *p)
     return out;
 }
 
-void prompt_set_idle(struct prompt *p, int (*fd)(void *ud),
+void prompt_set_idle(struct prompt *p, int (*fds)(void *ud, int *out, int max),
                      int (*render)(void *ud), int (*busy)(void *ud), void *ud)
 {
-    p->idle_fd = fd;
+    p->idle_fds = fds;
     p->idle_render = render;
     p->idle_busy = busy;
     p->idle_ud = ud;
@@ -856,10 +856,10 @@ void prompt_set_restart(struct prompt *p, int (*pending)(void *ud), int (*run)(v
     p->restart_ud = ud;
 }
 
-static int idle_fd_hook(void *ud)
+static int idle_fds_hook(void *ud, int *out, int max)
 {
     struct prompt *p = ud;
-    return p && p->idle_fd ? p->idle_fd(p->idle_ud) : -1;
+    return p && p->idle_fds ? p->idle_fds(p->idle_ud, out, max) : 0;
 }
 
 static void idle_ready_hook(void *ud)
@@ -942,7 +942,7 @@ static char *read_loop(struct prompt *p)
 char *prompt_read(struct prompt *p)
 {
 
-    tty_watch(p->idle_fd ? idle_fd_hook : NULL, idle_ready_hook, p);
+    tty_watch(p->idle_fds ? idle_fds_hook : NULL, idle_ready_hook, p);
     char *out = read_loop(p);
     tty_watch(NULL, NULL, NULL);
     return out;

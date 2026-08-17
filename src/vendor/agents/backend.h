@@ -31,6 +31,8 @@ typedef struct {
     const char *system;         /* applied to every turn; NULL -> none                */
     const char *cwd;            /* where the agent runs its tools; NULL -> inherit    */
     const char *resume_session; /* continue a prior session (claude, codex, grok, pi) */
+    int fork_session;           /* claude: copy the resumed context into a new session
+                                   id instead of writing back to the original       */
     const char *permission_mode;/* claude: --permission-mode; NULL -> bypassPermissions*/
     const char *session_name;   /* optional display name; currently used by claude     */
     int ephemeral;              /* do not persist this helper conversation             */
@@ -218,7 +220,7 @@ int backend_run_pool(const char *name, const char *model, const char *system,
 
 typedef struct {
     char *model, *effort, *system, *cwd, *resume, *permission, *session_name;
-    int   allow_customizations, ephemeral, disable_tools;
+    int   allow_customizations, ephemeral, disable_tools, fork_session;
     void (*on_event)(void *ud, const backend_event *ev);
     void *event_ud;
     int (*abort)(void);
@@ -247,6 +249,7 @@ static void backend_state_init(backend_state *st, const backend_opts *o) {
     st->ephemeral = o->ephemeral;
     st->disable_tools = o->disable_tools;
     st->allow_customizations = o->allow_customizations;
+    st->fork_session = o->fork_session;
 }
 
 static void backend_state_free(backend_state *st) {
@@ -345,6 +348,7 @@ static int backend_claude_start(Backend *b, const char *resume) {
     o.use_subscription = 1;
     o.allow_customizations = x->st.allow_customizations;
     o.resume_session = resume;
+    o.fork_session = x->st.fork_session;
     o.session_name = x->st.session_name;
     o.no_session_persistence = x->st.ephemeral;
     if (x->st.disable_tools) o.tools = "";

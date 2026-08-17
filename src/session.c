@@ -17,6 +17,7 @@
 #include "sessionprefs.h"
 #include "sessionview.h"
 #include "settings.h"
+#include "sidechannel.h"
 #include "status.h"
 #include "title.h"
 #include "toolstyle.h"
@@ -56,6 +57,7 @@ struct session {
     int      thinking;
     int      compact;
     int      customizations;
+    int      fork_session;
     char    *permission;
     int      idle_busy;
     int      trust_requested;
@@ -426,6 +428,7 @@ static int abort_check(void)
 
     int interrupt = session_poll_input();
 
+    sidechannel_poll();
     image_poll();
     status_tick();
     return interrupt;
@@ -507,6 +510,7 @@ static Backend *agent(struct session *s)
     o.effort = s->effort;
     o.allow_customizations = s->customizations;
     o.permission_mode = s->permission;
+    o.fork_session = s->fork_session;
 
     if (image_available())
         o.system =
@@ -590,6 +594,8 @@ void session_set_compact(struct session *s, int on) { s->compact = on; }
 int session_compact(const struct session *s) { return s->compact; }
 
 void session_set_customizations(struct session *s, int on) { s->customizations = on; }
+
+void session_set_fork(struct session *s, int on) { s->fork_session = on; }
 
 static void set_id(struct session *s, const char *id)
 {
