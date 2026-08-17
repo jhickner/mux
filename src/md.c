@@ -144,14 +144,18 @@ static void inline_scan(const char *p, struct styled *out)
 static void emit_slice(const struct styled *s, size_t from, size_t len, enum ui_role base)
 {
     int open = -1;
-    for (size_t i = 0; i < len; i++) {
+    for (size_t i = 0; i < len; ) {
         signed char style = s->style[from + i];
         if (style != open) {
             ui_esc(ui_style(UI_RESET));
             ui_esc(ui_style(style ? (enum ui_role)(style - 1) : base));
             open = style;
         }
-        ui_putn(s->text + from + i, 1);
+        size_t run = 1;
+        while (i + run < len && s->style[from + i + run] == style)
+            run++;
+        ui_putn(s->text + from + i, run);
+        i += run;
     }
     if (open >= 0)
         ui_esc(ui_style(UI_RESET));
@@ -170,7 +174,8 @@ static void emit_styled(const struct styled *s, int first_indent, int indent)
         if (budget < 8)
             budget = 8;
         size_t skip = 0;
-        size_t row = *p ? ui_wrap_row(p, (size_t)budget, &skip) : 0;
+        size_t left = s->len - (size_t)(p - s->text);
+        size_t row = *p ? ui_wrap_row(p, left, (size_t)budget, &skip, NULL) : 0;
 
         ui_pad(row_indent);
         size_t base = (size_t)(p - s->text);
@@ -352,7 +357,8 @@ static void render_row(const struct trow *r, const int *width, const enum align 
             const struct styled *s = &r->cell[c];
             size_t take = 0, skip = 0;
             if (s->text && off[c] < s->len) {
-                take = ui_wrap_row(s->text + off[c], (size_t)width[c], &skip);
+                take = ui_wrap_row(s->text + off[c], s->len - off[c], (size_t)width[c],
+                                   &skip, NULL);
                 if (take == 0 && skip == 0)
                     take = s->len - off[c];
             }

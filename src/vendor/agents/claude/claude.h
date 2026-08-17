@@ -896,11 +896,11 @@ static int cl_fill(claude_client *c, int timeout_ms) {
 /* Handle the complete lines sitting in the buffer, stopping after a turn's
  * result (its text lands in *out, untouched otherwise) so the bytes of any
  * following turn stay queued. Returns how many lines were handled. */
-static int cl_scan_lines(claude_client *c, char **out) {
-    if (!c->buf || !c->len) return 0;
+static int cl_scan_lines_n(claude_client *c, char **out, int max) {
+    if (!c->buf || !c->len || max <= 0) return 0;
     int lines = 0;
     char *start = c->buf, *nl;
-    while ((nl = memchr(start, '\n', c->len - (size_t)(start - c->buf)))) {
+    while (lines < max && (nl = memchr(start, '\n', c->len - (size_t)(start - c->buf)))) {
         *nl = '\0';
         lines++;
         int done = cl_handle_line(c, start, out);
@@ -910,6 +910,10 @@ static int cl_scan_lines(claude_client *c, char **out) {
     size_t consumed = (size_t)(start - c->buf);
     if (consumed) { memmove(c->buf, start, c->len - consumed); c->len -= consumed; }
     return lines;
+}
+
+static int cl_scan_lines(claude_client *c, char **out) {
+    return cl_scan_lines_n(c, out, 1000000);
 }
 
 /* Consume any turn the CLI ran on its own — a finished background task or
@@ -960,12 +964,13 @@ int claude_idle_pump(claude_client *c) {
     if (claude_idle_fd(c) < 0) return 0;
     claude_result *saved = c->meta;
     c->meta = NULL;                   /* these turns are nobody's accounting */
-    for (;;) {
-        char *stray = NULL;
-        int lines = cl_scan_lines(c, &stray);
-        free(stray);                  /* the events carried the text already */
-        if (lines) continue;          /* a result stops the scan mid-buffer */
-        if (cl_fill(c, 0) <= 0) break;
+    char *stray = NULL;
+    int lines = cl_scan_lines_n(c, &stray, 16);
+    free(stray);
+    if (!lines && cl_fill(c, 0) > 0) {
+        stray = NULL;
+        cl_scan_lines_n(c, &stray, 16);
+        free(stray);
     }
     c->meta = saved;
     /* Deliberately not c->notified: a task that ends without waking the model —

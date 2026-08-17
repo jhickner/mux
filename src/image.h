@@ -15,4 +15,8 @@ int image_available(void);
 
 int image_show(const char *path, int indent);
 
+void image_poll(void);
+
+void image_wait(void);
+
 #endif

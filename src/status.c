@@ -345,8 +345,7 @@ void status_gap(int on)
     if (gap == on)
         return;
     gap = on;
-    if (active && visible && !size_changing())
-        paint();
+    dirty = 1;
 }
 
 void status_sticky_set(int on)

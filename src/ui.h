@@ -80,7 +80,7 @@ int    ui_columns(void);
 size_t ui_cells(const char *s);
 size_t ui_cells_n(const char *s, size_t n);
 
-size_t ui_wrap_row(const char *s, size_t budget, size_t *skip);
+size_t ui_wrap_row(const char *s, size_t n, size_t budget, size_t *skip, size_t *cells);
 
 size_t ui_fit_bytes(const char *s, size_t budget);
 

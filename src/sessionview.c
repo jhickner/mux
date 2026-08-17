@@ -185,7 +185,7 @@ void view_cluster_start(struct turnview *v, const char *name, const char *arg)
         budget = 8;
 
     size_t skip = 0;
-    size_t fit = arg && *arg ? ui_wrap_row(arg, (size_t)budget, &skip) : 0;
+    size_t fit = arg && *arg ? ui_wrap_row(arg, strlen(arg), (size_t)budget, &skip, NULL) : 0;
 
     char row[4096];
     snprintf(row, sizeof row, "%s %.*s%s", tag, (int)fit, arg ? arg : "",
@@ -265,7 +265,7 @@ void view_tool_output(const char *text, enum ui_role role)
         text_one_line(line, clipped, sizeof clipped);
         if (*clipped) {
             size_t skip = 0;
-            size_t fit = ui_wrap_row(clipped, (size_t)budget, &skip);
+            size_t fit = ui_wrap_row(clipped, strlen(clipped), (size_t)budget, &skip, NULL);
             ui_put("    ");
             ui_esc(ui_style(role));
             ui_putn(clipped, fit);

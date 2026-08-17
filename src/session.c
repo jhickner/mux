@@ -133,6 +133,8 @@ static void on_event(void *ud, const backend_event *ev)
     if (s->quiet || !live)
         return;
 
+    int paused = 0;
+
     switch (ev->kind) {
     case BACKEND_EV_INIT:
     case BACKEND_EV_CWD:
@@ -148,12 +150,12 @@ static void on_event(void *ud, const backend_event *ev)
         if (!ev->text || !*ev->text)
             break;
         status_pause();
+        paused = 1;
 
         if (s->view.after_activity)
             ui_put("\n");
         md_render(ev->text, 0);
         ui_put("\n");
-        status_resume();
         replace(&s->last_block, ev->text);
         stream_append(s, ev->text);
         view_cluster_forget(&s->view);
@@ -166,11 +168,11 @@ static void on_event(void *ud, const backend_event *ev)
         if (!s->thinking || !ev->text || !*ev->text)
             break;
         status_pause();
+        paused = 1;
         view_cluster_forget(&s->view);
         if (s->view.after_tool)
             ui_put("\n");
         view_activity("\xe2\x9c\xbb", ev->text, UI_THINKING);
-        status_resume();
         s->view.after_activity = 1;
         s->view.after_tool = 1;
         s->view.after_collapse = 0;
@@ -183,6 +185,7 @@ static void on_event(void *ud, const backend_event *ev)
         int collapsed = s->compact || toolstyle_collapses(name, ev->input_json, ev->arg);
 
         status_pause();
+        paused = 1;
         if (collapsed) {
             if (!view_cluster_extend(&s->view, name, arg)) {
                 if (s->view.after_tool && !s->view.after_collapse)
@@ -196,7 +199,6 @@ static void on_event(void *ud, const backend_event *ev)
                 ui_put("\n");
             view_tool_call(name, arg);
         }
-        status_resume();
 
         char path[4096];
         if (!collapsed && view_tool_path(ev->input_json, s->cwd, path, sizeof path))
@@ -213,6 +215,7 @@ static void on_event(void *ud, const backend_event *ev)
     case BACKEND_EV_TOOL_RESULT:
         if (ev->failed) {
             status_pause();
+            paused = 1;
             view_cluster_forget(&s->view);
             filediff_clear();
             {
@@ -225,7 +228,6 @@ static void on_event(void *ud, const backend_event *ev)
                     view_tool_output(line, UI_ERROR);
                 }
             }
-            status_resume();
             s->view.after_activity = 1;
             s->view.after_tool = 1;
             s->view.after_collapse = 0;
@@ -234,6 +236,7 @@ static void on_event(void *ud, const backend_event *ev)
 
         if (!s->view.after_collapse) {
             status_pause();
+            paused = 1;
 
             int drew;
             if (ev->diff) {
@@ -244,7 +247,6 @@ static void on_event(void *ud, const backend_event *ev)
             }
             if (!drew)
                 view_tool_output(ev->text, UI_DIM);
-            status_resume();
         }
         s->view.after_activity = 1;
         s->view.after_tool = 1;
@@ -252,6 +254,8 @@ static void on_event(void *ud, const backend_event *ev)
     }
 
     status_gap(s->view.after_tool);
+    if (paused)
+        status_resume();
     ui_flush();
 }
 
@@ -279,16 +283,18 @@ int session_idle_pump(struct session *s)
     if (!s || !s->agent || !s->agent->idle_pump || s->quiet)
         return 0;
 
-    view_cluster_forget(&s->view);
-    s->view.after_activity = 0;
-    s->view.after_tool = 0;
-    s->view.after_collapse = 0;
+    if (!s->idle_busy) {
+        view_cluster_forget(&s->view);
+        s->view.after_activity = 0;
+        s->view.after_tool = 0;
+        s->view.after_collapse = 0;
+    }
     live = s;
+    image_poll();
     int busy = s->agent->idle_pump(s->agent) ? 1 : 0;
     live = NULL;
 
     tab_busy(s, busy);
-    gitinfo_forget();
     return busy;
 }
 
@@ -420,6 +426,7 @@ static int abort_check(void)
 
     int interrupt = session_poll_input();
 
+    image_poll();
     status_tick();
     return interrupt;
 }

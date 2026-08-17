@@ -23,6 +23,7 @@ DEP     := $(OBJ:.o=.d)
 all: $(BIN)
 
 # forkpty lives in libutil outside the BSDs.
+LIBS += -pthread
 ifneq ($(shell uname -s),Darwin)
 LIBS += -lutil
 endif

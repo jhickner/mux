@@ -53,6 +53,7 @@ struct prompt {
     void       (*replay)(void *ud);
     void        *replay_ud;
     int          live_block;
+    int          frame_ok;
     char        *painted_head;
 };
 
@@ -342,47 +343,9 @@ static void paint_above(const struct prompt *p, const char *head, int cols)
         paint_bars(p->queued[i], budget, UI_DIM, 0, NULL);
 }
 
-static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *caret_col)
+static void emit_input(struct prompt *p, int rows)
 {
-    int cols = ui_columns();
-    int input_rows = repl_input_rows(&p->repl, cols);
-    int rows = input_rows + repl_dropdown_rows(&p->repl);
-    if (rows < 1)
-        rows = 1;
-
-    const char *head = head_text(p);
-    int above = rows_above(p, head, cols);
-    *rows_out = rows + above;
-    *caret_row = above;
-    *caret_col = 0;
-
-    frame_size(&p->frame, rows, cols);
-    if (!p->frame.cells || p->frame.rows < rows || p->frame.cols < cols) {
-        *rows_out = 1;
-        *caret_row = 0;
-        p->painted_cols = cols;
-        free(p->painted_head);
-        p->painted_head = NULL;
-        p->caret_row = p->caret_col = p->caret_frame_row = 0;
-        return;
-    }
-    repl_render(&p->repl, 0, 0, cols, true, draw_cell, &p->frame);
-
     int synthetic = caret_is_synthetic(&p->repl);
-
-    paint_above(p, head, cols);
-
-    *caret_row = above;
-
-    *caret_row += p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
-    *caret_col = p->frame.have_cursor ? p->frame.cursor_x : 0;
-
-    p->painted_cols = cols;
-    free(p->painted_head);
-    p->painted_head = head ? strdup(head) : NULL;
-    p->caret_row = *caret_row;
-    p->caret_col = *caret_col;
-    p->caret_frame_row = p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
 
     for (int y = 0; y < rows; y++) {
         ui_esc(UI_ERASE_EOL);
@@ -415,6 +378,64 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
     }
 
     ui_esc(UI_ERASE_BELOW);
+}
+
+static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *caret_col)
+{
+    int cols = ui_columns();
+    const char *head = head_text(p);
+
+    if (p->frame_ok && cols == p->painted_cols && p->frame.cells && p->frame.rows > 0) {
+        int input_rows = p->frame.rows;
+        int above = rows_above(p, head, cols);
+        *rows_out = input_rows + above;
+        *caret_row = above + (p->frame.have_cursor ? p->frame.cursor_y : input_rows - 1);
+        *caret_col = p->frame.have_cursor ? p->frame.cursor_x : 0;
+        paint_above(p, head, cols);
+        emit_input(p, input_rows);
+        p->caret_row = *caret_row;
+        p->caret_col = *caret_col;
+        return;
+    }
+
+    int input_rows = repl_input_rows(&p->repl, cols);
+    int rows = input_rows + repl_dropdown_rows(&p->repl);
+    if (rows < 1)
+        rows = 1;
+
+    int above = rows_above(p, head, cols);
+    *rows_out = rows + above;
+    *caret_row = above;
+    *caret_col = 0;
+
+    frame_size(&p->frame, rows, cols);
+    if (!p->frame.cells || p->frame.rows < rows || p->frame.cols < cols) {
+        *rows_out = 1;
+        *caret_row = 0;
+        p->painted_cols = cols;
+        p->frame_ok = 0;
+        free(p->painted_head);
+        p->painted_head = NULL;
+        p->caret_row = p->caret_col = p->caret_frame_row = 0;
+        return;
+    }
+    repl_render(&p->repl, 0, 0, cols, true, draw_cell, &p->frame);
+
+    paint_above(p, head, cols);
+
+    *caret_row = above;
+    *caret_row += p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
+    *caret_col = p->frame.have_cursor ? p->frame.cursor_x : 0;
+
+    p->painted_cols = cols;
+    p->frame_ok = 1;
+    free(p->painted_head);
+    p->painted_head = head ? strdup(head) : NULL;
+    p->caret_row = *caret_row;
+    p->caret_col = *caret_col;
+    p->caret_frame_row = p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
+
+    emit_input(p, rows);
 }
 
 static void repaint(struct prompt *p)
@@ -479,6 +500,7 @@ void prompt_file_completion(struct prompt *p, const char *root)
     p->file_root = strdup(root);
     if (p->file_root)
         repl_set_completer(&p->repl, files_complete, p->file_root);
+    files_prefetch(p->file_root);
 }
 
 void prompt_free(struct prompt *p)
@@ -501,6 +523,7 @@ static int feed(struct prompt *p, ReplKey key, uint32_t cp, const char *text)
 {
     ReplEvent ev = {.key = key, .codepoint = cp, .text = text};
     repl_set_width(&p->repl, ui_columns());
+    p->frame_ok = 0;
     return repl_handle_input(&p->repl, &ev);
 }
 
@@ -519,12 +542,14 @@ static void paste_clipboard(struct prompt *p, int live)
         size_t n = strlen(path);
         path[n] = ' ';
         path[n + 1] = '\0';
+        p->frame_ok = 0;
         repl_insert_text(&p->repl, path);
         return;
     }
 
     char *text = paste_text();
     if (text) {
+        p->frame_ok = 0;
         repl_insert_text(&p->repl, text);
         free(text);
         return;
@@ -646,6 +671,7 @@ static void edit_in_editor(struct prompt *p, int live)
     if (ok) {
         char *text = read_whole(path);
         if (text) {
+            p->frame_ok = 0;
             repl_reset(&p->repl);
             if (*text)
                 repl_insert_text(&p->repl, text);
@@ -678,6 +704,7 @@ static void cycle_colors(struct prompt *p, int live, int mine)
     else
         erase_block(p);
 
+    p->frame_ok = 0;
     if (p->replay) {
         status_sticky_erased();
         p->painted_rows = 0;
@@ -800,6 +827,7 @@ static char *take_line(struct prompt *p)
 {
     const char *line = repl_line(&p->repl);
     char *out = line && *line ? strdup(line) : NULL;
+    p->frame_ok = 0;
     if (out) {
         repl_history_add(&p->repl, out);
         history_append(p, out);
@@ -829,9 +857,7 @@ static void idle_ready_hook(void *ud)
     if (!p || !p->idle_render)
         return;
     erase_block(p);
-    tty_watch(NULL, NULL, NULL);
     p->idle_render(p->idle_ud);
-    tty_watch(idle_fd_hook, idle_ready_hook, p);
     repaint(p);
 }
 
@@ -903,6 +929,7 @@ static void queue_push(struct prompt *p, char *line)
         p->queued_cap = cap;
     }
     p->queued[p->queued_count++] = line;
+    p->frame_ok = 0;
 }
 
 char *prompt_take_queued(struct prompt *p)
@@ -923,6 +950,7 @@ static int recall_queued(struct prompt *p)
         return 0;
 
     char *line = p->queued[--p->queued_count];
+    p->frame_ok = 0;
     repl_reset(&p->repl);
     repl_insert_text(&p->repl, line);
     free(line);

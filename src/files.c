@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,7 +25,16 @@ struct index {
     time_t built;
 };
 
-static struct index IDX;
+static struct index ready;
+static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+static unsigned gen;
+static int building;
+static time_t ready_at;
+
+struct index_job {
+    char     *root;
+    unsigned  gen;
+};
 
 static void index_clear(struct index *ix)
 {
@@ -178,12 +188,86 @@ static void index_build(struct index *ix, const char *root)
     index_sort_unique(ix);
 }
 
+static void *index_worker(void *arg)
+{
+    struct index_job *job = arg;
+    struct index ix = {0};
+    index_build(&ix, job->root);
+
+    pthread_mutex_lock(&mu);
+    if (job->gen == gen) {
+        index_clear(&ready);
+        free(ready.paths);
+        free(ready.root);
+        ready = ix;
+        ready_at = time(NULL);
+    } else {
+        index_clear(&ix);
+        free(ix.paths);
+        free(ix.root);
+    }
+    building = 0;
+    pthread_mutex_unlock(&mu);
+    free(job->root);
+    free(job);
+    return NULL;
+}
+
+void files_prefetch(const char *root)
+{
+    if (!root || !*root)
+        return;
+
+    pthread_mutex_lock(&mu);
+    int stale = !ready.root || strcmp(ready.root, root) != 0 ||
+                time(NULL) - ready_at > INDEX_TTL;
+    if (building || !stale) {
+        pthread_mutex_unlock(&mu);
+        return;
+    }
+    building = 1;
+    unsigned g = gen;
+    pthread_mutex_unlock(&mu);
+
+    struct index_job *job = malloc(sizeof *job);
+    if (!job) {
+        pthread_mutex_lock(&mu);
+        building = 0;
+        pthread_mutex_unlock(&mu);
+        return;
+    }
+    job->root = strdup(root);
+    job->gen = g;
+    if (!job->root) {
+        free(job);
+        pthread_mutex_lock(&mu);
+        building = 0;
+        pthread_mutex_unlock(&mu);
+        return;
+    }
+
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, index_worker, job) != 0) {
+        free(job->root);
+        free(job);
+        pthread_mutex_lock(&mu);
+        building = 0;
+        pthread_mutex_unlock(&mu);
+        return;
+    }
+    pthread_detach(thread);
+}
+
 void files_forget(void)
 {
-    index_clear(&IDX);
-    free(IDX.paths);
-    free(IDX.root);
-    memset(&IDX, 0, sizeof IDX);
+    pthread_mutex_lock(&mu);
+    gen++;
+    index_clear(&ready);
+    free(ready.paths);
+    free(ready.root);
+    memset(&ready, 0, sizeof ready);
+    ready_at = 0;
+    pthread_mutex_unlock(&mu);
 }
 
 static int fuzzy(const char *name, const char *q)
@@ -382,24 +466,30 @@ int files_complete(void *ctx, const char *token, ReplCandidate *out, int max)
     const char *root = ctx ? ctx : ".";
     if (is_external(token))
         return complete_external(token, root, out, max);
-    time_t now = time(NULL);
-    if (!IDX.root || strcmp(IDX.root, root) != 0 || now - IDX.built > INDEX_TTL)
-        index_build(&IDX, root);
+
+    files_prefetch(root);
+
+    pthread_mutex_lock(&mu);
+    if (!ready.root || strcmp(ready.root, root) != 0) {
+        pthread_mutex_unlock(&mu);
+        return 0;
+    }
 
     struct topn top;
     topn_init(&top, max);
-    for (int i = 0; i < IDX.count; i++) {
-        if (strcmp(IDX.paths[i], token) == 0)
+    for (int i = 0; i < ready.count; i++) {
+        if (strcmp(ready.paths[i], token) == 0)
             continue;
-        int sc = *token ? path_score(IDX.paths[i], token) : 0;
+        int sc = *token ? path_score(ready.paths[i], token) : 0;
         if (sc >= 0)
             topn_offer(&top, i, sc);
     }
 
     int n = top.n;
     for (int k = 0; k < n; k++) {
-        snprintf(out[k].text, REPL_CAND_TEXT, "%s", IDX.paths[top.idx[k]]);
+        snprintf(out[k].text, REPL_CAND_TEXT, "%s", ready.paths[top.idx[k]]);
         out[k].desc[0] = '\0';
     }
+    pthread_mutex_unlock(&mu);
     return n;
 }

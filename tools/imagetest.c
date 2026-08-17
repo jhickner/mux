@@ -25,6 +25,7 @@ int main(int argc, char **argv)
     snprintf(md + n, sizeof md - n, "That is **all** of them.\n");
 
     md_render(md, 0);
+    image_wait();
     ui_flush();
     return 0;
 }

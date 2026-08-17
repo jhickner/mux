@@ -487,66 +487,81 @@ size_t ui_fit_bytes(const char *s, size_t budget)
 {
     if (!s)
         return 0;
-    size_t n = 0, fit = 0;
-    while (s[n]) {
-        n++;
-        while (((unsigned char)s[n] & 0xC0) == 0x80)
-            n++;
-        if (ui_cells_n(s, n) > budget)
+    size_t n = strlen(s), i = 0, cells = 0, fit = 0;
+    while (i < n) {
+        size_t w = (size_t)cell_width(decode(s, n, &i));
+        if (cells + w > budget)
             break;
-        fit = n;
+        cells += w;
+        fit = i;
     }
     return fit;
 }
 
-size_t ui_wrap_row(const char *s, size_t budget, size_t *skip)
+size_t ui_wrap_row(const char *s, size_t n, size_t budget, size_t *skip, size_t *cells_out)
 {
-    size_t n = strlen(s);
-    *skip = 0;
+    if (skip)
+        *skip = 0;
+    if (cells_out)
+        *cells_out = 0;
+    if (!s || !n)
+        return 0;
     if (budget < 1)
         budget = 1;
 
-    size_t i = 0, cells = 0, last_space = 0;
+    size_t i = 0, cells = 0, last_space = 0, cells_at_space = 0;
     while (i < n) {
         if (s[i] == '\n') {
-            *skip = 1;
+            if (skip)
+                *skip = 1;
+            if (cells_out)
+                *cells_out = cells;
             return i;
         }
         size_t start = i;
         size_t w = (size_t)cell_width(decode(s, n, &i));
         if (cells + w > budget) {
             if (last_space > 0) {
-                *skip = 1;
+                if (skip)
+                    *skip = 1;
+                if (cells_out)
+                    *cells_out = cells_at_space;
                 return last_space;
             }
-
+            if (cells_out)
+                *cells_out = start ? cells : w;
             return start ? start : i;
         }
         cells += w;
-        if (s[start] == ' ')
+        if (s[start] == ' ') {
             last_space = start;
+            cells_at_space = cells - w;
+        }
     }
+    if (cells_out)
+        *cells_out = cells;
     return n;
 }
 
 int ui_wrap_paint(const char *text, const struct ui_wrap *w)
 {
     const char *p = text ? text : "";
+    size_t n = text ? strlen(text) : 0;
     size_t budget = w->budget ? w->budget : 1;
     int mark_cells = w->mark ? (int)ui_cells(w->mark) : 0;
     int rows = 0;
     int reflowed = 0;
     int first = 1;
 
-    while (*p || (first && w->paint_empty)) {
-        size_t skip = 0;
-        size_t row = *p ? ui_wrap_row(p, budget, &skip) : 0;
+    while (n || (first && w->paint_empty)) {
+        size_t skip = 0, row_cells = 0;
+        size_t row = n ? ui_wrap_row(p, n, budget, &skip, &row_cells) : 0;
         int indent = first ? w->first_indent : w->indent;
         const char *gutter = w->gutter;
         if (w->gutters && rows < w->gutters_n && w->gutters[rows])
             gutter = w->gutters[rows];
         int gutter_cells = gutter ? (int)ui_cells(gutter) : 0;
-        int width = gutter_cells + (first ? mark_cells : 0) + (int)ui_cells_n(p, row);
+        int width = gutter_cells + (first ? mark_cells : 0) + (int)row_cells;
 
         if (!w->measure) {
             ui_pad(indent);
@@ -561,9 +576,11 @@ int ui_wrap_paint(const char *text, const struct ui_wrap *w)
             ui_putn(p, row);
         }
 
-        p += row + skip;
+        size_t used = row + skip;
+        p += used;
+        n -= used < n ? used : n;
         rows++;
-        if (*p && w->max_rows && rows == w->max_rows) {
+        if (n && w->max_rows && rows == w->max_rows) {
             if (!w->measure)
                 ui_put("…");
             width++;

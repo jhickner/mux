@@ -1,6 +1,7 @@
 #include "image.h"
 
 #include <fcntl.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,6 +9,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "app.h"
@@ -89,7 +91,60 @@ static int png_dims(const unsigned char *d, size_t n, int *w, int *h)
     return *w > 0 && *h > 0;
 }
 
-static char *convert_to_png(const char *path)
+#define CACHE_MAX   16
+#define PENDING_MAX 4
+
+struct img_cache {
+    char     path[4096];
+    time_t   mtime;
+    uint32_t id;
+    int      cols, rows;
+};
+
+struct pending {
+    int      live;
+    uint32_t id;
+    pid_t    pid;
+    char     tmp[4200];
+    char     src[4096];
+    time_t   mtime;
+};
+
+static struct img_cache cache[CACHE_MAX];
+static int cache_n;
+static struct pending pending[PENDING_MAX];
+
+static time_t file_mtime(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 ? st.st_mtime : 0;
+}
+
+static struct img_cache *cache_find(const char *path, time_t mtime)
+{
+    for (int i = 0; i < cache_n; i++)
+        if (cache[i].mtime == mtime && strcmp(cache[i].path, path) == 0)
+            return &cache[i];
+    return NULL;
+}
+
+static void cache_store(const char *path, time_t mtime, uint32_t id, int cols, int rows)
+{
+    struct img_cache *slot = cache_find(path, mtime);
+    if (!slot) {
+        if (cache_n < CACHE_MAX)
+            slot = &cache[cache_n++];
+        else
+            slot = &cache[0];
+    }
+    snprintf(slot->path, sizeof slot->path, "%s", path);
+    slot->mtime = mtime;
+    slot->id = id;
+    slot->cols = cols;
+    slot->rows = rows;
+}
+
+static pid_t convert_start(const char *path, char *tmp, size_t tmp_sz)
 {
     const char *tmpdir = getenv("TMPDIR");
     if (!tmpdir || !*tmpdir)
@@ -101,17 +156,19 @@ static char *convert_to_png(const char *path)
         n--;
     if (snprintf(dir, sizeof dir, "%.*s/" APP_NAME "-img-XXXXXX", (int)n, tmpdir) >=
         (int)sizeof dir)
-        return NULL;
+        return -1;
     if (!mkdtemp(dir))
-        return NULL;
+        return -1;
 
-    char tmp[4200];
-    snprintf(tmp, sizeof tmp, "%s/out.png", dir);
+    if ((size_t)snprintf(tmp, tmp_sz, "%s/out.png", dir) >= tmp_sz) {
+        rmdir(dir);
+        return -1;
+    }
 
     pid_t pid = fork();
     if (pid < 0) {
         rmdir(dir);
-        return NULL;
+        return -1;
     }
     if (pid == 0) {
         int null = open("/dev/null", O_WRONLY);
@@ -122,19 +179,7 @@ static char *convert_to_png(const char *path)
         execlp("sips", "sips", "-s", "format", "png", path, "--out", tmp, (char *)NULL);
         _exit(127);
     }
-
-    int status = 0;
-    if (waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-        unlink(tmp);
-        rmdir(dir);
-        return NULL;
-    }
-    char *out = strdup(tmp);
-    if (!out) {
-        unlink(tmp);
-        rmdir(dir);
-    }
-    return out;
+    return pid;
 }
 
 static void discard_temp_png(const char *file)
@@ -182,57 +227,9 @@ static uint32_t next_id(void)
            (uint32_t)(0x40 | (counter++ & 0x3F));
 }
 
-int image_show(const char *path, int indent)
+static void write_placeholders(uint32_t id, int indent, int cols, int rows)
 {
-    if (!image_available() || !path || !*path)
-        return 0;
-
-    char *expanded = path_expand_home(path);
-    const char *file = expanded ? expanded : path;
-
-    size_t len = 0;
-    unsigned char *data = load_file(file, &len);
-    char *converted = NULL;
-
-    if (data && !is_png(data, len)) {
-        free(data);
-        data = NULL;
-        if ((converted = convert_to_png(file)) != NULL)
-            data = load_file(converted, &len);
-    }
-
-    free(expanded);
-    if (converted) {
-        discard_temp_png(converted);
-        free(converted);
-    }
-    if (!data)
-        return 0;
-
-    int img_w = 0, img_h = 0;
-    if (!png_dims(data, len, &img_w, &img_h)) {
-        free(data);
-        return 0;
-    }
-
-    int cw, ch, term_rows;
-    cell_pixels(&cw, &ch, &term_rows);
-
-    int cols_box = ui_columns() - indent;
-    int rows_box = term_rows - 4 < max_rows ? term_rows - 4 : max_rows;
-    if (cols_box < 4 || rows_box < 2) {
-        free(data);
-        return 0;
-    }
-
-    int cols, rows;
-    kg_fit_cells(img_w, img_h, cw, ch, cols_box, rows_box, &cols, &rows, NULL, NULL);
-
-    uint32_t id = next_id();
-    kg_transmit_png(id, data, len);
-    free(data);
     kg_virtual_place(id, cols, rows);
-
     kg_placeholder_redraw_begin();
     for (int r = 0; r < rows; r++) {
         for (int i = 0; i < indent; i++)
@@ -244,5 +241,158 @@ int image_show(const char *path, int indent)
     }
     kg_placeholder_redraw_end();
     ui_flush();
+}
+
+static int box_size(int indent, int img_w, int img_h, int *cols, int *rows)
+{
+    int cw, ch, term_rows;
+    cell_pixels(&cw, &ch, &term_rows);
+
+    int cols_box = ui_columns() - indent;
+    int rows_box = term_rows - 4 < max_rows ? term_rows - 4 : max_rows;
+    if (cols_box < 4 || rows_box < 2)
+        return 0;
+    if (img_w > 0 && img_h > 0)
+        kg_fit_cells(img_w, img_h, cw, ch, cols_box, rows_box, cols, rows, NULL, NULL);
+    else {
+        *cols = cols_box < 48 ? cols_box : 48;
+        *rows = rows_box < 8 ? rows_box : 8;
+    }
+    return *cols > 0 && *rows > 0;
+}
+
+static int show_png(const unsigned char *data, size_t len, const char *path, time_t mtime,
+                    int indent)
+{
+    int img_w = 0, img_h = 0;
+    if (!png_dims(data, len, &img_w, &img_h))
+        return 0;
+
+    int cols, rows;
+    if (!box_size(indent, img_w, img_h, &cols, &rows))
+        return 0;
+
+    uint32_t id = next_id();
+    kg_transmit_png(id, data, len);
+    write_placeholders(id, indent, cols, rows);
+    if (path)
+        cache_store(path, mtime, id, cols, rows);
     return 1;
+}
+
+static int start_convert(const char *path, time_t mtime, int indent)
+{
+    int slot = -1;
+    for (int i = 0; i < PENDING_MAX; i++) {
+        if (pending[i].live && strcmp(pending[i].src, path) == 0 &&
+            pending[i].mtime == mtime) {
+            write_placeholders(pending[i].id, indent, 40, 8);
+            return 1;
+        }
+        if (!pending[i].live && slot < 0)
+            slot = i;
+    }
+    if (slot < 0)
+        return 0;
+
+    char tmp[4200];
+    pid_t pid = convert_start(path, tmp, sizeof tmp);
+    if (pid < 0)
+        return 0;
+
+    int cols, rows;
+    if (!box_size(indent, 0, 0, &cols, &rows)) {
+        kill(pid, SIGTERM);
+        waitpid(pid, NULL, 0);
+        discard_temp_png(tmp);
+        return 0;
+    }
+
+    uint32_t id = next_id();
+    pending[slot].live = 1;
+    pending[slot].id = id;
+    pending[slot].pid = pid;
+    snprintf(pending[slot].tmp, sizeof pending[slot].tmp, "%s", tmp);
+    snprintf(pending[slot].src, sizeof pending[slot].src, "%s", path);
+    pending[slot].mtime = mtime;
+    write_placeholders(id, indent, cols, rows);
+    cache_store(path, mtime, id, cols, rows);
+    return 1;
+}
+
+int image_show(const char *path, int indent)
+{
+    if (!image_available() || !path || !*path)
+        return 0;
+
+    char *expanded = path_expand_home(path);
+    const char *file = expanded ? expanded : path;
+    time_t mtime = file_mtime(file);
+
+    struct img_cache *hit = cache_find(file, mtime);
+    if (hit) {
+        write_placeholders(hit->id, indent, hit->cols, hit->rows);
+        free(expanded);
+        return 1;
+    }
+
+    size_t len = 0;
+    unsigned char *data = load_file(file, &len);
+    int ok = 0;
+    if (data && is_png(data, len)) {
+        ok = show_png(data, len, file, mtime, indent);
+    } else if (data) {
+        ok = start_convert(file, mtime, indent);
+    }
+    free(data);
+    free(expanded);
+    return ok;
+}
+
+static void finish_pending(struct pending *p, int status)
+{
+    p->live = 0;
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        size_t len = 0;
+        unsigned char *data = load_file(p->tmp, &len);
+        if (data)
+            kg_transmit_png(p->id, data, len);
+        free(data);
+    }
+    discard_temp_png(p->tmp);
+}
+
+void image_poll(void)
+{
+    for (int i = 0; i < PENDING_MAX; i++) {
+        struct pending *p = &pending[i];
+        if (!p->live)
+            continue;
+        int status = 0;
+        pid_t r = waitpid(p->pid, &status, WNOHANG);
+        if (r == 0)
+            continue;
+        if (r == p->pid)
+            finish_pending(p, status);
+        else {
+            p->live = 0;
+            discard_temp_png(p->tmp);
+        }
+    }
+}
+
+void image_wait(void)
+{
+    for (int i = 0; i < PENDING_MAX; i++) {
+        struct pending *p = &pending[i];
+        if (!p->live)
+            continue;
+        int status = 0;
+        if (waitpid(p->pid, &status, 0) == p->pid)
+            finish_pending(p, status);
+        else {
+            p->live = 0;
+            discard_temp_png(p->tmp);
+        }
+    }
 }

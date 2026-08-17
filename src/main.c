@@ -82,10 +82,7 @@ static void offer_project_trust(struct session *s)
 
 static int idle_render(void *ud)
 {
-    struct session *s = ud;
-    int busy = session_idle_pump(s);
-    offer_project_trust(s);
-    return busy;
+    return session_idle_pump(ud);
 }
 static int idle_busy(void *ud)   { return session_idle_busy(ud); }
 static void replay(void *ud)      { session_replay(ud); }

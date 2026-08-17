@@ -46,7 +46,13 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
     ui_esc(ui_style(UI_RESET));
     ui_put(" ");
     ui_esc(ui_style(UI_DIM));
-    ui_put(title);
+    {
+        size_t title_budget = columns > 3 ? (size_t)(columns - 3) : 1;
+        size_t title_n = ui_fit_bytes(title, title_budget);
+        ui_putn(title, title_n);
+        if (title[title_n])
+            ui_put("…");
+    }
     ui_esc(ui_style(UI_RESET));
     ui_put("\r\n");
     rows++;
@@ -60,9 +66,15 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
         ui_esc(ui_style(selected ? UI_ACCENT : UI_RESET));
         ui_put(selected ? "  \xe2\x86\x92 " : "    ");
 
-        size_t used = 4 + ui_cells(items[i].label);
-        ui_put(items[i].label);
+        size_t label_budget = columns > 5 ? (size_t)(columns - 5) : 1;
+        size_t label_n = ui_fit_bytes(items[i].label, label_budget);
+        ui_putn(items[i].label, label_n);
+        if (items[i].label[label_n])
+            ui_put("…");
         ui_esc(ui_style(UI_RESET));
+
+        size_t used = 4 + ui_cells_n(items[i].label, label_n) +
+                      (items[i].label[label_n] ? 1 : 0);
 
         if (items[i].detail && *items[i].detail) {
             int budget = columns - (int)used - 4;
@@ -70,7 +82,8 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
                 ui_put("  ");
                 ui_esc(ui_style(UI_DIM));
                 size_t skip = 0;
-                size_t fit = ui_wrap_row(items[i].detail, (size_t)budget, &skip);
+                size_t fit = ui_wrap_row(items[i].detail, strlen(items[i].detail),
+                                         (size_t)budget, &skip, NULL);
                 ui_putn(items[i].detail, fit);
                 if (items[i].detail[fit])
                     ui_put("…");

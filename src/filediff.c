@@ -176,7 +176,7 @@ static void print_row(const struct op *op)
     diff_text(op->p, op->n, text, sizeof text);
 
     size_t skip = 0;
-    size_t fit = ui_wrap_row(text, (size_t)budget, &skip);
+    size_t fit = ui_wrap_row(text, strlen(text), (size_t)budget, &skip, NULL);
 
     ui_put("    ");
     ui_esc(ui_style(role));

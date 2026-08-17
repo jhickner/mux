@@ -1,5 +1,6 @@
 
 #include <stdio.h>
+#include <string.h>
 
 #include "ui.h"
 
@@ -48,8 +49,17 @@ int main(void)
     expect((int)ui_cells(NULL), 0, "NULL measures zero");
 
     size_t skip = 0;
-    expect((int)ui_wrap_row("\xe4\xb8\xad", 1, &skip), 3, "too-wide glyph is consumed");
+    expect((int)ui_wrap_row("\xe4\xb8\xad", 3, 1, &skip, NULL), 3, "too-wide glyph is consumed");
     expect((int)skip, 0, "and reports no skip");
+
+    char long_line[201];
+    memset(long_line, 'x', 200);
+    long_line[200] = '\0';
+    size_t cells = 0;
+    size_t first = ui_wrap_row(long_line, 200, 10, &skip, &cells);
+    expect((int)first, 10, "long row uses the given length, not strlen");
+    expect((int)cells, 10, "wrap reports the row's cell count");
+    expect((int)skip, 0, "no space means no skip");
 
     struct ui_wrap w = {0};
     w.budget = 10;
