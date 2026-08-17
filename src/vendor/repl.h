@@ -862,6 +862,8 @@ static void accept_completion(Repl *r, int idx) {
     if (!suffix) return;
     int suffix_len = (int)strlen(suffix);
     int tlen = (int)strlen(text);
+    char accepted[REPL_CAND_TEXT];
+    snprintf(accepted, sizeof accepted, "%s", text);
     bool add_space = r->cand_is_command && suffix[0] != ' ';
     // A directory keeps the list up so the next segment can be narrowed; any
     // other candidate is complete, so the list gets out of the way. (Both are
@@ -885,6 +887,17 @@ static void accept_completion(Repl *r, int idx) {
     if (!keep_open) {
         r->dropdown_open = false;
         r->sel = -1;
+    } else if (r->dropdown_open) {
+        // Descending into a directory reopens the list with that directory
+        // still at the top. Highlight the first candidate that would actually
+        // change the line, so Tab keeps walking inwards and Enter keeps
+        // picking rather than submitting.
+        for (int i = 0; i < r->cand_count; i++) {
+            if (strcmp(r->cands[i].text, accepted) != 0) {
+                r->sel = i;
+                break;
+            }
+        }
     }
 }
 
