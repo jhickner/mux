@@ -741,6 +741,7 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
 
     case TK_TEXT:
         if (ev->text) {
+            p->frame_ok = 0;
             repl_insert_text(&p->repl, ev->text);
             free(ev->text);
             ev->text = NULL;
