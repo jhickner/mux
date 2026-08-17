@@ -9,6 +9,10 @@ struct session;
 typedef int (*session_key_fn)(void *ud, tty_event *ev);
 void session_set_typeahead(session_key_fn fn, void *ud);
 
+/* Drains the keyboard into the live prompt while work is in flight, returning
+   nonzero when the user asked to interrupt. Main thread only. */
+int session_poll_input(void);
+
 struct session *session_new(const char *backend, const char *cwd, const char *model,
                             const char *effort);
 void            session_free(struct session *s);

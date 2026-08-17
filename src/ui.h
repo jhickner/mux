@@ -44,9 +44,24 @@ enum ui_group {
 #define UI_PASTE_ON     "\x1b[?2004h"
 #define UI_PASTE_OFF    "\x1b[?2004l"
 
+/* The alternate screen: what is painted on it never enters the scrollback and
+   never scrolls the history, so a full-screen view can repaint as often as it
+   likes and leave the transcript exactly as it found it. */
+#define UI_ALT_ON       "\x1b[?1049h"
+#define UI_ALT_OFF      "\x1b[?1049l"
+#define UI_HOME         "\x1b[H"
+
 /* Paints the HUD rows for the given width and returns how many it drew. The
-   idle (prompt) and busy (status) paths share this signature. */
-typedef int (*ui_hud_fn)(void *ud, int cols);
+   idle (prompt) and busy (status) paths share this signature.
+
+   A painter also records each row's painted cell width in `widths` (up to
+   `max` entries; either may be zero). The terminal re-wraps what is already on
+   screen when it narrows, so a caller that has to erase the block later can
+   only find its top again by re-wrapping those widths to the current size —
+   without them a resize leaves the old rows behind. */
+typedef int (*ui_hud_fn)(void *ud, int cols, int *widths, int max);
+
+#define UI_HUD_ROWS_MAX 32
 
 void        ui_init(void);
 
@@ -85,6 +100,25 @@ size_t ui_cells(const char *s);
 size_t ui_cells_n(const char *s, size_t n);
 
 size_t ui_wrap_row(const char *s, size_t budget, size_t *skip);
+
+/* How many bytes of s fit in `budget` cells, never splitting a character. */
+size_t ui_fit_bytes(const char *s, size_t budget);
+
+/* As ui_cells_n, for text that carries its own SGR escapes. */
+size_t ui_cells_visible(const char *s, size_t n);
+
+/* As ui_fit_bytes, for text that carries its own SGR escapes: the escapes cost
+   no cells and are kept, so the clipped text still ends in the right style. */
+size_t ui_fit_visible(const char *s, size_t n, size_t budget);
+
+/* Collects everything painted until ui_capture_end() into a string instead of
+   writing it to the terminal, with ui_columns() reporting `columns` for the
+   duration. Lets a painter that lays out to the full width — md_render, say —
+   be run at the width of something narrower, such as one column of a board.
+   Newlines stay bare and scroll tracking is suspended. Returns the captured
+   text, which the caller frees; NULL when nothing was captured. */
+void  ui_capture_begin(int columns);
+char *ui_capture_end(void);
 
 /* One description of a wrapped block, shared by every painter so that the code
    which paints a block and the code which later counts its rows cannot drift.

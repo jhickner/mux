@@ -107,92 +107,6 @@ static void humanize(long n, char *out, size_t size)
         snprintf(out, size, "%.1fM", (double)n / 1000000.0);
 }
 
-static const char *shorten_path(const struct session *s, const char *value, char *scratch,
-                                size_t size)
-{
-    if (value[0] != '/')
-        return value;
-    if (s->cwd) {
-        size_t n = strlen(s->cwd);
-        if (strncmp(value, s->cwd, n) == 0 && value[n] == '/')
-            return value + n + 1;
-    }
-    const char *home = getenv("HOME");
-    if (home && *home) {
-        size_t n = strlen(home);
-        if (strncmp(value, home, n) == 0 && value[n] == '/') {
-            snprintf(scratch, size, "~/%s", value + n + 1);
-            return scratch;
-        }
-    }
-    return value;
-}
-
-/* One list for both readers: tool_argument takes the first match in this order,
-   tool_path considers only the entries flagged as naming a file. */
-static const struct {
-    const char *key;
-    int         is_path;
-} TOOL_ARG_KEYS[] = {
-    {"command", 0},          {"file_path", 1}, {"target_file", 1},
-    {"path", 1},             {"target_directory", 0},
-    {"pattern", 0},          {"url", 0},       {"query", 0},
-    {"prompt", 0},           {"description", 0},
-    {"notebook_path", 1},
-};
-
-static void tool_argument(const struct session *s, const backend_event *ev, char *out, size_t size)
-{
-    char arg[4096] = "";
-
-    if (ev->input_json) {
-        cJSON *input = cJSON_Parse(ev->input_json);
-        if (input) {
-            for (size_t i = 0; i < COUNT(TOOL_ARG_KEYS); i++) {
-                const char *v =
-                    cJSON_GetStringValue(cJSON_GetObjectItem(input, TOOL_ARG_KEYS[i].key));
-                if (v && *v) {
-                    char scratch[1024];
-                    text_one_line(shorten_path(s, v, scratch, sizeof scratch), arg, sizeof arg);
-                    break;
-                }
-            }
-            cJSON_Delete(input);
-        }
-    } else if (ev->arg) {
-        text_one_line(ev->arg, arg, sizeof arg);
-    }
-    snprintf(out, size, "%s", arg);
-}
-
-static int tool_path(const struct session *s, const char *input_json, char *out, size_t size)
-{
-    if (!input_json)
-        return 0;
-
-    cJSON *input = cJSON_Parse(input_json);
-    if (!input)
-        return 0;
-
-    const char *found = NULL;
-    for (size_t i = 0; i < COUNT(TOOL_ARG_KEYS) && !found; i++) {
-        if (!TOOL_ARG_KEYS[i].is_path)
-            continue;
-        const char *v =
-            cJSON_GetStringValue(cJSON_GetObjectItem(input, TOOL_ARG_KEYS[i].key));
-        if (v && *v)
-            found = v;
-    }
-    if (found) {
-        if (found[0] == '/')
-            snprintf(out, size, "%s", found);
-        else
-            snprintf(out, size, "%s/%s", s->cwd ? s->cwd : ".", found);
-    }
-    cJSON_Delete(input);
-    return found != NULL;
-}
-
 static struct session *live;
 
 static void remember_model(const struct session *s);
@@ -249,7 +163,7 @@ static void on_event(void *ud, const backend_event *ev)
     case BACKEND_EV_TOOL: {
         const char *name = ev->name ? ev->name : "?";
         char arg[4096];
-        tool_argument(s, ev, arg, sizeof arg);
+        view_tool_argument(ev, s->cwd, arg, sizeof arg);
         int collapsed = s->compact || toolstyle_collapses(name, ev->input_json, ev->arg);
 
         status_pause();
@@ -269,7 +183,7 @@ static void on_event(void *ud, const backend_event *ev)
         status_resume();
 
         char path[4096];
-        if (!collapsed && tool_path(s, ev->input_json, path, sizeof path))
+        if (!collapsed && view_tool_path(ev->input_json, s->cwd, path, sizeof path))
             filediff_snapshot(path);
         else
             filediff_clear();
@@ -458,13 +372,8 @@ static void set_spin_word(const struct session *s)
     status_set_word(phrase);
 }
 
-static int abort_check(void)
+int session_poll_input(void)
 {
-    name_poll(live);
-    quota_poll(live);
-    if (live)
-        set_spin_word(live);
-
     if (!tty_is_raw())
         return 0;
 
@@ -484,6 +393,17 @@ static int abort_check(void)
         if (ev.key == TK_EOF)
             interrupt = 1;
     }
+    return interrupt;
+}
+
+static int abort_check(void)
+{
+    name_poll(live);
+    quota_poll(live);
+    if (live)
+        set_spin_word(live);
+
+    int interrupt = session_poll_input();
 
     status_tick();
     return interrupt;
@@ -1183,7 +1103,8 @@ void session_report(const struct session *s)
         ui_note("  session  %s", s->id);
 
     char scratch[512];
-    const char *dir = s->cwd ? shorten_path(s, s->cwd, scratch, sizeof scratch) : ".";
+    path_home_relative(s->cwd, scratch, sizeof scratch);
+    const char *dir = s->cwd ? scratch : ".";
     int room = ui_columns() - 12;
     size_t cells = ui_cells(dir);
     if (room > 8 && cells > (size_t)room) {

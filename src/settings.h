@@ -8,6 +8,8 @@
 #define SETTING_STICKY     "sticky"
 #define SETTING_IMAGE_ROWS "image_rows"
 
+#define SETTING_MUX_BACKENDS "mux_backends"
+
 #define SETTING_COLOR_INPUT    "color_input"
 #define SETTING_COLOR_EMPHASIS "color_emphasis"
 

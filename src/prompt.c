@@ -48,6 +48,7 @@ struct prompt {
     ui_hud_fn hud;
     void         *hud_ud;
     int           painted_hud;
+    int           painted_hud_widths[UI_HUD_ROWS_MAX];
     int        (*idle_fd)(void *ud);
     int        (*idle_render)(void *ud);
     int        (*idle_busy)(void *ud);
@@ -262,7 +263,11 @@ static int caret_offset(const struct prompt *p, int cols)
                             cols, STICKY_LINES, STICKY_DONE) + 1;
     for (int i = 0; i < p->queued_count; i++)
         up += reflowed_rows(p->queued[i], budget, cols, 0, NULL);
-    up += p->painted_hud;
+    /* Re-wrapped like everything else above the caret: the HUD rows were
+       painted at painted_cols and the terminal has since re-wrapped them. */
+    int hud_known = p->painted_hud < UI_HUD_ROWS_MAX ? p->painted_hud : UI_HUD_ROWS_MAX;
+    up += ui_reflow_rows(p->painted_hud_widths, hud_known, cols) +
+          (p->painted_hud - hud_known);
     for (int y = 0; y < p->caret_frame_row && y < p->frame.rows; y++)
         up += rows_for((size_t)row_extent(&p->frame, y), cols);
     return up + p->caret_col / cols;
@@ -359,7 +364,9 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
 
     paint_above(p, head, cols);
 
-    p->painted_hud = p->hud && !p->live_block ? p->hud(p->hud_ud, cols) : 0;
+    p->painted_hud = p->hud && !p->live_block
+                   ? p->hud(p->hud_ud, cols, p->painted_hud_widths, UI_HUD_ROWS_MAX)
+                   : 0;
     above += p->painted_hud;
     *rows_out += p->painted_hud;
     *caret_row = above;

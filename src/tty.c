@@ -296,6 +296,8 @@ static void decode_csi(tty_event *ev, const int *params, int nparams, int final)
         case 1: case 7: emit(ev, TK_HOME); return;
         case 3:         emit(ev, TK_DELETE); return;
         case 4: case 8: emit(ev, TK_END); return;
+        case 5:         emit(ev, TK_PAGE_UP); return;
+        case 6:         emit(ev, TK_PAGE_DOWN); return;
         default:        emit(ev, TK_ESCAPE); return;
         }
     default:

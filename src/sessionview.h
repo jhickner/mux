@@ -2,7 +2,10 @@
 #ifndef SESSIONVIEW_H
 #define SESSIONVIEW_H
 
+#include <stddef.h>
+
 #include "ui.h"
+#include "vendor/agents/backend.h"
 
 /* How the current turn is being drawn. Consecutive identical tool calls are
    collapsed onto one line that is rewritten in place, so the view has to
@@ -22,6 +25,14 @@ void view_free(struct turnview *v);
 
 /* Ends any in-progress cluster; the next tool call starts a fresh one. */
 void view_cluster_forget(struct turnview *v);
+
+/* The one argument worth showing for a tool call, on one line, with `cwd`
+   dropped from any path so a column or a narrow terminal is not filled with the
+   same prefix. */
+void view_tool_argument(const backend_event *ev, const char *cwd, char *out, size_t size);
+
+/* The file a tool call names, absolute, or 0 when it names none. */
+int  view_tool_path(const char *input_json, const char *cwd, char *out, size_t size);
 
 /* Marker plus wrapped text, indented under the tool column. */
 void view_activity(const char *marker, const char *text, enum ui_role role);

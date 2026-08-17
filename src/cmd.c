@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "app.h"
+#include "fanout.h"
 #include "pick.h"
 #include "session.h"
 #include "image.h"
@@ -22,6 +23,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/model", "switch model", "[name]"},
     {"/effort", "set reasoning/thinking effort", "[level]"},
     {"/backend", "continue with another backend", "<name>"},
+    {"/mux", "ask several backends the same thing", "<prompt>"},
     {"/thinking", "show or hide the model's reasoning", "[on|off]"},
     {"/tools", "how much of each tool call to show", "[compact|full]"},
     {"/sticky", "float the prompt above the spinner", "[on|off]"},
@@ -390,6 +392,16 @@ static void do_permission(struct session *s, const char *arg)
     reply_note("tool calls: %s", session_permission_desc(index));
 }
 
+static void do_mux(struct session *s, const char *arg)
+{
+    if (!arg || !*arg) {
+        reply_note("/mux <prompt> — asks %s the same thing at once",
+                   settings_get_str(SETTING_MUX_BACKENDS, "claude, codex, grok"));
+        return;
+    }
+    fanout_run(s, arg);
+}
+
 /* Reads an on/off style argument, defaulting to flipping `current`. Returns -1
    and reports the problem when the word is not one of the two. */
 static int toggle_arg(const char *arg, const char *on_word, const char *off_word,
@@ -612,6 +624,8 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line)
         do_effort(s, arg);
     } else if (!strcmp(name, "/backend")) {
         do_backend(s, arg);
+    } else if (!strcmp(name, "/mux")) {
+        do_mux(s, arg);
     } else if (!strcmp(name, "/thinking")) {
         do_thinking(s, arg);
     } else if (!strcmp(name, "/image")) {

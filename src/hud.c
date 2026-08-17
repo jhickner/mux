@@ -18,28 +18,16 @@ struct seg {
     enum ui_role  role;
 };
 
-static size_t fit_bytes(const char *s, size_t budget)
-{
-    size_t n = 0, fit = 0;
-    while (s[n]) {
-        n++;
-        while (((unsigned char)s[n] & 0xC0) == 0x80)
-            n++;
-        if (ui_cells_n(s, n) > budget)
-            break;
-        fit = n;
-    }
-    return fit;
-}
-
-static void paint_row(const struct seg *segs, int count, int cols)
+/* Returns the row's painted width in cells. */
+static int paint_row(const struct seg *segs, int count, int cols)
 {
     size_t budget = (size_t)(cols > 1 ? cols - 1 : 1);
+    size_t room = budget;
     ui_esc("\x1b[K");
     for (int i = 0; i < count && budget > 0; i++) {
         if (!segs[i].text || !*segs[i].text)
             continue;
-        size_t bytes = fit_bytes(segs[i].text, budget);
+        size_t bytes = ui_fit_bytes(segs[i].text, budget);
         if (bytes == 0)
             break;
         ui_esc(ui_style(segs[i].role));
@@ -48,9 +36,10 @@ static void paint_row(const struct seg *segs, int count, int cols)
     }
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");
+    return (int)(room - budget);
 }
 
-static void row_identity(const struct session *s, int cols)
+static int row_identity(const struct session *s, int cols)
 {
     const char *backend = session_backend(s);
     const char *model = session_model_short(s, session_model_label(s));
@@ -65,10 +54,10 @@ static void row_identity(const struct session *s, int cols)
         {APP_NAME,   UI_BOLD},
         {tail,       UI_DIM},
     };
-    paint_row(segs, (int)(sizeof segs / sizeof *segs), cols);
+    return paint_row(segs, (int)(sizeof segs / sizeof *segs), cols);
 }
 
-static void row_location(const struct session *s, int cols)
+static int row_location(const struct session *s, int cols)
 {
     char path[1024];
     path_home_relative(session_cwd(s), path, sizeof path);
@@ -101,33 +90,40 @@ static void row_location(const struct session *s, int cols)
         {flags,                   UI_ERROR},
         {ctx,                     UI_DIM},
     };
-    paint_row(segs, (int)(sizeof segs / sizeof *segs), cols);
+    return paint_row(segs, (int)(sizeof segs / sizeof *segs), cols);
 }
 
-int hud_paint_busy(void *ud, int cols)
+static void note_width(int *widths, int max, int row, int width)
+{
+    if (widths && row < max)
+        widths[row] = width;
+}
+
+int hud_paint_busy(void *ud, int cols, int *widths, int max)
 {
     const struct session *s = ud;
     if (!s)
         return 0;
-    row_identity(s, cols);
-    row_location(s, cols);
+    note_width(widths, max, 0, row_identity(s, cols));
+    note_width(widths, max, 1, row_location(s, cols));
 
     ui_esc("\x1b[K");
     ui_put("\n");
+    note_width(widths, max, 2, 0);
     return 3;
 }
 
-int hud_paint_idle(void *ud, int cols)
+int hud_paint_idle(void *ud, int cols, int *widths, int max)
 {
     const struct session *s = ud;
-    int rows = hud_paint_busy(ud, cols);
+    int rows = hud_paint_busy(ud, cols, widths, max);
     if (!rows)
         return 0;
 
     const char *footer = session_footer(s);
     if (footer) {
         struct seg segs[] = {{footer, UI_DIM}};
-        paint_row(segs, 1, cols);
+        note_width(widths, max, rows, paint_row(segs, 1, cols));
         rows++;
     }
     return rows;
