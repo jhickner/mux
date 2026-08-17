@@ -96,18 +96,7 @@ CHECKS  := reflowtest toolstyletest sessionlisttest claudetest codextest \
            sessionviewtest
 
 check: $(addprefix $(BUILD)/,$(CHECKS))
-	$(BUILD)/reflowtest
-	$(BUILD)/toolstyletest
-	$(BUILD)/sessionlisttest
-	$(BUILD)/claudetest
-	$(BUILD)/codextest
-	$(BUILD)/groktest
-	$(BUILD)/filedifftest
-	$(BUILD)/pitest
-	$(BUILD)/agenttabstest
-	$(BUILD)/statustest
-	$(BUILD)/transcripttest
-	$(BUILD)/sessionviewtest
+	@for t in $^; do echo "$$t"; ./$$t || exit 1; done
 
 install: $(BIN)
 	install -d $(PREFIX)/bin
