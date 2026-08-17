@@ -46,10 +46,6 @@ struct prompt {
     int          queued_count;
     int          queued_cap;
     char        *file_root;
-    ui_hud_fn hud;
-    void         *hud_ud;
-    int           painted_hud;
-    int           painted_hud_widths[UI_HUD_ROWS_MAX];
     int        (*idle_fd)(void *ud);
     int        (*idle_render)(void *ud);
     int        (*idle_busy)(void *ud);
@@ -269,9 +265,6 @@ static int caret_offset(const struct prompt *p, int cols)
     for (int i = 0; i < p->queued_count; i++)
         up += reflowed_rows(p->queued[i], budget, cols, 0, NULL);
 
-    int hud_known = p->painted_hud < UI_HUD_ROWS_MAX ? p->painted_hud : UI_HUD_ROWS_MAX;
-    up += ui_reflow_rows(p->painted_hud_widths, hud_known, cols) +
-          (p->painted_hud - hud_known);
     return up + input_offset(p, cols);
 }
 
@@ -297,7 +290,6 @@ static void erase_block(struct prompt *p)
     p->painted_rows = 0;
     free(p->painted_head);
     p->painted_head = NULL;
-    p->painted_hud = 0;
 }
 
 static void erase_input(struct prompt *p)
@@ -313,7 +305,6 @@ static void erase_input(struct prompt *p)
     p->painted_rows = 0;
     free(p->painted_head);
     p->painted_head = NULL;
-    p->painted_hud = 0;
 }
 
 static int caret_is_synthetic(const Repl *r)
@@ -372,7 +363,6 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
         p->painted_cols = cols;
         free(p->painted_head);
         p->painted_head = NULL;
-        p->painted_hud = 0;
         p->caret_row = p->caret_col = p->caret_frame_row = 0;
         return;
     }
@@ -382,11 +372,6 @@ static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *ca
 
     paint_above(p, head, cols);
 
-    p->painted_hud = p->hud && !p->live_block
-                   ? p->hud(p->hud_ud, cols, p->painted_hud_widths, UI_HUD_ROWS_MAX)
-                   : 0;
-    above += p->painted_hud;
-    *rows_out += p->painted_hud;
     *caret_row = above;
 
     *caret_row += p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
@@ -843,7 +828,9 @@ static void idle_ready_hook(void *ud)
     if (!p || !p->idle_render)
         return;
     erase_block(p);
+    tty_watch(NULL, NULL, NULL);
     p->idle_render(p->idle_ud);
+    tty_watch(idle_fd_hook, idle_ready_hook, p);
     repaint(p);
 }
 
@@ -945,12 +932,6 @@ void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud)
 {
     p->replay = fn;
     p->replay_ud = ud;
-}
-
-void prompt_set_hud(struct prompt *p, ui_hud_fn fn, void *ud)
-{
-    p->hud = fn;
-    p->hud_ud = ud;
 }
 
 void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud)

@@ -13,8 +13,6 @@ typedef int  (*status_offset_fn)(void *ud);
 
 void   status_set_below(status_paint_fn paint, status_offset_fn offset, void *ud);
 
-void   status_set_hud(ui_hud_fn paint, void *ud);
-
 int    status_chrome_rows(void);
 
 void   status_set_word(const char *text);

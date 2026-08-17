@@ -22,8 +22,6 @@ void prompt_live_paint(void *ud, int *rows, int *caret_row, int *caret_col);
 
 int  prompt_live_offset(void *ud);
 
-void prompt_set_hud(struct prompt *p, ui_hud_fn fn, void *ud);
-
 void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud);
 
 typedef int (*prompt_live_fn)(void *ud, const char *line);

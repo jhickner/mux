@@ -8,10 +8,10 @@
 
 #include "agenttabs.h"
 #include "app.h"
-#include "banner.h"
 #include "prompt.h"
 #include "filediff.h"
 #include "gitinfo.h"
+#include "hud.h"
 #include "image.h"
 #include "md.h"
 #include "sessionprefs.h"
@@ -53,13 +53,12 @@ struct session {
     long     context_window;
     int      quiet;
     int      skip_naming;
-    char     footer[384];
-    int      hold_footer;
     int      thinking;
     int      compact;
     int      customizations;
     char    *permission;
     int      idle_busy;
+    int      trust_requested;
 
     struct turnview view;
 };
@@ -126,12 +125,23 @@ static void on_event(void *ud, const backend_event *ev)
         return;
     }
 
+    if (ev->kind == BACKEND_EV_TRUST) {
+        s->trust_requested = 1;
+        return;
+    }
+
     if (s->quiet || !live)
         return;
 
     switch (ev->kind) {
     case BACKEND_EV_INIT:
     case BACKEND_EV_CWD:
+    case BACKEND_EV_TRUST:
+        break;
+
+    case BACKEND_EV_WARNING:
+        if (ev->text && *ev->text)
+            ui_note("%s", ev->text);
         break;
 
     case BACKEND_EV_ASSISTANT:
@@ -435,7 +445,7 @@ struct session *session_new(const char *backend, const char *cwd, const char *mo
 void session_replay(struct session *s)
 {
     ui_esc(UI_CLEAR_SCREEN);
-    banner_hints();
+    hud_print(s);
     if (!s)
         return;
     for (size_t i = 0; i < s->transcript.count; i++) {
@@ -552,7 +562,6 @@ int session_switch_backend(struct session *s, const char *backend)
     s->turns = 0;
     s->cost_usd = 0;
     s->context_tokens = 0;
-    s->footer[0] = '\0';
     s->context_window = 0;
     if (previous)
         previous->close(previous);
@@ -564,13 +573,6 @@ int session_switch_backend(struct session *s, const char *backend)
 void session_set_quiet(struct session *s, int quiet) { s->quiet = quiet; }
 
 void session_set_naming(struct session *s, int on) { s->skip_naming = !on; }
-
-void session_hold_footer(struct session *s, int on) { s->hold_footer = on; }
-
-const char *session_footer(const struct session *s)
-{
-    return s->footer[0] ? s->footer : NULL;
-}
 
 void session_set_thinking(struct session *s, int on) { s->thinking = on; }
 
@@ -613,6 +615,22 @@ static int restart(struct session *s, const char *resume_id)
 }
 
 int session_start(struct session *s) { return restart(s, s->id[0] ? s->id : NULL); }
+
+int session_trust_project(struct session *s)
+{
+    Backend *b = agent(s);
+    if (!b || !b->trust_project || !b->trust_project(b, s->cwd))
+        return 0;
+    return restart(s, s->id[0] ? s->id : NULL);
+}
+
+int session_take_trust_request(struct session *s)
+{
+    if (!s || !s->trust_requested)
+        return 0;
+    s->trust_requested = 0;
+    return 1;
+}
 
 int session_set_model(struct session *s, const char *model)
 {
@@ -743,7 +761,6 @@ int session_resume(struct session *s, const char *id)
     s->turns = 0;
     s->cost_usd = 0;
     s->context_tokens = 0;
-    s->footer[0] = '\0';
     replace(&s->last_reply, NULL);
     replace(&s->failed_prompt, NULL);
     transcript_clear(&s->transcript);
@@ -757,7 +774,6 @@ int session_clear(struct session *s)
     s->turns = 0;
     s->cost_usd = 0;
     s->context_tokens = 0;
-    s->footer[0] = '\0';
     replace(&s->last_reply, NULL);
     replace(&s->failed_prompt, NULL);
     replace(&s->last_block, NULL);
@@ -823,11 +839,6 @@ static void print_footer(struct session *s, double elapsed)
             wrapped = 1;
     }
     #undef APPEND
-
-    snprintf(s->footer, sizeof s->footer, "%s%s%s", line,
-             wrapped ? " · " : "", wrapped ? s->title : "");
-    if (s->hold_footer)
-        return;
 
     ui_esc(ui_style(UI_DIM));
     ui_put(line);

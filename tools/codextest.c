@@ -13,6 +13,10 @@ static long live_tokens, live_window;
 static int shell_starts, edit_starts, tool_results;
 static char shell_input[2][1024], shell_output[512], exec_output[1024];
 static char edit_input[1024], edit_diff[1024];
+static int warning_events;
+static char warning_text[1024];
+static int trust_events;
+static char trust_path[1024];
 
 static long milliseconds(void)
 {
@@ -48,6 +52,12 @@ static void capture_event(void *ud, const codex_event *ev)
         } else {
             snprintf(exec_output, sizeof exec_output, "%s", ev->text ? ev->text : "");
         }
+    } else if (ev->kind == CODEX_EV_TRUST) {
+        trust_events++;
+        snprintf(trust_path, sizeof trust_path, "%s", ev->text ? ev->text : "");
+    } else if (ev->kind == CODEX_EV_WARNING) {
+        warning_events++;
+        snprintf(warning_text, sizeof warning_text, "%s", ev->text ? ev->text : "");
     }
 }
 
@@ -87,6 +97,16 @@ static int mock_server(void)
             }
             usleep(400000);
             respond(id, "{}");
+            fputs("timestamp ERROR codex_app_server: Project-local config, hooks, and "
+                  "exec policies are disabled until the project is trusted.\n"
+                  "    To load them, add /project as trusted in /tmp/config.toml.\n",
+                  stderr);
+            fflush(stderr);
+            printf("{\"method\":\"configWarning\",\"params\":{"
+                   "\"summary\":\"Project-local config, hooks, and exec policies "
+                   "are disabled until the project is trusted.\","
+                   "\"details\":null}}\n");
+            fflush(stdout);
         } else if (method && !strcmp(method, "account/rateLimits/read")) {
             cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
             if (!cJSON_IsNull(params)) {
@@ -96,6 +116,22 @@ static int mock_server(void)
             }
             respond(id, "{\"rateLimits\":{\"primary\":{\"usedPercent\":17,"
                         "\"resetsAt\":2000000000,\"windowDurationMins\":10080}}}");
+        } else if (method && !strcmp(method, "config/value/write")) {
+            cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
+            const char *key = params ? cJSON_GetStringValue(
+                cJSON_GetObjectItemCaseSensitive(params, "keyPath")) : NULL;
+            const char *strategy = params ? cJSON_GetStringValue(
+                cJSON_GetObjectItemCaseSensitive(params, "mergeStrategy")) : NULL;
+            cJSON *value = params ? cJSON_GetObjectItemCaseSensitive(params, "value") : NULL;
+            cJSON *project = cJSON_IsObject(value) ?
+                cJSON_GetObjectItemCaseSensitive(value, "/project.with.dot") : NULL;
+            const char *trust = project ? cJSON_GetStringValue(
+                cJSON_GetObjectItemCaseSensitive(project, "trust_level")) : NULL;
+            if (!key || strcmp(key, "projects") || !strategy || strcmp(strategy, "upsert") ||
+                !trust || strcmp(trust, "trusted"))
+                respond_error(id);
+            else
+                respond(id, "{\"status\":\"ok\"}");
         } else if (method && !strcmp(method, "thread/start")) {
             cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
             if (!cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(
@@ -217,6 +253,25 @@ int main(int argc, char **argv)
     test_client = client;
     codex_set_abort_check(client, should_abort);
     codex_set_event_cb(client, capture_event, NULL);
+    if (!codex_trust_project(client, "/project.with.dot")) {
+        fprintf(stderr, "codextest: config/value/write could not trust a project\n");
+        codex_stop(client);
+        return 1;
+    }
+    if (codex_idle_fd(client) < 0) {
+        fprintf(stderr, "codextest: config warning did not expose an idle fd\n");
+        codex_stop(client);
+        return 1;
+    }
+    codex_idle_pump(client);
+    if (trust_events != 1 || strcmp(trust_path, "this folder") || warning_events != 0 ||
+        codex_last_error(client)) {
+        fprintf(stderr, "codextest: trust request was not cleaned up (%d, %s, %d, %s)\n",
+                trust_events, trust_path, warning_events,
+                codex_last_error(client) ? codex_last_error(client) : "no stderr");
+        codex_stop(client);
+        return 1;
+    }
     abort_turn = 1;
     codex_result meta = {0};
     char *reply = codex_send_ex(client, "interrupt me", &meta);

@@ -49,6 +49,8 @@ typedef enum {
     BACKEND_EV_CWD,         /* text: the directory the agent works in now,
                                which is not the launch cwd once it moves into
                                a worktree                                      */
+    BACKEND_EV_TRUST,       /* the current project needs a trust decision       */
+    BACKEND_EV_WARNING,     /* text: an actionable backend configuration notice */
 } backend_event_kind;
 
 typedef struct {
@@ -130,6 +132,10 @@ struct Backend {
     /* Takes effect at the next start(). Ignored by the drivers with no
      * permission model of their own. */
     void (*set_permission)(Backend *b, const char *mode);
+
+    /* Persist this folder as trusted in the backend's user configuration.
+     * NULL for backends without a project trust model. */
+    int (*trust_project)(Backend *b, const char *path);
 
     /* Per-event sink for a turn, called on the ask() thread as events arrive;
      * the event and its strings are borrowed for the call. Pass NULL to clear. */
@@ -523,6 +529,12 @@ static void backend_codex_event(void *ud, const codex_event *cev) {
         } else if (cev->kind == CODEX_EV_CWD) {
             ev.kind = BACKEND_EV_CWD;
             ev.text = cev->text;
+        } else if (cev->kind == CODEX_EV_TRUST) {
+            ev.kind = BACKEND_EV_TRUST;
+            ev.text = cev->text;
+        } else if (cev->kind == CODEX_EV_WARNING) {
+            ev.kind = BACKEND_EV_WARNING;
+            ev.text = cev->text;
         } else {
             return;
         }
@@ -614,6 +626,26 @@ static int backend_codex_set_effort(Backend *b, const char *effort) {
     return 1;
 }
 
+static int backend_codex_trust_project(Backend *b, const char *path) {
+    backend_codex *x = b->ctx;
+    return x->client && codex_trust_project(x->client, path);
+}
+
+static int backend_codex_idle_fd(Backend *b) {
+    backend_codex *x = b->ctx;
+    return x->client ? codex_idle_fd(x->client) : -1;
+}
+
+static int backend_codex_idle_pump(Backend *b) {
+    backend_codex *x = b->ctx;
+    return x->client ? codex_idle_pump(x->client) : 0;
+}
+
+static const char *backend_codex_error(Backend *b) {
+    backend_codex *x = b->ctx;
+    return x->client ? codex_last_error(x->client) : NULL;
+}
+
 static const char *backend_codex_session_id(Backend *b) {
     backend_codex *x = b->ctx;
     return x->client ? codex_session_id(x->client) : NULL;
@@ -661,13 +693,16 @@ static Backend *backend_codex_open(const backend_opts *o) {
     b->set_model = backend_set_model_generic;
     b->set_effort = backend_codex_set_effort;
     b->set_permission = backend_set_permission_none;
+    b->trust_project = backend_codex_trust_project;
     b->set_event_cb = backend_codex_set_event_cb;
     b->set_abort_check = backend_codex_set_abort;
+    b->idle_fd = backend_codex_idle_fd;
+    b->idle_pump = backend_codex_idle_pump;
     b->session_id = backend_codex_session_id;
     b->model = backend_codex_model;
     b->effort = backend_codex_effort;
     b->auth_source = backend_none;
-    b->last_error = backend_none;
+    b->last_error = backend_codex_error;
     return b;
 }
 

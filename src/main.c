@@ -7,9 +7,9 @@
 
 #include "agenttabs.h"
 #include "app.h"
-#include "banner.h"
 #include "bash.h"
 #include "cmd.h"
+#include "confirm.h"
 #include "gitinfo.h"
 #include "hud.h"
 #include "image.h"
@@ -69,7 +69,24 @@ static void usage(void)
 }
 
 static int idle_fd(void *ud)     { return session_idle_fd(ud); }
-static int idle_render(void *ud) { return session_idle_pump(ud); }
+static void offer_project_trust(struct session *s)
+{
+    if (!session_take_trust_request(s))
+        return;
+    if (confirm_run("trust this folder in codex?") && !session_trust_project(s)) {
+        ui_error("could not trust this folder or reload Codex");
+        ui_put("\n");
+        ui_flush();
+    }
+}
+
+static int idle_render(void *ud)
+{
+    struct session *s = ud;
+    int busy = session_idle_pump(s);
+    offer_project_trust(s);
+    return busy;
+}
 static int idle_busy(void *ud)   { return session_idle_busy(ud); }
 static void replay(void *ud)      { session_replay(ud); }
 
@@ -248,19 +265,17 @@ int main(int argc, char **argv)
     status_set_below(prompt_live_paint, prompt_live_offset, prompt);
     prompt_set_live_command(prompt, live_command, session);
     prompt_set_idle(prompt, idle_fd, idle_render, idle_busy, session);
-    prompt_set_hud(prompt, hud_paint_idle, session);
     prompt_set_replay(prompt, replay, session);
-    status_set_hud(hud_paint_busy, session);
-
-    session_hold_footer(session, 1);
 
     ui_put("\n");
 
     if (resume)
         cmd_resume(session);
-    banner_hints();
+    hud_print(session);
 
     for (;;) {
+
+        offer_project_trust(session);
 
         char *line = prompt_take_queued(prompt);
         if (line)
@@ -297,7 +312,6 @@ int main(int argc, char **argv)
 
     session_set_typeahead(NULL, NULL);
     status_set_below(NULL, NULL, NULL);
-    status_set_hud(NULL, NULL);
     prompt_free(prompt);
     sessionfork_exit_note(session);
     session_free(session);

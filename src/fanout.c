@@ -139,6 +139,8 @@ static void fan_event(void *ud, const backend_event *ev)
     switch (ev->kind) {
 
     case BACKEND_EV_CWD:
+    case BACKEND_EV_TRUST:
+    case BACKEND_EV_WARNING:
         break;
 
     case BACKEND_EV_INIT:

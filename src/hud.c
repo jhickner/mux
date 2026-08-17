@@ -94,38 +94,13 @@ static int row_location(const struct session *s, int cols)
     return paint_row(segs, (int)(sizeof segs / sizeof *segs), cols);
 }
 
-static void note_width(int *widths, int max, int row, int width)
+void hud_print(const struct session *s)
 {
-    if (widths && row < max)
-        widths[row] = width;
-}
-
-int hud_paint_busy(void *ud, int cols, int *widths, int max)
-{
-    const struct session *s = ud;
     if (!s)
-        return 0;
-    note_width(widths, max, 0, row_identity(s, cols));
-    note_width(widths, max, 1, row_location(s, cols));
-
-    ui_esc("\x1b[K");
+        return;
+    int cols = ui_columns();
+    row_identity(s, cols);
+    row_location(s, cols);
     ui_put("\n");
-    note_width(widths, max, 2, 0);
-    return 3;
-}
-
-int hud_paint_idle(void *ud, int cols, int *widths, int max)
-{
-    const struct session *s = ud;
-    int rows = hud_paint_busy(ud, cols, widths, max);
-    if (!rows)
-        return 0;
-
-    const char *footer = session_footer(s);
-    if (footer) {
-        struct seg segs[] = {{footer, UI_DIM}};
-        note_width(widths, max, rows, paint_row(segs, 1, cols));
-        rows++;
-    }
-    return rows;
+    ui_flush();
 }

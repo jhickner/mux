@@ -78,6 +78,8 @@ typedef enum {
     CODEX_EV_TOOL,
     CODEX_EV_TOOL_RESULT,
     CODEX_EV_CWD,           /* text: the directory the thread works in now */
+    CODEX_EV_TRUST,         /* text: project path awaiting trust approval   */
+    CODEX_EV_WARNING,       /* text: actionable app-server config warning  */
 } codex_event_kind;
 
 typedef struct {
@@ -93,6 +95,12 @@ void codex_set_event_cb(codex_client *c,
                         void (*cb)(void *ud, const codex_event *ev),
                         void *ud);
 void codex_set_abort_check(codex_client *c, int (*cb)(void));
+/* A config warning can arrive while app-server is warming in the background.
+ * Watch this fd between turns and pump it on the UI thread. */
+int codex_idle_fd(codex_client *c);
+int codex_idle_pump(codex_client *c);
+/* Persist this path as trusted in the user's Codex config. */
+int codex_trust_project(codex_client *c, const char *path);
 /* Override subsequent turns' reasoning effort. NULL clears the override. */
 int codex_set_effort(codex_client *c, const char *effort);
 /* Override if one was set, else the config/stream default, or NULL. */
@@ -103,6 +111,8 @@ const char *codex_model(codex_client *c);
 void codex_usage(codex_client *c, long *context_tokens, long *context_window);
 /* Latest primary subscription window from the account rate-limit methods. */
 void codex_get_rate_limit(codex_client *c, codex_rate_limit *out);
+/* Tail of app-server stderr, without config warnings surfaced as events. */
+const char *codex_last_error(codex_client *c);
 void codex_stop(codex_client *c);
 
 #endif /* CODEX_H */
@@ -127,14 +137,16 @@ void codex_stop(codex_client *c);
  * predicate reaches the screen, so it sits below the ~30ms an echo can take
  * without being felt as lag. */
 #define CX_TICK_MS 20
+#define CX_ERR_MAX 4096
+#define CX_WARNING_MAX 1024
 
 struct codex_client {
     pid_t pid;
-    int in_fd, out_fd, next_id, verbose;
+    int in_fd, out_fd, err_fd, notice_fd[2], next_id, verbose;
     int (*abort)(void);
     void (*on_event)(void *ud, const codex_event *ev);
     void *on_event_ud;
-    char *model, *effort, *sandbox, *sys, *resume;
+    char *model, *effort, *sandbox, *sys, *resume, *project;
     int effort_changed, ephemeral;
     char session_id[128];
     char resolved[32];         /* config or stream effort when none was set */
@@ -144,6 +156,13 @@ struct codex_client {
     codex_rate_limit rate_limit;
     char *buf;
     size_t len, cap;
+    char err[CX_ERR_MAX];
+    size_t err_len;
+    char warning[CX_WARNING_MAX];
+    codex_event_kind warning_kind;
+    int warning_ready;
+    pthread_mutex_t warning_mu;
+    int warning_mu_ready;
     pthread_t warm_thread;
     int warm_joinable;
     atomic_int warm_state;     /* 0 while starting, 1 ready, -1 failed */
@@ -229,7 +248,7 @@ static void cx_note_model(codex_client *c, cJSON *obj) {
 
 static void cx_emit(codex_client *c, const codex_event *ev) {
     static const char *const kinds[] = {
-        "assistant", "thinking", "tool", "tool-result", "cwd"
+        "assistant", "thinking", "tool", "tool-result", "cwd", "trust", "warning"
     };
     const char *preview = ev->kind == CODEX_EV_TOOL ? ev->name : ev->text;
     if (!preview) preview = ev->diff ? ev->diff : "";
@@ -244,6 +263,70 @@ static void cx_text_event(codex_client *c, codex_event_kind kind, const char *te
     if (!text) return;
     codex_event ev = { .kind = kind, .text = text };
     cx_emit(c, &ev);
+}
+
+/* App-server mirrors configWarning notifications to stderr with timestamps and
+ * Rust log metadata. Capture that stream so the structured notification can be
+ * rendered by the host instead. Keep the tail for actual startup failures. */
+static void cx_drain_stderr(codex_client *c) {
+    if (c->err_fd < 0) return;
+    char tmp[1024];
+    for (;;) {
+        ssize_t r = read(c->err_fd, tmp, sizeof tmp);
+        if (r <= 0) {
+            if (r < 0 && errno == EINTR) continue;
+            return;
+        }
+        size_t n = (size_t)r;
+        if (n >= CX_ERR_MAX) {
+            memcpy(c->err, tmp + n - (CX_ERR_MAX - 1), CX_ERR_MAX - 1);
+            c->err_len = CX_ERR_MAX - 1;
+        } else {
+            if (c->err_len + n > CX_ERR_MAX - 1) {
+                size_t drop = c->err_len + n - (CX_ERR_MAX - 1);
+                memmove(c->err, c->err + drop, c->err_len - drop);
+                c->err_len -= drop;
+            }
+            memcpy(c->err + c->err_len, tmp, n);
+            c->err_len += n;
+        }
+        c->err[c->err_len] = '\0';
+    }
+}
+
+/* Remove only the stderr copy of the project-trust warning. Other diagnostics
+ * in the same tail remain available through codex_last_error(). */
+static void cx_strip_trust_warning(codex_client *c) {
+    char *start = strstr(c->err,
+        "Project-local config, hooks, and exec policies are disabled");
+    if (!start) return;
+    char *block = start;
+    while (block > c->err && block[-1] != '\n') block--;
+    char *end = strstr(start, "config.toml.");
+    if (!end) return;
+    end += strlen("config.toml.");
+    while (*end == '\r' || *end == '\n') end++;
+    size_t used = (size_t)(end - block);
+    memmove(block, end, strlen(end) + 1);
+    c->err_len -= used;
+}
+
+static void cx_queue_warning(codex_client *c, codex_event_kind kind, const char *text) {
+    if (!text || !*text || !c->warning_mu_ready) return;
+    int signal = 0;
+    pthread_mutex_lock(&c->warning_mu);
+    if (!c->warning_ready) {
+        snprintf(c->warning, sizeof c->warning, "%s", text);
+        c->warning_kind = kind;
+        c->warning_ready = 1;
+        signal = 1;
+    }
+    pthread_mutex_unlock(&c->warning_mu);
+    if (signal && c->notice_fd[1] >= 0) {
+        char byte = 1;
+        ssize_t ignored = write(c->notice_fd[1], &byte, 1);
+        (void)ignored;
+    }
 }
 
 /* A turn may override the thread's cwd, so the app-server's copy is the one
@@ -308,10 +391,20 @@ static int cx_read(codex_client *c, cJSON **out, int honor_abort) {
             continue;
         }
         if (honor_abort && c->abort && c->abort()) return 0;
-        struct pollfd p = { c->out_fd, POLLIN, 0 };
-        int pr = poll(&p, 1, CX_TICK_MS);
+        struct pollfd p[2] = {
+            { c->out_fd, POLLIN, 0 }, { c->err_fd, POLLIN, 0 }
+        };
+        int pr = poll(p, 2, CX_TICK_MS);
         if (pr < 0) { if (errno == EINTR) continue; return -1; }
         if (!pr) continue;
+        if (p[1].revents) {
+            cx_drain_stderr(c);
+            if (p[1].revents & (POLLHUP | POLLERR)) {
+                close(c->err_fd);
+                c->err_fd = -1;
+            }
+        }
+        if (!(p[0].revents & (POLLIN | POLLHUP))) continue;
         char tmp[8192]; ssize_t nr = read(c->out_fd, tmp, sizeof tmp);
         if (nr <= 0) return -1;
         if (c->len + (size_t)nr + 1 > c->cap) {
@@ -385,6 +478,20 @@ static int cx_handle_notification(codex_client *c, cJSON *msg) {
     }
     if (method && !strcmp(method, "account/rateLimits/updated")) {
         cx_note_rate_limit(c, params);
+        return 1;
+    }
+    if (method && !strcmp(method, "configWarning")) {
+        const char *summary = params ? cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(params, "summary")) : NULL;
+        if (summary && strstr(summary, "until the project is trusted")) {
+            cx_queue_warning(c, CODEX_EV_TRUST,
+                             c->project ? c->project : "this folder");
+        } else if (summary && *summary) {
+            cx_queue_warning(c, CODEX_EV_WARNING, summary);
+        }
+        /* The same warning was logged to stderr; it is not a process failure. */
+        cx_drain_stderr(c);
+        cx_strip_trust_warning(c);
         return 1;
     }
     return 0;
@@ -493,31 +600,44 @@ codex_client *codex_start(const codex_opts *opts) {
     const char *cli = o.cli_path && *o.cli_path ? o.cli_path : "codex";
     codex_client *c = calloc(1, sizeof *c);
     if (!c) return NULL;
-    c->in_fd = c->out_fd = -1; c->next_id = 1;
+    c->in_fd = c->out_fd = c->err_fd = -1;
+    c->notice_fd[0] = c->notice_fd[1] = -1;
+    c->next_id = 1;
+    if (pthread_mutex_init(&c->warning_mu, NULL)) { free(c); return NULL; }
+    c->warning_mu_ready = 1;
     c->model = cx_dup(o.model); c->effort = cx_dup(o.effort);
     c->ephemeral = o.ephemeral;
     c->sys = cx_dup(o.append_system);
     cx_seed_effort(c, o.cwd);
     c->resume = cx_dup(o.resume_session);
+    c->project = cx_dup(o.cwd);
     c->sandbox = strdup(o.bypass_approvals ? "danger-full-access" :
                         (o.sandbox && *o.sandbox ? o.sandbox : "workspace-write"));
     if (!c->sandbox) { codex_stop(c); return NULL; }
-    int in[2], out[2];
+    int in[2], out[2], err[2];
     if (pipe(in)) { codex_stop(c); return NULL; }
     if (pipe(out)) { close(in[0]); close(in[1]); codex_stop(c); return NULL; }
+    if (pipe(err)) {
+        close(in[0]); close(in[1]); close(out[0]); close(out[1]);
+        codex_stop(c); return NULL;
+    }
     signal(SIGPIPE, SIG_IGN);
     pid_t pid = fork();
     if (pid < 0) {
         close(in[0]); close(in[1]); close(out[0]); close(out[1]);
+        close(err[0]); close(err[1]);
         codex_stop(c); return NULL;
     }
     if (!pid) {
-        if (dup2(in[0], STDIN_FILENO) < 0 || dup2(out[1], STDOUT_FILENO) < 0)
+        if (dup2(in[0], STDIN_FILENO) < 0 || dup2(out[1], STDOUT_FILENO) < 0 ||
+            dup2(err[1], STDERR_FILENO) < 0)
             _exit(126);
         if (in[0] != STDIN_FILENO) close(in[0]);
         if (in[1] != STDIN_FILENO) close(in[1]);
         if (out[0] != STDOUT_FILENO) close(out[0]);
         if (out[1] != STDOUT_FILENO) close(out[1]);
+        if (err[0] != STDERR_FILENO) close(err[0]);
+        if (err[1] != STDERR_FILENO) close(err[1]);
         if (o.cwd && *o.cwd && chdir(o.cwd)) _exit(126);
         const char *argv[] = {
             cli, "app-server", "--stdio",
@@ -530,12 +650,19 @@ codex_client *codex_start(const codex_opts *opts) {
         };
         execvp(cli, (char *const *)argv); _exit(127);
     }
-    close(in[0]); close(out[1]);
+    close(in[0]); close(out[1]); close(err[1]);
     /* Keep the agent pipes out of every child we later fork (shell, git, …),
        matching claude.h/grok.h/pi.h. */
     fcntl(in[1], F_SETFD, FD_CLOEXEC);
     fcntl(out[0], F_SETFD, FD_CLOEXEC);
-    c->pid = pid; c->in_fd = in[1]; c->out_fd = out[0];
+    fcntl(err[0], F_SETFD, FD_CLOEXEC);
+    fcntl(err[0], F_SETFL, O_NONBLOCK);
+    c->pid = pid; c->in_fd = in[1]; c->out_fd = out[0]; c->err_fd = err[0];
+    if (pipe(c->notice_fd)) { codex_stop(c); return NULL; }
+    fcntl(c->notice_fd[0], F_SETFD, FD_CLOEXEC);
+    fcntl(c->notice_fd[1], F_SETFD, FD_CLOEXEC);
+    fcntl(c->notice_fd[0], F_SETFL, O_NONBLOCK);
+    fcntl(c->notice_fd[1], F_SETFL, O_NONBLOCK);
     atomic_init(&c->warm_state, 0);
     if (!pthread_create(&c->warm_thread, NULL, cx_warm, c))
         c->warm_joinable = 1;
@@ -546,6 +673,64 @@ codex_client *codex_start(const codex_opts *opts) {
 
 void codex_set_verbose(codex_client *c, int on) { if (c) c->verbose = on; }
 void codex_set_abort_check(codex_client *c, int (*cb)(void)) { if (c) c->abort = cb; }
+
+int codex_idle_fd(codex_client *c) {
+    return c && c->pid > 0 ? c->notice_fd[0] : -1;
+}
+
+int codex_idle_pump(codex_client *c) {
+    if (!c || c->notice_fd[0] < 0) return 0;
+    char bytes[64];
+    while (read(c->notice_fd[0], bytes, sizeof bytes) > 0) {}
+    pthread_mutex_lock(&c->warning_mu);
+    char *warning = c->warning_ready ? strdup(c->warning) : NULL;
+    codex_event_kind kind = c->warning_kind;
+    c->warning_ready = 0;
+    c->warning[0] = '\0';
+    pthread_mutex_unlock(&c->warning_mu);
+    if (warning) {
+        codex_event ev = { .kind = kind, .text = warning };
+        cx_emit(c, &ev);
+        free(warning);
+    }
+    return 0;
+}
+
+int codex_trust_project(codex_client *c, const char *path) {
+    if (!c || !path || !*path || !cx_await_ready(c)) return 0;
+    cJSON *p = cJSON_CreateObject();
+    cJSON *projects = cJSON_CreateObject();
+    cJSON *project = cJSON_CreateObject();
+    if (!p || !projects || !project) {
+        cJSON_Delete(p); cJSON_Delete(projects); cJSON_Delete(project);
+        return 0;
+    }
+    cJSON_AddStringToObject(project, "trust_level", "trusted");
+    cJSON_AddItemToObject(projects, path, project);
+    cJSON_AddStringToObject(p, "keyPath", "projects");
+    cJSON_AddItemToObject(p, "value", projects);
+    cJSON_AddStringToObject(p, "mergeStrategy", "upsert");
+    int id = cx_request(c, "config/value/write", p);
+    cJSON *r = id ? cx_wait_response(c, id) : NULL;
+    if (!r) return 0;
+    cJSON *result = cJSON_GetObjectItemCaseSensitive(r, "result");
+    const char *status = result ? cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(result, "status")) : NULL;
+    int ok = status && !strcmp(status, "ok");
+    cJSON_Delete(r);
+    return ok;
+}
+
+const char *codex_last_error(codex_client *c) {
+    if (!c) return NULL;
+    cx_drain_stderr(c);
+    cx_strip_trust_warning(c);
+    while (c->err_len && (c->err[c->err_len - 1] == '\n' ||
+                          c->err[c->err_len - 1] == '\r'))
+        c->err[--c->err_len] = '\0';
+    return c->err_len ? c->err : NULL;
+}
+
 const char *codex_effort(codex_client *c) {
     if (!c) return NULL;
     if (c->effort && *c->effort) return c->effort;
@@ -1074,8 +1259,13 @@ void codex_stop(codex_client *c) {
         c->warm_joinable = 0;
     }
     if (c->out_fd >= 0) close(c->out_fd);
+    if (c->err_fd >= 0) close(c->err_fd);
+    if (c->notice_fd[0] >= 0) close(c->notice_fd[0]);
+    if (c->notice_fd[1] >= 0) close(c->notice_fd[1]);
     free(c->model); free(c->effort); free(c->sandbox); free(c->sys); free(c->resume);
-    free(c->buf); free(c);
+    free(c->project); free(c->buf);
+    if (c->warning_mu_ready) pthread_mutex_destroy(&c->warning_mu);
+    free(c);
 }
 
 #endif /* CODEX_IMPLEMENTATION */

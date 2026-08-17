@@ -7,6 +7,7 @@
 
 #include "app.h"
 #include "fanout.h"
+#include "hud.h"
 #include "pick.h"
 #include "session.h"
 #include "image.h"
@@ -34,6 +35,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/fs", "alias for /fh", NULL},
     {"/fv", "fork into a vertical tmux split", NULL},
     {"/fw", "fork into a tmux window", NULL},
+    {"/status", "reprint the status bar", NULL},
     {"/session", "show this session's info and totals", NULL},
     {"/copy", "copy last response to clipboard", NULL},
     {"/help", "show this help", NULL},
@@ -340,7 +342,7 @@ static void do_backend(struct session *s, const char *arg)
         return;
     }
 
-    note_identity(s);
+    hud_print(s);
     free(from);
 
     if (retry) {
@@ -637,6 +639,8 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line)
         cmd_resume(s);
     } else if (fork_target(name, &where)) {
         sessionfork_run(s, where);
+    } else if (!strcmp(name, "/status")) {
+        hud_print(s);
     } else if (!strcmp(name, "/session")) {
         session_report(s);
     } else if (!strcmp(name, "/copy")) {

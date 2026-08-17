@@ -47,10 +47,6 @@ enum ui_group {
 #define UI_ALT_OFF      "\x1b[?1049l"
 #define UI_HOME         "\x1b[H"
 
-typedef int (*ui_hud_fn)(void *ud, int cols, int *widths, int max);
-
-#define UI_HUD_ROWS_MAX 32
-
 void        ui_init(void);
 
 void ui_pad(int cells);

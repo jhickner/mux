@@ -21,10 +21,6 @@ void session_set_quiet(struct session *s, int quiet);
 
 void session_set_naming(struct session *s, int on);
 
-void        session_hold_footer(struct session *s, int on);
-
-const char *session_footer(const struct session *s);
-
 void session_set_thinking(struct session *s, int on);
 int  session_thinking(const struct session *s);
 
@@ -34,6 +30,9 @@ int  session_compact(const struct session *s);
 void session_set_customizations(struct session *s, int on);
 
 int session_start(struct session *s);
+
+int session_trust_project(struct session *s);
+int session_take_trust_request(struct session *s);
 
 int session_turn(struct session *s, const char *text);
 

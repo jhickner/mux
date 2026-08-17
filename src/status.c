@@ -26,10 +26,6 @@ static char    note[128];
 static status_paint_fn  below;
 static status_offset_fn below_offset;
 static void            *below_ud;
-static ui_hud_fn        hud;
-static void            *hud_ud;
-static int              hud_rows;
-static int              hud_widths[UI_HUD_ROWS_MAX];
 static int              caret_row;
 static int              caret_col;
 static int              painted;
@@ -89,12 +85,6 @@ void status_set_below(status_paint_fn paint_fn, status_offset_fn offset_fn, void
     below_ud = ud;
 }
 
-void status_set_hud(ui_hud_fn paint_fn, void *ud)
-{
-    hud = paint_fn;
-    hud_ud = ud;
-}
-
 static int size_changing(void)
 {
     unsigned epoch = tty_resize_epoch();
@@ -108,19 +98,12 @@ static int size_changing(void)
     return resize_at > 0 && (now_seconds() - resize_at) * 1000.0 < TTY_RESIZE_SETTLE_MS;
 }
 
-static int hud_reflowed(int cols)
-{
-    int known = hud_rows < UI_HUD_ROWS_MAX ? hud_rows : UI_HUD_ROWS_MAX;
-    return ui_reflow_rows(hud_widths, known, cols) + (hud_rows - known);
-}
-
 static int rows_above_caret(void)
 {
     int cols = ui_columns();
     int spin = spin_width ? ui_reflow_rows(&spin_width, 1, cols) : 0;
     int head = sticky_rows ? ui_reflow_rows(sticky_widths, sticky_rows, cols) : 0;
 
-    head += hud_reflowed(cols);
     if (!below)
         return painted_gap + head + (spin > 0 ? spin - 1 : 0);
     return painted_gap + head + spin +
@@ -137,7 +120,6 @@ static void erase_block(void)
     spin_width = 0;
     painted_gap = 0;
     sticky_rows = 0;
-    hud_rows = 0;
     painted = 0;
 }
 
@@ -235,9 +217,8 @@ static void block_rows(int below_rows)
     chrome_rows = painted_gap + below_rows +
                   (sticky_rows ? ui_reflow_rows(sticky_widths, sticky_rows, cols) : 0) +
                   (spin_width ? ui_reflow_rows(&spin_width, 1, cols) : 0);
-    int rows = chrome_rows + hud_reflowed(cols);
-    if (rows > block_tallest)
-        block_tallest = rows;
+    if (chrome_rows > block_tallest)
+        block_tallest = chrome_rows;
 }
 
 int status_chrome_rows(void) { return chrome_rows; }
@@ -286,7 +267,6 @@ static void paint(void)
         ui_put("\n");
     paint_sticky();
 
-    hud_rows = hud ? hud(hud_ud, ui_columns(), hud_widths, UI_HUD_ROWS_MAX) : 0;
     paint_spin();
 
     int below_rows = 0;
@@ -353,7 +333,6 @@ void status_begin(void)
     gap = 0;
     painted_gap = 0;
     sticky_rows = 0;
-    hud_rows = 0;
     block_tallest = 0;
     painted = 0;
     paint();
