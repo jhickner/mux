@@ -141,8 +141,7 @@ static void walk(struct index *ix, const char *abs, const char *rel, int depth)
         if (e->d_name[0] == '.')
             continue;
         char child_abs[4096], child_rel[4096];
-        /* A truncated path would be opendir'd and indexed as a completion that
-           does not resolve. */
+
         if (snprintf(child_abs, sizeof child_abs, "%s/%s", abs, e->d_name) >=
             (int)sizeof child_abs)
             continue;
@@ -171,7 +170,7 @@ static void index_build(struct index *ix, const char *root)
         free(ix->root);
         ix->root = strdup(root);
         if (!ix->root)
-            return; /* a NULL root would rebuild the index on every keystroke */
+            return;
     }
     ix->built = time(NULL);
     if (!index_from_git(ix, root))
@@ -292,7 +291,6 @@ static int split_external(const char *token, const char *root, char *prefix, siz
     return snprintf(dir, dir_sz, "%s/%s", root, prefix) < (int)dir_sz;
 }
 
-/* Bounded best-N-by-score, kept sorted as entries are offered. */
 struct topn {
     int idx[TOP_MAX];
     int score[TOP_MAX];

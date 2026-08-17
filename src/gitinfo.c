@@ -58,7 +58,7 @@ static void parse_shortstat(const char *line, struct gitinfo *g)
             g->removed = value;
         if (!*p)
             break;
-        p--; /* the loop's p++ would otherwise skip the byte we stopped on */
+        p--;
     }
 }
 
@@ -71,7 +71,7 @@ static void reread(const char *dir, struct gitinfo *g)
         return;
 
     char cmd[17000];
-    /* Truncation would hand a chopped-but-still-runnable command to the shell. */
+
     if (snprintf(cmd, sizeof cmd,
                  "git -C %s rev-parse --abbrev-ref HEAD 2>/dev/null; echo @; "
                  "git -C %s rev-parse --short HEAD 2>/dev/null; echo @; "

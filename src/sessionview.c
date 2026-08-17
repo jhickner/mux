@@ -11,8 +11,6 @@
 
 #define COUNT(a) (sizeof (a) / sizeof *(a))
 
-/* One list for both readers: view_tool_argument takes the first match in this
-   order, view_tool_path considers only the entries flagged as naming a file. */
 static const struct {
     const char *key;
     int         is_path;

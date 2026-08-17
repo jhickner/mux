@@ -35,7 +35,6 @@ enum ui_group {
 
 #define UI_BAR "\xe2\x96\x8c"
 
-/* Named so the same escape is not spelled out across a dozen call sites. */
 #define UI_CURSOR_SHOW  "\x1b[?25h"
 #define UI_CURSOR_HIDE  "\x1b[?25l"
 #define UI_ERASE_EOL    "\x1b[K"
@@ -44,32 +43,18 @@ enum ui_group {
 #define UI_PASTE_ON     "\x1b[?2004h"
 #define UI_PASTE_OFF    "\x1b[?2004l"
 
-/* The alternate screen: what is painted on it never enters the scrollback and
-   never scrolls the history, so a full-screen view can repaint as often as it
-   likes and leave the transcript exactly as it found it. */
 #define UI_ALT_ON       "\x1b[?1049h"
 #define UI_ALT_OFF      "\x1b[?1049l"
 #define UI_HOME         "\x1b[H"
 
-/* Paints the HUD rows for the given width and returns how many it drew. The
-   idle (prompt) and busy (status) paths share this signature.
-
-   A painter also records each row's painted cell width in `widths` (up to
-   `max` entries; either may be zero). The terminal re-wraps what is already on
-   screen when it narrows, so a caller that has to erase the block later can
-   only find its top again by re-wrapping those widths to the current size —
-   without them a resize leaves the old rows behind. */
 typedef int (*ui_hud_fn)(void *ud, int cols, int *widths, int max);
 
 #define UI_HUD_ROWS_MAX 32
 
 void        ui_init(void);
 
-/* Writes `cells` spaces. */
 void ui_pad(int cells);
 
-/* Emits a cursor-motion escape ('A' up, 'B' down, 'C' right, …). No-op when
-   count <= 0, which every caller relies on. */
 void ui_move(int count, char direction);
 const char *ui_style(enum ui_role role);
 
@@ -101,49 +86,33 @@ size_t ui_cells_n(const char *s, size_t n);
 
 size_t ui_wrap_row(const char *s, size_t budget, size_t *skip);
 
-/* How many bytes of s fit in `budget` cells, never splitting a character. */
 size_t ui_fit_bytes(const char *s, size_t budget);
 
-/* As ui_cells_n, for text that carries its own SGR escapes. */
 size_t ui_cells_visible(const char *s, size_t n);
 
-/* As ui_fit_bytes, for text that carries its own SGR escapes: the escapes cost
-   no cells and are kept, so the clipped text still ends in the right style. */
 size_t ui_fit_visible(const char *s, size_t n, size_t budget);
 
-/* Collects everything painted until ui_capture_end() into a string instead of
-   writing it to the terminal, with ui_columns() reporting `columns` for the
-   duration. Lets a painter that lays out to the full width — md_render, say —
-   be run at the width of something narrower, such as one column of a board.
-   Newlines stay bare and scroll tracking is suspended. Returns the captured
-   text, which the caller frees; NULL when nothing was captured. */
 void  ui_capture_begin(int columns);
 char *ui_capture_end(void);
 
-/* One description of a wrapped block, shared by every painter so that the code
-   which paints a block and the code which later counts its rows cannot drift.
-   Row layout is: pad, style on, erase, gutter, mark (first row), text,
-   ellipsis (last row when clipped), style off, newline. */
 struct ui_wrap {
     size_t       budget;
-    int          first_indent; /* pad cells before the first row */
-    int          indent;       /* pad cells before the rest */
-    const char  *gutter;       /* drawn before the text on every row */
-    const char *const *gutters; /* optional per-row gutter, falls back to gutter */
+    int          first_indent;
+    int          indent;
+    const char  *gutter;
+    const char *const *gutters;
     int          gutters_n;
-    const char  *mark;         /* drawn after the gutter, first row only */
-    enum ui_role role;         /* UI_RESET leaves the text unstyled */
-    int          max_rows;     /* 0 = unlimited; adds "…" when text remains */
-    int          erase;        /* erase to end of line before each row */
-    int          paint_empty;  /* empty text still yields one (blank) row */
-    int          measure;      /* fill widths but paint nothing */
-    int          reflow_cols;  /* non-zero: count rows as re-wrapped to this width */
-    int         *widths;       /* optional out: painted cell width per row */
+    const char  *mark;
+    enum ui_role role;
+    int          max_rows;
+    int          erase;
+    int          paint_empty;
+    int          measure;
+    int          reflow_cols;
+    int         *widths;
     int          widths_max;
 };
 
-/* Returns rows painted, or — when reflow_cols is set — how many terminal rows
-   those painted rows would occupy at that width. */
 int ui_wrap_paint(const char *text, const struct ui_wrap *w);
 
 void ui_wrapped(const char *text, int indent, enum ui_role role);

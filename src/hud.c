@@ -18,7 +18,6 @@ struct seg {
     enum ui_role  role;
 };
 
-/* Returns the row's painted width in cells. */
 static int paint_row(const struct seg *segs, int count, int cols)
 {
     size_t budget = (size_t)(cols > 1 ? cols - 1 : 1);

@@ -105,8 +105,7 @@ static int mock_cli(int argc, char **argv)
                    "\"tasks\":[{\"task_id\":\"a\"},{\"task_id\":\"b\"}]}\n");
             fflush(stdout);
             result("launched");
-            /* The workers report in after the turn that started them ended, and
-             * the last of them is announced without ever waking the model. */
+
             printf("{\"type\":\"system\",\"subtype\":\"background_tasks_changed\","
                    "\"tasks\":[]}\n");
             fflush(stdout);

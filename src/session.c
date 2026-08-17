@@ -31,7 +31,7 @@ struct session {
     Backend *agent;
     char    *backend;
     char    *cwd;
-    char    *workdir; /* where the agent last said it was working; NULL -> cwd */
+    char    *workdir;
     char    *model;
     char    *effort;
     char    *resolved;
@@ -70,8 +70,6 @@ static void replace(char **slot, const char *value)
     *slot = value ? strdup(value) : NULL;
 }
 
-/* Doubling rather than an exact realloc per event: this runs once per streamed
-   assistant chunk, so an exact fit would make a long reply quadratic. */
 static void stream_append(struct session *s, const char *value)
 {
     if (!value || !*value)
@@ -132,7 +130,7 @@ static void on_event(void *ud, const backend_event *ev)
         return;
 
     switch (ev->kind) {
-    case BACKEND_EV_INIT: /* handled above; listed to keep -Wswitch exhaustive */
+    case BACKEND_EV_INIT:
     case BACKEND_EV_CWD:
         break;
 
@@ -254,7 +252,6 @@ int session_idle_fd(const struct session *s)
     return s->agent->idle_fd(s->agent);
 }
 
-/* Only report the change: the tab record is a file the tmux status bar reads. */
 static void tab_busy(struct session *s, int busy)
 {
     busy = busy ? 1 : 0;
@@ -281,7 +278,7 @@ int session_idle_pump(struct session *s)
     live = NULL;
 
     tab_busy(s, busy);
-    gitinfo_forget(); /* a background worker's turn edits the tree too */
+    gitinfo_forget();
     return busy;
 }
 
@@ -925,11 +922,8 @@ int session_turn(struct session *s, const char *text)
     if (meta.context_tokens > 0)
         s->context_tokens = meta.context_tokens;
 
-    /* Background workers the turn started are still going, so the turn ending
-     * is not the tab going idle. */
     tab_busy(s, session_idle_busy(s));
 
-    /* The turn is the likeliest thing to have touched the tree. */
     gitinfo_forget();
 
     update_title(s);

@@ -73,8 +73,6 @@ static void write_cache(const char *id, const char *title)
     char row[256];
     int n = snprintf(row, sizeof row, "%s\t%s\n", id, title);
 
-    /* A short write would leave a partial line that title_lookup then
-       mis-attributes to the next id. */
     if (n > 0 && (size_t)n < sizeof row) {
         const char *p = row;
         size_t left = (size_t)n;

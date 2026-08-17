@@ -172,8 +172,7 @@ static int mock_server(int argc, char **argv)
             }
             respond(id, "{\"stopReason\":\"end_turn\"}");
         } else if (idj) {
-            /* An unanswered request leaves the client blocked forever, so
-             * anything unrecognised gets an error rather than silence. */
+
             printf("{\"jsonrpc\":\"2.0\",\"id\":%d,\"error\":{"
                    "\"code\":-32601,\"message\":\"unhandled method: %s\"}}\n",
                    id, method ? method : "(none)");

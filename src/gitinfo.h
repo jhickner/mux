@@ -13,8 +13,6 @@ struct gitinfo {
 
 const struct gitinfo *gitinfo_get(const char *dir);
 
-/* Drop the cached read, for the points where something just ran that can have
- * changed the tree. Without it the next paint can be up to a TTL out of date. */
 void gitinfo_forget(void);
 
 #endif

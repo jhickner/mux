@@ -31,7 +31,6 @@ struct buf {
     int    full;
 };
 
-/* Returns 1 on success, 0 if the text could not be appended. */
 static int buf_add(struct buf *b, const char *src, size_t n, size_t cap_bytes)
 {
     if (b->len + n > cap_bytes) {
@@ -71,9 +70,6 @@ int bash_is_command(const char *line)
     return bash_body(line) != NULL;
 }
 
-/* Terminal output is a stream of escape sequences and overwrites; the agent
- * wants the text a human would see, so replay the few control codes that move
- * text around and drop the rest. */
 static char *plain_text(const char *raw, size_t len)
 {
     char *out = malloc(len + 1);
@@ -88,14 +84,14 @@ static char *plain_text(const char *raw, size_t len)
             if (i + 1 >= len)
                 break;
             unsigned char k = (unsigned char)raw[++i];
-            if (k == '[') { /* CSI: params, then a final byte 0x40..0x7e */
+            if (k == '[') {
                 while (++i < len) {
                     unsigned char f = (unsigned char)raw[i];
                     if (f >= 0x40 && f <= 0x7e)
                         break;
                 }
             } else if (k == ']' || k == 'P' || k == 'X' || k == '^' || k == '_') {
-                /* String sequences run to BEL or ST (ESC \). */
+
                 while (++i < len) {
                     if ((unsigned char)raw[i] == 0x07)
                         break;
@@ -113,7 +109,7 @@ static char *plain_text(const char *raw, size_t len)
         if (c == '\r') {
             if (i + 1 < len && raw[i + 1] == '\n')
                 continue;
-            o = line_start; /* the line is redrawn from its start */
+            o = line_start;
             continue;
         }
         if (c == '\n') {
@@ -136,7 +132,6 @@ static char *plain_text(const char *raw, size_t len)
     return out;
 }
 
-/* Long output keeps its head and tail, cut on line boundaries. */
 static char *elide(char *text)
 {
     size_t len = strlen(text);
@@ -162,10 +157,9 @@ static char *elide(char *text)
         free(out);
         return text;
     }
-    /* tail == len means the trailing chunk held no newline — there is no tail
-       to copy, and text + tail + 1 would be past the end of the allocation. */
+
     if (tail < len)
-        memcpy(out + n, text + tail + 1, len - tail); /* includes the NUL */
+        memcpy(out + n, text + tail + 1, len - tail);
     free(text);
     return out;
 }
@@ -185,8 +179,6 @@ char *bash_take_context(void)
     return out;
 }
 
-/* snprintf returns the length it *would* have written, so clamp before using
-   it as a byte count. */
 static int add_formatted(struct buf *b, const char *text, int n)
 {
     if (n < 0)
@@ -217,7 +209,6 @@ static void context_add(const char *cmd, const char *out, int status)
     ok = buf_add(&ctx, out, strlen(out), CTX_TOTAL) && ok;
     ok = buf_add(&ctx, "\n</bash-output>\n\n", 17, CTX_TOTAL) && ok;
 
-    /* A half-written record would hand the model a truncated XML tag. */
     if (!ok)
         bash_context_clear();
 }
@@ -250,8 +241,6 @@ void bash_run(const char *line)
     if (!cmd)
         return;
 
-    /* The command gets its own pty, so pagers and full-screen programs behave
-     * as they would in a plain shell while their output stays readable here. */
     struct termios cooked;
     if (tty_cooked_termios(&cooked) != 0) {
         ui_error("could not read the terminal mode");
@@ -265,7 +254,7 @@ void bash_run(const char *line)
     if (was_raw) {
         ui_raw(0);
         ui_cursor_restore();
-        ui_esc("\x1b[?2004l"); /* the child owns paste framing while it runs */
+        ui_esc("\x1b[?2004l");
     }
     ui_flush();
 
@@ -320,7 +309,7 @@ void bash_run(const char *line)
                 if (got <= 0) {
                     if (got < 0 && errno == EINTR)
                         continue;
-                    break; /* child closed the pty */
+                    break;
                 }
                 write_all(STDOUT_FILENO, chunk, (size_t)got);
                 buf_add(&raw, chunk, (size_t)got, RAW_CAP);

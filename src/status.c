@@ -48,9 +48,6 @@ static int   sticky_tracking;
 static int   block_tallest;
 static int   stack_tick;
 
-/* Everything in the block that is not the HUD — the gap, the sticky prompt, the
-   spinner and the prompt below — as of the last paint. A HUD that sizes itself
-   has to leave room for all of it. */
 static int   chrome_rows = 4;
 
 static unsigned resize_epoch;
@@ -105,16 +102,12 @@ static int size_changing(void)
         resize_epoch = epoch;
         resize_at = now_seconds();
         dirty = 1;
-        /* The high-water mark reserves room so the block cannot land on top of
-           the prompt echo. It has to be re-earned at the new size, or a window
-           that was once tall keeps the sticky copy appearing too early. */
+
         block_tallest = 0;
     }
     return resize_at > 0 && (now_seconds() - resize_at) * 1000.0 < TTY_RESIZE_SETTLE_MS;
 }
 
-/* Rows the HUD occupies at this width. Anything past the recorded widths can
-   only be counted as it was painted. */
 static int hud_reflowed(int cols)
 {
     int known = hud_rows < UI_HUD_ROWS_MAX ? hud_rows : UI_HUD_ROWS_MAX;
@@ -169,11 +162,6 @@ static int sticky_gone(void)
     return ui_scroll_rows() >= (gone_at > 0 ? gone_at : 0);
 }
 
-/* One braille cell is a 2x4 dot grid, so N stacked cells give a 2-column dot
-   canvas N cells tall that is still one character wide. Dots 1-3 climb the left
-   column and 4-6 descend the right (7/8 are skipped so the dot rows stay evenly
-   spaced across the line break), making a ring of 6N positions. A lit arc half
-   the ring long travels that outline. */
 static void stack_frame(int tick, int rows, char out[][8], const char *ptrs[])
 {
     int ring = 6 * rows, arc = ring / 2;
@@ -203,9 +191,6 @@ static void paint_sticky(void)
     if (max > STICKY_ROWS_MAX - 1)
         max = STICKY_ROWS_MAX - 1;
 
-    /* Budget leaves room for the 2-cell gutter and the clipping ellipsis.
-       prompt.c repaints this block with its own budget because it adds a
-       leading ✓ marker; both go through ui_wrap_paint. */
     struct ui_wrap w = {0};
     w.budget = (size_t)(cols - 3 > 4 ? cols - 3 : 4);
     w.gutter = UI_BAR " ";
@@ -215,7 +200,6 @@ static void paint_sticky(void)
     w.widths = sticky_widths;
     w.widths_max = STICKY_ROWS_MAX - 1;
 
-    /* Measured first because the arc has to be laid out over a known height. */
     char cells[STICKY_ROWS_MAX][8];
     const char *gutters[STICKY_ROWS_MAX];
     struct ui_wrap m = w;
@@ -331,7 +315,7 @@ static int paint_spin_only(void)
     int cols = ui_columns();
     if (!painted || !below || cols < 24)
         return 0;
-    /* The sticky block animates too, so it cannot be left alone. */
+
     if (sticky_on && sticky_text && *sticky_text && sticky_gone())
         return 0;
 

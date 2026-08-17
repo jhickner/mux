@@ -9,7 +9,6 @@
 #include "sessionlist.h"
 #include "title.h"
 
-/* Stub: the harness links sessionlist.o without title.o. */
 int title_lookup(const char *id, char *out, size_t size)
 {
     (void)id;

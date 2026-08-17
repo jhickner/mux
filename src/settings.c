@@ -5,8 +5,6 @@
 #include <string.h>
 #include <unistd.h>
 
-/* One model.<backend>.<model> and one window.<backend>.<label> key accrues per
-   model per backend, so the table has to outlast heavy use. */
 #define MAX_SETTINGS 512
 #define MAX_KEY      MAX_SETTING_KEY
 #define MAX_VALUE    256
@@ -77,8 +75,6 @@ void settings_set_str(const char *key, const char *value)
     }
     snprintf(entries[i].value, MAX_VALUE, "%s", value);
 
-    /* Write-and-rename so a crash or a full disk cannot leave the settings
-       file truncated. */
     char temp[sizeof file_path + 8];
     if (snprintf(temp, sizeof temp, "%s.tmp", file_path) >= (int)sizeof temp)
         return;

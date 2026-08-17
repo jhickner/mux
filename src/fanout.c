@@ -22,36 +22,26 @@
 #define FAN_MAX     8
 #define FAN_ROSTER  "claude,codex,grok"
 
-/* Below this a column holds nothing worth reading, so the board gives way to
-   the ordinary one-line spinner. */
 #define FAN_COL_MIN 14
 
 enum fan_state { FAN_WORK, FAN_OK, FAN_FAIL };
 
-/* One streamed block, held whole: the columns are the only record of the run,
-   so nothing is clipped on the way in. */
-/* What a column has to draw. Everything but FAN_NOTE mirrors a backend event,
-   because a column draws them through the very painters session.c uses for a
-   turn of its own. */
 enum fan_kind { FAN_SAID, FAN_THOUGHT, FAN_TOOL, FAN_RESULT, FAN_NOTE };
 
 struct entry {
     enum fan_kind kind;
-    long          seq;   /* arrival order across every column */
-    int           gap;   /* a blank row comes first, as the session spaces them */
+    long          seq;
+    int           gap;
     int           failed;
     char         *text;
-    char         *name;  /* tool name */
-    char         *arg;   /* the tool's one-line argument */
-    char         *diff;  /* a tool result's patch, when the driver reports one */
+    char         *name;
+    char         *arg;
+    char         *diff;
 
-    /* The entry as those painters drew it, at a given column width; redrawn
-       when the width changes. */
     char         *painted;
     int           painted_width;
 };
 
-/* One placed line of output: a wrapped row of some entry, in one column. */
 struct cell;
 
 struct worker {
@@ -72,36 +62,25 @@ struct worker {
     atomic_int  done;
     pthread_t   thread;
 
-    /* Written by the worker thread as the turn streams, read by the painter on
-     * the main thread: everything here is under board_lock. */
     int           state;
-    /* The whole run's output, kept so a resize can lay all of it out again. */
+
     struct entry *log;
     int           count;
     int           cap;
-    int           after_activity; /* spacing, exactly as session.c tracks it */
+    int           after_activity;
     int           after_tool;
 
-    /* The column's painted rows, rebuilt when the width changes. Read and
-       written only by the main thread. */
     struct cell  *rows;
     int           nrows;
     int           rows_cap;
     int           rows_width;
-    int           laid; /* entries already turned into rows */
+    int           laid;
 };
 
-/* Each column owns its own rows, so a column that has been quiet keeps its
-   place: its next line follows its last one, however far the busy columns have
-   run on. That only holds while nothing has been written to the transcript,
-   since printed rows cannot be moved — so the run paints a live board in place
-   and prints the whole thing, packed, once it is over. */
 struct board {
     struct worker *w;
     int            n;
 
-    /* Rows each column is scrolled back from its own newest, and which column
-       the keys drive (-1 for all of them at once). */
     int            scroll[FAN_MAX];
     int            sel;
 };
@@ -109,8 +88,6 @@ struct board {
 static atomic_int      aborted;
 static pthread_mutex_t board_lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* Runs on the worker threads, so it may only read the flag: the tty and the
-   display belong to the main thread for as long as the fan-out is up. */
 static int fan_aborted(void) { return atomic_load(&aborted); }
 
 static int known_backend(const char *name)
@@ -121,7 +98,6 @@ static int known_backend(const char *name)
     return 0;
 }
 
-/* Caller holds board_lock. */
 static struct entry *log_add(struct worker *w, enum fan_kind kind, const char *text)
 {
     if (w->count == w->cap) {
@@ -155,18 +131,13 @@ static void log_free(struct worker *w)
     w->count = w->cap = w->laid = w->nrows = 0;
 }
 
-/* Runs on the worker thread, so it only records what the column will have to
-   draw; the drawing happens on the main thread at layout time. The spacing
-   flags are kept the way session.c keeps them, so a column reads like a turn
-   that backend ran on its own. */
 static void fan_event(void *ud, const backend_event *ev)
 {
     struct worker *w = ud;
 
     pthread_mutex_lock(&board_lock);
     switch (ev->kind) {
-    /* A column shows the run, not the shell it runs in: the board has no place
-       to put a working directory, and each worker's is fixed at its start. */
+
     case BACKEND_EV_CWD:
         break;
 
@@ -226,8 +197,6 @@ static void fan_event(void *ud, const backend_event *ev)
     pthread_mutex_unlock(&board_lock);
 }
 
-/* Draws one entry the way session.c draws that event, capturing the result
-   instead of painting it, so a column can hold the rows. */
 static const char *entry_painted(struct entry *e, int width)
 {
     if (e->painted && e->painted_width == width)
@@ -271,11 +240,10 @@ static const char *entry_painted(struct entry *e, int width)
     return e->painted;
 }
 
-/* One painted line of a column, pointing into the entry it came from. */
 struct cell {
-    const char *text;  /* carries its own styling */
+    const char *text;
     size_t      bytes;
-    int         width; /* what it occupies on screen, escapes aside */
+    int         width;
 };
 
 static int board_width(const struct board *b, int cols)
@@ -283,10 +251,6 @@ static int board_width(const struct board *b, int cols)
     return (cols - 1) / b->n;
 }
 
-/* Adds one painted row to a column, clipped to the column's width. Not
-   everything a painter draws wraps — a fenced code block does not, and a table
-   keeps its minimum widths — so a row can come back wider than the column, and
-   anything over would run into the next one. */
 static void column_row(struct worker *w, const char *text, size_t bytes, int width)
 {
     if (ui_cells_visible(text, bytes) > (size_t)width)
@@ -303,8 +267,6 @@ static void column_row(struct worker *w, const char *text, size_t bytes, int wid
     w->rows[w->nrows++] = (struct cell){text, bytes, (int)ui_cells_visible(text, bytes)};
 }
 
-/* Brings a column's rows up to date at `width`, painting whatever entries have
-   arrived since the last pass. A change of width starts them over. */
 static void column_lay(struct worker *w, int width)
 {
     if (w->rows_width != width) {
@@ -335,7 +297,6 @@ static void board_lay(struct board *b, int width)
         column_lay(&b->w[i], width - 1);
 }
 
-/* The tallest column. */
 static int board_height(const struct board *b)
 {
     int tallest = 0;
@@ -345,11 +306,6 @@ static int board_height(const struct board *b)
     return tallest;
 }
 
-/* One row across every column, each column supplying its own row `r` counted
-   from `from[i]`. `erase` clears to end of line first, for the live block;
-   `pad_tail` fills the last column out, which only the live block wants —
-   trailing blanks in the transcript would re-wrap into empty rows if the
-   terminal ever narrowed. */
 static void board_row(const struct board *b, int width, const int *from, int r,
                       int erase, int pad_tail)
 {
@@ -372,8 +328,7 @@ static void board_row(const struct board *b, int width, const int *from, int r,
         }
         const struct cell *c = &b->w[i].rows[at];
         ui_putn(c->text, c->bytes);
-        /* Clipping can cut a row mid-style, and a painter may end a row still
-           inside one, so the next column always starts clean. */
+
         ui_esc(ui_style(UI_RESET));
         if (pad_tail || i < last)
             ui_pad(cell - c->width);
@@ -381,7 +336,6 @@ static void board_row(const struct board *b, int width, const int *from, int r,
     ui_put("\n");
 }
 
-/* A row of per-column labels: the names above the board, the timings below. */
 static void label_row(const struct board *b, int width, int closing, int erase)
 {
     if (erase)
@@ -416,11 +370,6 @@ static void label_row(const struct board *b, int width, int closing, int erase)
     ui_put("\n");
 }
 
-/* The live board, painted over the whole alternate screen: the labels, then
-   each column's own rows, then a status line. Because it owns the screen it can
-   repaint as often as it likes without erasing a block, scrolling the history
-   or leaving anything in the scrollback — and each column can be scrolled back
-   through its own output while the run goes on. */
 static void widget_paint(struct board *b, const char *word, double elapsed, int frame)
 {
     static const char *const FRAMES[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
@@ -433,8 +382,6 @@ static void widget_paint(struct board *b, const char *word, double elapsed, int 
     if (body < 1)
         body = 1;
 
-    /* Where each column's view starts: its newest `body` rows, less however far
-       it has been scrolled back. */
     int from[FAN_MAX];
     for (int i = 0; i < b->n; i++) {
         int tail = b->w[i].nrows > body ? b->w[i].nrows - body : 0;
@@ -449,8 +396,6 @@ static void widget_paint(struct board *b, const char *word, double elapsed, int 
     for (int r = 0; r < body; r++)
         board_row(b, width, from, r, 1, 0);
 
-    /* The last row carries no newline: one on the bottom line would scroll the
-       screen out from under the board. */
     ui_esc(UI_ERASE_EOL);
     char clock[32];
     snprintf(clock, sizeof clock, "%s %.0fs \xc2\xb7 %s", FRAMES[frame % 10], elapsed, word);
@@ -464,13 +409,6 @@ static void widget_paint(struct board *b, const char *word, double elapsed, int 
     ui_flush();
 }
 
-/* Keys while the widget owns the screen. Nothing here reaches the prompt: it
-   lives on the main screen, which the widget is standing in front of.
-
-   The first read waits, so this doubles as the loop's idle: a keystroke is
-   acted on the moment it lands rather than at the next frame. `moved` says the
-   view changed and should be repainted now — waiting for the frame timer is
-   what makes scrolling feel like wading. */
 #define WIDGET_STEP 3
 
 static int widget_keys(struct board *b, int wait_ms, int *moved)
@@ -482,7 +420,7 @@ static int widget_keys(struct board *b, int wait_ms, int *moved)
 
     tty_event ev;
     for (int first = 1; tty_read(&ev, first ? wait_ms : 0); first = 0) {
-        /* 0 leaves the view alone; TOP and FOLLOW are the two ends of it. */
+
         enum { KEEP, TOP, FOLLOW } jump = KEEP;
         int step = 0;
 
@@ -521,14 +459,12 @@ static int widget_keys(struct board *b, int wait_ms, int *moved)
     return interrupt;
 }
 
-/* The whole run, once it is over: every column in full, each packed from its
-   own first row so nothing but the end of a column is ever blank. */
 static void board_print(struct board *b, int cols)
 {
     int width = board_width(b, cols);
 
     if (width < FAN_COL_MIN) {
-        /* No room for columns: one backend after another instead. */
+
         for (int i = 0; i < b->n; i++) {
             struct worker *w = &b->w[i];
             ui_bar(ui_style(UI_CHROME), "%s \xc2\xb7 %.1fs", w->name, w->secs);
@@ -546,8 +482,6 @@ static void board_print(struct board *b, int cols)
 
     board_lay(b, width);
 
-    /* The printed board is the whole run, not a view of it: no scroll marks and
-       no selection. */
     memset(b->scroll, 0, sizeof b->scroll);
     b->sel = -1;
 
@@ -612,8 +546,7 @@ static void *fan_work(void *arg)
     if (!reply) {
         snprintf(w->error, sizeof w->error, "%s",
                  detail && *detail ? detail : "no reply");
-        /* The columns are all that is left after the run, so what went wrong
-           has to be in them. */
+
         log_add(w, FAN_NOTE, w->error);
     }
     if (meta.interrupted)
@@ -625,8 +558,6 @@ static void *fan_work(void *arg)
     return NULL;
 }
 
-/* Fills w from a comma or space separated backend list, skipping unknown names
-   and repeats. Returns how many entries it set up. */
 static int roster(struct worker *w, int max, const char *spec)
 {
     int n = 0;
@@ -697,11 +628,6 @@ int fanout_run(struct session *s, const char *prompt)
 
     struct board board = {.w = w, .n = n, .sel = -1};
 
-    /* The board takes over the alternate screen for the length of the run. It
-       leaves the transcript untouched — nothing it paints reaches the
-       scrollback — and hands the screen back exactly as it found it. Too narrow
-       for columns, and there is nothing worth taking the screen for: the
-       ordinary spinner does, and the output prints at the end. */
     int widget = board_width(&board, ui_columns()) >= FAN_COL_MIN;
     if (widget) {
         ui_esc(UI_ALT_ON);
@@ -760,8 +686,6 @@ int fanout_run(struct session *s, const char *prompt)
         if (w[i].started)
             pthread_join(w[i].thread, NULL);
 
-    /* The screen is the transcript's again, and the run has left nothing on it,
-       so the whole board prints here at whatever width the terminal now is. */
     board_print(&board, ui_columns());
 
     int answered = 0;

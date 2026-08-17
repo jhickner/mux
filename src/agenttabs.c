@@ -111,8 +111,6 @@ void agenttabs_begin(const char *backend)
     if (mkdir(agents, 0700) != 0 && errno != EEXIST)
         return;
 
-    /* Truncation could drop the pid suffix, so two instances would share (and
-       unlink) one record. */
     if (snprintf(hook_dir, sizeof hook_dir, "%s/state", dir) >= (int)sizeof hook_dir)
         return;
     if (snprintf(record, sizeof record, "%s/%ld.json", agents, (long)getpid()) >=

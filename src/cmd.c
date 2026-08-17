@@ -137,7 +137,6 @@ static const struct pick_item *effort_choices(const struct session *s, int *coun
     return NULL;
 }
 
-/* Every command reply is a styled line, a blank line, and a flush. */
 __attribute__((format(printf, 2, 3)))
 static void reply(int error, const char *fmt, ...)
 {
@@ -402,8 +401,6 @@ static void do_mux(struct session *s, const char *arg)
     fanout_run(s, arg);
 }
 
-/* Reads an on/off style argument, defaulting to flipping `current`. Returns -1
-   and reports the problem when the word is not one of the two. */
 static int toggle_arg(const char *arg, const char *on_word, const char *off_word,
                       int current, const char *command)
 {

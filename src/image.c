@@ -89,9 +89,6 @@ static int png_dims(const unsigned char *d, size_t n, int *w, int *h)
     return *w > 0 && *h > 0;
 }
 
-/* The converter is handed a path, not an fd, so a shared directory would let a
-   local attacker swap the name for a symlink between here and the child's
-   open(). A private 0700 directory closes that window. */
 static char *convert_to_png(const char *path)
 {
     const char *tmpdir = getenv("TMPDIR");
@@ -140,7 +137,6 @@ static char *convert_to_png(const char *path)
     return out;
 }
 
-/* Undoes convert_to_png: removes the file and the private directory holding it. */
 static void discard_temp_png(const char *file)
 {
     unlink(file);

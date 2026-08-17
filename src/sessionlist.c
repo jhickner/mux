@@ -39,8 +39,6 @@ static void relative_time(time_t then, char *out, size_t size)
         snprintf(out, size, "%ldd ago", secs / 86400);
 }
 
-/* A message "content" is either a plain string or an array of blocks; take the
-   first piece of text either way. */
 static const char *json_first_text(const cJSON *content)
 {
     if (cJSON_IsString(content))
@@ -140,8 +138,6 @@ static int finish_list(struct past_session *list, int count, struct past_session
     return count;
 }
 
-/* Fills a candidate's id and label from one directory entry, or returns 0 to
-   skip it. The three backends differ only in this step. */
 typedef int (*scan_fill_fn)(const char *name, const char *path, const struct stat *st,
                             const void *ctx, struct past_session *candidate);
 
@@ -181,7 +177,6 @@ static int scan_dir(const char *dir, const char *skip_id, scan_fill_fn fill,
     return finish_list(list, count, out);
 }
 
-/* "<id>.jsonl" -> id, when it fits. */
 static int jsonl_id(const char *name, char *out, size_t size)
 {
     size_t len = strlen(name);
@@ -478,7 +473,7 @@ static int pi_fill(const char *name, const char *path, const struct stat *st,
     if (!pi_transcript(path, pi->cwd, pi->filter_cwd, c->id, sizeof c->id,
                        c->label, sizeof c->label))
         return 0;
-    /* title_lookup overwrites the label when it has one of its own. */
+
     return title_lookup(c->id, c->label, sizeof c->label) || c->label[0] != '\0';
 }
 

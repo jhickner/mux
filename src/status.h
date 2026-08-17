@@ -15,9 +15,6 @@ void   status_set_below(status_paint_fn paint, status_offset_fn offset, void *ud
 
 void   status_set_hud(ui_hud_fn paint, void *ud);
 
-/* Rows the block spends on everything but the HUD, as of the last paint. A HUD
-   that chooses its own height subtracts this from the terminal, or the block
-   outgrows the screen and every repaint scrolls a copy into the scrollback. */
 int    status_chrome_rows(void);
 
 void   status_set_word(const char *text);
@@ -40,8 +37,6 @@ int    status_sticky_enabled(void);
 
 void   status_sticky_prompt(const char *text);
 
-/* Rows the floating prompt drew in the last paint, 0 when it was not drawn.
-   The gutter it draws them with animates, so this is the only stable count. */
 int    status_sticky_rows(void);
 
 const char *status_sticky_offscreen(void);

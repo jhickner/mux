@@ -6,8 +6,6 @@
 #include <stdint.h>
 #include <termios.h>
 
-/* Forward-declared rather than including <termios.h>: session.h includes this
-   header, so every session consumer would otherwise pull in termios. */
 struct termios;
 
 typedef enum {

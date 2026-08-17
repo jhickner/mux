@@ -47,9 +47,7 @@ static void styled_push(struct styled *s, const char *bytes, size_t n, int role)
         s->style = y;
         s->cap = want;
     }
-    /* Rendered text is untrusted model/tool output. A raw ESC would let it
-       drive the terminal — OSC 52 clipboard writes, or a status query whose
-       reply the terminal types back into our raw-mode stdin. */
+
     size_t out = s->len;
     for (size_t i = 0; i < n; i++) {
         unsigned char c = (unsigned char)bytes[i];

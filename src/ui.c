@@ -143,8 +143,7 @@ const char *ui_cycle(enum ui_group group, int delta)
 
 void ui_init(void)
 {
-    /* wcwidth() reports -1 for every non-ASCII codepoint in the startup "C"
-       locale, which would make all width and wrapping math wrong. */
+
     setlocale(LC_CTYPE, "");
 
     const char *no_color = getenv("NO_COLOR");
@@ -195,10 +194,6 @@ void ui_cursor_restore(void)
 
 void ui_raw(int on) { raw_newlines = on; }
 
-/* Cells per line emitted since the mark, banked rather than turned into rows at
-   emit time: a resize reflows everything already on screen, so how many rows
-   that output occupies is only answerable at the width being asked about. Past
-   SCROLL_LINES the answer is "further back than any screen is tall". */
 #define SCROLL_LINES 512
 static int scroll_widths[SCROLL_LINES];
 static int scroll_count;
@@ -219,8 +214,7 @@ int ui_scroll_rows(void)
         return SCROLL_LINES;
     int cols = ui_columns();
     int rows = ui_reflow_rows(scroll_widths, scroll_count, cols);
-    /* The terminal defers the wrap until a cell past the last column, so the
-       line still being built has only scrolled once it passes that. */
+
     if (scroll_cells > 0 && cols > 0)
         rows += (scroll_cells - 1) / cols;
     return rows;
@@ -250,8 +244,6 @@ static char  *capture;
 static size_t capture_len, capture_cap;
 static int    capture_on, capture_cols;
 
-/* The one place every painter's bytes pass through, so a capture can stand in
-   for the terminal without each of them knowing. */
 static void emit(const char *s, size_t n)
 {
     if (!capture_on) {
@@ -403,9 +395,6 @@ static unsigned decode(const char *s, size_t n, size_t *i)
     return cp;
 }
 
-/* The symbol blocks are mostly narrow; only the code points that carry
-   Emoji_Presentation render double-width, so they are listed rather than
-   covered by a blanket range (which would mis-measure ✓, box drawing, …). */
 static const struct {
     unsigned lo, hi;
 } WIDE_SYMBOLS[] = {
@@ -448,8 +437,6 @@ size_t ui_cells_n(const char *s, size_t n)
 
 size_t ui_cells(const char *s) { return s ? ui_cells_n(s, strlen(s)) : 0; }
 
-/* Walks one escape sequence or one character, returning where it ends and
-   adding what it costs on screen. */
 static size_t step_visible(const char *s, size_t n, size_t i, size_t *cells)
 {
     if (s[i] == '\x1b') {
@@ -532,8 +519,7 @@ size_t ui_wrap_row(const char *s, size_t budget, size_t *skip)
                 *skip = 1;
                 return last_space;
             }
-            /* A single glyph wider than the budget still has to be consumed,
-               or the caller's `p += row + skip` walk never advances. */
+
             return start ? start : i;
         }
         cells += w;

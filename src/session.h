@@ -9,8 +9,6 @@ struct session;
 typedef int (*session_key_fn)(void *ud, tty_event *ev);
 void session_set_typeahead(session_key_fn fn, void *ud);
 
-/* Drains the keyboard into the live prompt while work is in flight, returning
-   nonzero when the user asked to interrupt. Main thread only. */
 int session_poll_input(void);
 
 struct session *session_new(const char *backend, const char *cwd, const char *model,
@@ -41,8 +39,6 @@ int session_turn(struct session *s, const char *text);
 
 int  session_idle_fd(const struct session *s);
 
-/* Consume a turn the agent ran on its own. Nonzero while one is still open —
- * a background worker reporting in after the send's own turn ended. */
 int  session_idle_pump(struct session *s);
 int  session_idle_busy(const struct session *s);
 
@@ -78,14 +74,13 @@ const char *session_saved_effort(const char *backend);
 
 const char *session_model_label(const struct session *s);
 
-/* Drops the "claude-" prefix when the backend is claude. */
 const char *session_model_short(const struct session *s, const char *model);
 
 const char *session_effort_label(const struct session *s);
 
 int session_can_resume(const struct session *s);
 const char *session_cwd(const struct session *s);
-/* Where the agent is actually working: its cwd, or the worktree it moved into. */
+
 const char *session_workdir(const struct session *s);
 const char *session_backend(const struct session *s);
 const char *session_last_reply(const struct session *s);

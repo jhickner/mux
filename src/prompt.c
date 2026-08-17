@@ -57,7 +57,7 @@ struct prompt {
     void       (*replay)(void *ud);
     void        *replay_ud;
     int          live_block;
-    char        *painted_head;   /* owned: status.c frees the string we copy */
+    char        *painted_head;
 };
 
 static void history_append(struct prompt *p, const char *line)
@@ -107,8 +107,7 @@ static void frame_size(struct frame *f, int rows, int cols)
     if (need > f->cap) {
         struct cell *grown = realloc(f->cells, (size_t)need * sizeof *grown);
         if (!grown) {
-            /* Leave no geometry claiming cells we do not have — callers size
-               their loops from f->rows/f->cols. */
+
             f->rows = f->cols = 0;
             return;
         }
@@ -208,8 +207,7 @@ static const char *head_text(const struct prompt *p)
 }
 
 #define STICKY_DONE "\xe2\x9c\x93 "
-/* Same two cells as the check, so a turn still running elsewhere does not
- * reflow the bar when it lands. */
+
 #define STICKY_BUSY "\xe2\x8b\xaf "
 
 static size_t sticky_budget(int cols)
@@ -241,8 +239,6 @@ static int wrapped_rows(const char *text, size_t budget, int cap)
     return ui_wrap_paint(text, &w);
 }
 
-/* Measured through the same painter that draws the block, so the gutter and
-   first-row mark cannot be accounted for differently here than there. */
 static int reflowed_rows(const char *text, size_t budget, int cols, int cap,
                          const char *mark)
 {
@@ -264,8 +260,7 @@ static int caret_offset(const struct prompt *p, int cols)
                             cols, STICKY_LINES, STICKY_DONE) + 1;
     for (int i = 0; i < p->queued_count; i++)
         up += reflowed_rows(p->queued[i], budget, cols, 0, NULL);
-    /* Re-wrapped like everything else above the caret: the HUD rows were
-       painted at painted_cols and the terminal has since re-wrapped them. */
+
     int hud_known = p->painted_hud < UI_HUD_ROWS_MAX ? p->painted_hud : UI_HUD_ROWS_MAX;
     up += ui_reflow_rows(p->painted_hud_widths, hud_known, cols) +
           (p->painted_hud - hud_known);
@@ -632,7 +627,7 @@ static void edit_in_editor(struct prompt *p, int live)
     int status = system(cmd);
 
     if (tty_raw_begin() != 0) {
-        /* Without raw mode the REPL cannot read keys; nothing sane is left. */
+
         fprintf(stderr, "could not return the terminal to raw mode\n");
         exit(1);
     }

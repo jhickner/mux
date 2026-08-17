@@ -26,8 +26,6 @@ static volatile sig_atomic_t winch_count;
 
 static void on_winch(int sig) { (void)sig; got_winch = 1; winch_count++; }
 
-/* atexit() does not run when a signal kills us, which would leave the user's
-   terminal in raw mode with echo off. Only async-signal-safe calls here. */
 static void on_fatal(int sig)
 {
     if (in_raw) {
@@ -217,8 +215,7 @@ static void read_paste(tty_event *ev)
         return;
     }
     static const char END[] = "\x1b[201~";
-    /* Keep consuming to the end marker once the cap is hit, or the rest of the
-       paste would be re-read as keystrokes. */
+
     const size_t PASTE_MAX = 8u << 20;
     int full = 0;
     size_t matched = 0;
