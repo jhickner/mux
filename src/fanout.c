@@ -165,6 +165,11 @@ static void fan_event(void *ud, const backend_event *ev)
 
     pthread_mutex_lock(&board_lock);
     switch (ev->kind) {
+    /* A column shows the run, not the shell it runs in: the board has no place
+       to put a working directory, and each worker's is fixed at its start. */
+    case BACKEND_EV_CWD:
+        break;
+
     case BACKEND_EV_INIT:
         if (ev->name && *ev->name)
             snprintf(w->resolved, sizeof w->resolved, "%s", ev->name);
