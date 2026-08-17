@@ -1,5 +1,6 @@
 #include "image.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdint.h>
@@ -303,7 +304,8 @@ static int start_convert(const char *path, time_t mtime, int indent)
     int cols, rows;
     if (!box_size(indent, 0, 0, &cols, &rows)) {
         kill(pid, SIGTERM);
-        waitpid(pid, NULL, 0);
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR)
+            ;
         discard_temp_png(tmp);
         return 0;
     }
@@ -388,7 +390,10 @@ void image_wait(void)
         if (!p->live)
             continue;
         int status = 0;
-        if (waitpid(p->pid, &status, 0) == p->pid)
+        pid_t r;
+        while ((r = waitpid(p->pid, &status, 0)) < 0 && errno == EINTR)
+            ;
+        if (r == p->pid)
             finish_pending(p, status);
         else {
             p->live = 0;

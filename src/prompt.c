@@ -52,6 +52,9 @@ struct prompt {
     void        *idle_ud;
     void       (*replay)(void *ud);
     void        *replay_ud;
+    int        (*restart_pending)(void *ud);
+    int        (*restart)(void *ud);
+    void        *restart_ud;
     int          live_block;
     int          frame_ok;
     char        *painted_head;
@@ -845,6 +848,14 @@ void prompt_set_idle(struct prompt *p, int (*fd)(void *ud),
     p->idle_ud = ud;
 }
 
+void prompt_set_restart(struct prompt *p, int (*pending)(void *ud), int (*run)(void *ud),
+                        void *ud)
+{
+    p->restart_pending = pending;
+    p->restart = run;
+    p->restart_ud = ud;
+}
+
 static int idle_fd_hook(void *ud)
 {
     struct prompt *p = ud;
@@ -861,12 +872,30 @@ static void idle_ready_hook(void *ud)
     repaint(p);
 }
 
+// A half-typed line or a queued message is work the restart would throw away,
+// so it waits: the request is sticky and the next idle moment picks it up.
+static void restart_check(struct prompt *p)
+{
+    if (!p->restart || p->repl.len || p->queued_count)
+        return;
+    if (!p->restart_pending(p->restart_ud))
+        return;
+    erase_block(p);
+    ui_flush();
+    p->restart(p->restart_ud);
+    p->painted_rows = 0;
+    p->caret_row = 0;
+    repaint(p);
+}
+
 static char *read_loop(struct prompt *p)
 {
 
     p->painted_rows = 0;
     p->caret_row = 0;
     repaint(p);
+    // Covers a request that landed mid-turn, when nothing was waiting in select.
+    restart_check(p);
 
     int resizing = 0;
     for (;;) {
@@ -876,6 +905,8 @@ static char *read_loop(struct prompt *p)
             if (resizing) {
                 resizing = 0;
                 repaint(p);
+            } else {
+                restart_check(p);
             }
             continue;
         }
@@ -900,6 +931,9 @@ static char *read_loop(struct prompt *p)
 
         default:
             repaint(p);
+            // Picks up a request that was held back by a line the user has
+            // now cleared, without waiting for the next wakeup.
+            restart_check(p);
             continue;
         }
     }

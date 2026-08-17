@@ -142,5 +142,6 @@ void title_request(const char *id, const char *backend, const char *model,
         }
         _exit(0);
     }
-    waitpid(pid, NULL, 0);
+    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR)
+        ;
 }

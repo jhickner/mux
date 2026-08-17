@@ -1,5 +1,7 @@
 #include "files.h"
 
+#include "restart.h"
+
 #include <ctype.h>
 #include <dirent.h>
 #include <pthread.h>
@@ -191,6 +193,8 @@ static void index_build(struct index *ix, const char *root)
 static void *index_worker(void *arg)
 {
     struct index_job *job = arg;
+
+    restart_shield_thread();
     struct index ix = {0};
     index_build(&ix, job->root);
 

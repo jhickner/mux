@@ -27,6 +27,9 @@ void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud);
 typedef int (*prompt_live_fn)(void *ud, const char *line);
 void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud);
 
+void prompt_set_restart(struct prompt *p, int (*pending)(void *ud), int (*run)(void *ud),
+                        void *ud);
+
 void prompt_set_idle(struct prompt *p, int (*fd)(void *ud), int (*render)(void *ud),
                      int (*busy)(void *ud), void *ud);
 

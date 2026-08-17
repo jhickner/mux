@@ -14,6 +14,7 @@
 #include "hud.h"
 #include "image.h"
 #include "prompt.h"
+#include "restart.h"
 #include "session.h"
 #include "sessionfork.h"
 #include "settings.h"
@@ -86,6 +87,24 @@ static int idle_render(void *ud)
 }
 static int idle_busy(void *ud)   { return session_idle_busy(ud); }
 static void replay(void *ud)      { session_replay(ud); }
+
+static int restart_pending(void *ud)
+{
+    (void)ud;
+    return restart_wanted();
+}
+
+static int idle_restart(void *ud)
+{
+    // Returns only when the new build could not be run at all, in which case
+    // this session keeps going on the old one.
+    if (!restart_exec(ud)) {
+        ui_error("could not restart — staying on this build");
+        ui_put("\n");
+        ui_flush();
+    }
+    return 0;
+}
 
 static int live_command(void *ud, const char *line)
 {
@@ -182,6 +201,7 @@ int main(int argc, char **argv)
     int interactive = optind >= argc;
 
     if (interactive) {
+        restart_arm(safe_mode);
         if (tty_raw_begin() != 0) {
             fprintf(stderr, APP_NAME ": not a terminal — pass a prompt as arguments instead\n");
             return 1;
@@ -262,6 +282,7 @@ int main(int argc, char **argv)
     status_set_below(prompt_live_paint, prompt_live_offset, prompt);
     prompt_set_live_command(prompt, live_command, session);
     prompt_set_idle(prompt, idle_fd, idle_render, idle_busy, session);
+    prompt_set_restart(prompt, restart_pending, idle_restart, session);
     prompt_set_replay(prompt, replay, session);
 
     ui_put("\n");

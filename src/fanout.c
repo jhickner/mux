@@ -10,6 +10,7 @@
 #include "app.h"
 #include "filediff.h"
 #include "md.h"
+#include "restart.h"
 #include "session.h"
 #include "sessionview.h"
 #include "settings.h"
@@ -503,6 +504,8 @@ static void board_print(struct board *b, int cols)
 static void *fan_work(void *arg)
 {
     struct worker *w = arg;
+
+    restart_shield_thread();
 
     backend_opts o = {0};
     o.name = w->name;

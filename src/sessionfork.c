@@ -25,6 +25,11 @@ void sessionfork_set_program(const char *argv0)
         snprintf(program, sizeof program, "%s", argv0);
 }
 
+const char *sessionfork_program(void)
+{
+    return program;
+}
+
 static int run(char *const argv[], const char *out_path)
 {
     pid_t pid = fork();

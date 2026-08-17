@@ -112,6 +112,7 @@ check: $(addprefix $(BUILD)/,$(CHECKS))
 install: $(BIN)
 	install -d $(PREFIX)/bin
 	install -m 755 $(BIN) $(PREFIX)/bin/$(BIN)
+	@pkill -URG -x $(BIN) 2>/dev/null || true
 
 $(BUILD):
 	@mkdir -p $(BUILD)

@@ -9,6 +9,7 @@
 #include "fanout.h"
 #include "hud.h"
 #include "pick.h"
+#include "restart.h"
 #include "session.h"
 #include "image.h"
 #include "sessionfork.h"
@@ -38,6 +39,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/status", "reprint the status bar", NULL},
     {"/session", "show this session's info and totals", NULL},
     {"/copy", "copy last response to clipboard", NULL},
+    {"/restart", "reload the mux binary, keeping this conversation", NULL},
     {"/help", "show this help", NULL},
     {"/quit", "leave", NULL},
 };
@@ -645,6 +647,8 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line)
         session_report(s);
     } else if (!strcmp(name, "/copy")) {
         do_copy(s);
+    } else if (!strcmp(name, "/restart")) {
+        restart_request();
     } else if (!strcmp(name, "/quit") || !strcmp(name, "/exit")) {
         return CMD_QUIT;
     } else {

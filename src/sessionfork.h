@@ -6,6 +6,8 @@ struct session;
 
 void sessionfork_set_program(const char *argv0);
 
+const char *sessionfork_program(void);
+
 enum fork_where {
     FORK_SPLIT_H,
     FORK_SPLIT_V,
