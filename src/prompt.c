@@ -500,6 +500,7 @@ void prompt_free(struct prompt *p)
 static int feed(struct prompt *p, ReplKey key, uint32_t cp, const char *text)
 {
     ReplEvent ev = {.key = key, .codepoint = cp, .text = text};
+    repl_set_width(&p->repl, ui_columns());
     return repl_handle_input(&p->repl, &ev);
 }
 

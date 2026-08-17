@@ -151,11 +151,17 @@ typedef struct {
     int   undo_count;
     int   undo_anchor;           // cursor of the current edit-run; -1 = none
     int   undo_kind;             // 0 structural, 1 insert, 2 delete
+
+    // Render width in columns, set by the host; 0 = unknown. Arrow keys walk
+    // wrapped visual rows when it is known, logical lines otherwise.
+    int   width;
 } Repl;
 
 void        repl_init(Repl *r, const ReplCommand *commands, int command_count);
 // Register an @-file completer (borrowed callback + ctx). Optional.
 void        repl_set_completer(Repl *r, ReplCompleter fn, void *ctx);
+// Tell the repl how wide it renders, so arrow keys can walk wrapped rows.
+void        repl_set_width(Repl *r, int width);
 void        repl_free(Repl *r);               // release heap (buf/stash/history)
 
 // The usage hint to show as ghost text after the input, or NULL. Non-NULL when
@@ -326,6 +332,10 @@ void repl_init(Repl *r, const ReplCommand *commands, int command_count) {
 void repl_set_completer(Repl *r, ReplCompleter fn, void *ctx) {
     r->completer = fn;
     r->completer_ctx = ctx;
+}
+
+void repl_set_width(Repl *r, int width) {
+    r->width = width > 0 ? width : 0;
 }
 
 void repl_free(Repl *r) {
@@ -718,6 +728,41 @@ static int wrap_segments(const Repl *r, int text_cols, int *seg, int seg_cap) {
     return n;
 }
 
+// Move the cursor one wrapped visual row up/down, preserving display column.
+// Falls back to logical lines when the render width is unknown. Returns false
+// when already on the first/last row (caller falls back to history).
+static bool cursor_row_move(Repl *r, int dir) {   // dir: -1 up, +1 down
+    int text_cols = r->width - 2;
+    if (text_cols < 1) return cursor_line_move(r, dir);
+    int n = wrap_segments(r, text_cols, NULL, 0);
+    if (n <= 1) return false;
+    int *seg = malloc(sizeof(int) * (size_t)(n + 1));
+    if (!seg) return cursor_line_move(r, dir);
+    wrap_segments(r, text_cols, seg, n + 1);
+
+    int row = 0;
+    for (int i = 0; i < n; i++) if (r->cursor >= seg[i]) row = i;
+    int target = row + dir;
+    if (target < 0 || target >= n) { free(seg); return false; }
+
+    int col = disp_width(r->buf, seg[row], r->cursor);
+    int ts = seg[target];
+    int te = (target + 1 < n) ? seg[target + 1] : r->len;
+    if (target + 1 < n && te > ts && r->buf[te - 1] == '\n') te--;
+
+    int i = ts, w = 0;
+    while (i < te) {
+        int prev = i;
+        uint32_t cp = utf8_decode(r->buf, te, &i);
+        int gw = glyph_cols(cp);
+        if (w + gw > col) { i = prev; break; }
+        w += gw;
+    }
+    r->cursor = i;
+    free(seg);
+    return true;
+}
+
 // ----------------------------------------------------------
 // History
 // ----------------------------------------------------------
@@ -1081,10 +1126,10 @@ ReplResult repl_handle_input(Repl *r, const ReplEvent *ev) {
             return REPL_CONSUMED;
 
         case REPL_KEY_UP:
-            // Dropdown nav > multi-line cursor nav > history browse.
+            // Dropdown nav > multi-row cursor nav > history browse.
             if (r->dropdown_open) {
                 r->sel = (r->sel <= 0) ? r->cand_count - 1 : r->sel - 1;
-            } else if (!cursor_line_move(r, -1)) {
+            } else if (!cursor_row_move(r, -1)) {
                 history_browse(r, +1);
             }
             return REPL_CONSUMED;
@@ -1092,7 +1137,7 @@ ReplResult repl_handle_input(Repl *r, const ReplEvent *ev) {
         case REPL_KEY_DOWN:
             if (r->dropdown_open) {
                 r->sel = (r->sel + 1) % r->cand_count;
-            } else if (!cursor_line_move(r, +1)) {
+            } else if (!cursor_row_move(r, +1)) {
                 history_browse(r, -1);
             }
             return REPL_CONSUMED;
