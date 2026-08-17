@@ -70,10 +70,12 @@ static void row_identity(const struct session *s, int cols)
 
 static void row_location(const struct session *s, int cols)
 {
-    char path[1024];
-    path_home_relative(session_cwd(s), path, sizeof path);
+    const char *dir = session_workdir(s);
 
-    const struct gitinfo *g = gitinfo_get(session_cwd(s));
+    char path[1024];
+    path_home_relative(dir, path, sizeof path);
+
+    const struct gitinfo *g = gitinfo_get(dir);
     char where[256] = "", added[32] = "", removed[32] = "", flags[8] = "", ctx[24] = "";
     if (g->repo)
         snprintf(where, sizeof where, " on " BRANCH " %s%s%s%s",

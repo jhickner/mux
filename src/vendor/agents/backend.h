@@ -46,6 +46,9 @@ typedef enum {
     BACKEND_EV_TOOL,        /* name, plus input_json or arg: a tool invocation  */
     BACKEND_EV_TOOL_RESULT, /* text: output; diff: optional patch; failed: error */
     BACKEND_EV_INIT,        /* name: the model the CLI resolved                 */
+    BACKEND_EV_CWD,         /* text: the directory the agent works in now,
+                               which is not the launch cwd once it moves into
+                               a worktree                                      */
 } backend_event_kind;
 
 typedef struct {
@@ -319,6 +322,7 @@ static void backend_claude_event(void *ud, const claude_event *e) {
     case CLAUDE_EV_TOOL:        ev.kind = BACKEND_EV_TOOL;        break;
     case CLAUDE_EV_TOOL_RESULT: ev.kind = BACKEND_EV_TOOL_RESULT; break;
     case CLAUDE_EV_INIT:        ev.kind = BACKEND_EV_INIT;        break;
+    case CLAUDE_EV_CWD:         ev.kind = BACKEND_EV_CWD;         break;
     default: return;
     }
     backend_emit(&x->st, &ev);
@@ -516,6 +520,9 @@ static void backend_codex_event(void *ud, const codex_event *cev) {
             ev.text = cev->text;
             ev.diff = cev->diff;
             ev.failed = cev->failed;
+        } else if (cev->kind == CODEX_EV_CWD) {
+            ev.kind = BACKEND_EV_CWD;
+            ev.text = cev->text;
         } else {
             return;
         }
@@ -692,6 +699,11 @@ static void backend_grok_event(void *ud, const grok_event *e) {
         backend_event ev = { .kind = BACKEND_EV_TOOL_RESULT, .text = e->text,
                              .failed = e->failed };
         backend_flush(&x->st);
+        backend_emit(&x->st, &ev);
+        return;
+    }
+    case GROK_EV_CWD: {
+        backend_event ev = { .kind = BACKEND_EV_CWD, .text = e->text };
         backend_emit(&x->st, &ev);
         return;
     }

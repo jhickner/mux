@@ -77,6 +77,7 @@ typedef enum {
     CODEX_EV_THINKING,
     CODEX_EV_TOOL,
     CODEX_EV_TOOL_RESULT,
+    CODEX_EV_CWD,           /* text: the directory the thread works in now */
 } codex_event_kind;
 
 typedef struct {
@@ -138,6 +139,7 @@ struct codex_client {
     char session_id[128];
     char resolved[32];         /* config or stream effort when none was set */
     char resolved_model[64];   /* the model id the app-server picked          */
+    char cwd[4096];            /* the working directory it reported last      */
     long context_tokens, context_window;
     codex_rate_limit rate_limit;
     char *buf;
@@ -227,7 +229,7 @@ static void cx_note_model(codex_client *c, cJSON *obj) {
 
 static void cx_emit(codex_client *c, const codex_event *ev) {
     static const char *const kinds[] = {
-        "assistant", "thinking", "tool", "tool-result"
+        "assistant", "thinking", "tool", "tool-result", "cwd"
     };
     const char *preview = ev->kind == CODEX_EV_TOOL ? ev->name : ev->text;
     if (!preview) preview = ev->diff ? ev->diff : "";
@@ -241,6 +243,17 @@ static void cx_emit(codex_client *c, const codex_event *ev) {
 static void cx_text_event(codex_client *c, codex_event_kind kind, const char *text) {
     if (!text) return;
     codex_event ev = { .kind = kind, .text = text };
+    cx_emit(c, &ev);
+}
+
+/* A turn may override the thread's cwd, so the app-server's copy is the one
+ * that says where tools actually run. */
+static void cx_note_cwd(codex_client *c, cJSON *obj) {
+    if (!cJSON_IsObject(obj)) return;
+    const char *d = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(obj, "cwd"));
+    if (!d || !*d || !strcmp(d, c->cwd)) return;
+    snprintf(c->cwd, sizeof c->cwd, "%s", d);
+    codex_event ev = { .kind = CODEX_EV_CWD, .text = c->cwd };
     cx_emit(c, &ev);
 }
 
@@ -361,6 +374,11 @@ static int cx_handle_notification(codex_client *c, cJSON *msg) {
         cx_note_model(c, params);
         cx_note_model(c, turn);
     }
+    if (method && !strcmp(method, "thread/settings/updated")) {
+        cx_note_cwd(c, params ? cJSON_GetObjectItemCaseSensitive(params, "threadSettings")
+                              : NULL);
+        return 1;
+    }
     if (method && !strcmp(method, "thread/tokenUsage/updated")) {
         cx_note_usage(c, params);
         return 1;
@@ -443,6 +461,7 @@ static int cx_open_thread(codex_client *c, const char *resume) {
     cx_note_effort(c, result);      /* the settled model/effort sit beside the
                                        thread rather than inside it */
     cx_note_model(c, result);
+    cx_note_cwd(c, result);
     cJSON_Delete(r); return sid != NULL;
 }
 

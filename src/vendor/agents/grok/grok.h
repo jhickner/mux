@@ -94,6 +94,7 @@ typedef enum {
     GROK_EV_THINKING,    /* text: a reasoning chunk                            */
     GROK_EV_TOOL,        /* name + input_json: a tool the model invoked        */
     GROK_EV_TOOL_RESULT, /* text: the tool's output; failed: status was failed */
+    GROK_EV_CWD,         /* text: the directory the session works in now       */
 } grok_event_kind;
 
 typedef struct {
@@ -174,6 +175,7 @@ struct grok_client {
     void *on_event_ud;
     char  session_id[128];
     char *cwd;                /* session/new working directory copy         */
+    char  live_cwd[4096];     /* where the agent says the session runs now  */
     char *sys;                /* append_system copy, prepended to each turn */
     char *resume;             /* session/resume this id; NULL -> session/new */
     char *model;              /* the -m value asked for; NULL -> CLI default */
@@ -215,7 +217,8 @@ static void gk_emit(grok_client *c, const grok_event *ev) {
             ev->kind == GROK_EV_ASSISTANT   ? "assistant" :
             ev->kind == GROK_EV_THINKING    ? "thinking"  :
             ev->kind == GROK_EV_TOOL        ? "tool"      :
-            ev->kind == GROK_EV_TOOL_RESULT ? "tool-result" : "?";
+            ev->kind == GROK_EV_TOOL_RESULT ? "tool-result" :
+            ev->kind == GROK_EV_CWD         ? "cwd"         : "?";
         const char *text = ev->text ? ev->text : ev->name ? ev->name : "";
         fprintf(stderr, "  [%s] %.400s%s\n", kind, text, strlen(text) > 400 ? " ..." : "");
     }
@@ -668,6 +671,24 @@ static int gk_handle(grok_client *c, cJSON *ev, int want_id, char **acc, int *ok
 
     if (method && cJSON_IsString(method)) {
         if (idj) { gk_answer_request(c, ev, idj); return 0; }
+        /* The session roster carries each session's cwd, which is the worktree
+         * when grok started the session in one. */
+        if (strcmp(method->valuestring, "_x.ai/sessions/changed") == 0) {
+            cJSON *params = cJSON_GetObjectItem(ev, "params");
+            cJSON *up = params ? cJSON_GetObjectItem(params, "upserted") : NULL;
+            cJSON *it;
+            cJSON_ArrayForEach(it, up) {
+                const char *sid = cJSON_GetStringValue(cJSON_GetObjectItem(it, "sessionId"));
+                const char *dir = cJSON_GetStringValue(cJSON_GetObjectItem(it, "cwd"));
+                if (!sid || !dir || !*dir) continue;
+                if (c->session_id[0] && strcmp(sid, c->session_id) != 0) continue;
+                if (strcmp(dir, c->live_cwd) == 0) continue;
+                snprintf(c->live_cwd, sizeof c->live_cwd, "%s", dir);
+                grok_event e = { .kind = GROK_EV_CWD, .text = c->live_cwd };
+                gk_emit(c, &e);
+            }
+            return 0;
+        }
         if (strcmp(method->valuestring, "session/update") == 0) {
             cJSON *params = cJSON_GetObjectItem(ev, "params");
             cJSON *u = params ? cJSON_GetObjectItem(params, "update") : NULL;

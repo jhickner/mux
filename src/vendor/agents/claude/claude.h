@@ -120,6 +120,7 @@ typedef enum {
     CLAUDE_EV_TOOL,        /* name + input_json: a tool the model invoked      */
     CLAUDE_EV_TOOL_RESULT, /* text: the tool's output (truncated by the CLI)   */
     CLAUDE_EV_INIT,        /* name: the model the CLI resolved                 */
+    CLAUDE_EV_CWD,         /* text: the directory the session works in now     */
 } claude_event_kind;
 
 typedef struct {
@@ -238,6 +239,7 @@ struct claude_client {
     char  model[128];
     char  effort[32];
     char  auth[64];
+    char  cwd[4096];          /* the CLI's working directory, per its init     */
     claude_result *meta;      /* filled from the in-flight turn's result event */
     int   turn_open;          /* an init has arrived with no result yet        */
     int   notified;           /* task notifications still owed a turn each     */
@@ -524,6 +526,7 @@ static const char *cl_kind_label(claude_event_kind k) {
     case CLAUDE_EV_TOOL:        return "tool";
     case CLAUDE_EV_TOOL_RESULT: return "tool-result";
     case CLAUDE_EV_INIT:        return "init";
+    case CLAUDE_EV_CWD:         return "cwd";
     }
     return "?";
 }
@@ -703,6 +706,14 @@ static int cl_handle_line(claude_client *c, const char *line, char **out) {
         const char *auth = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "apiKeySource"));
         if (auth && *auth)
             snprintf(c->auth, sizeof c->auth, "%s", auth);
+        /* The init's cwd follows the session into and out of a worktree, so it
+         * is not always the directory the client launched in. */
+        const char *cwd = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "cwd"));
+        if (cwd && *cwd && strcmp(cwd, c->cwd) != 0) {
+            snprintf(c->cwd, sizeof c->cwd, "%s", cwd);
+            claude_event out = {.kind = CLAUDE_EV_CWD, .text = c->cwd};
+            cl_sink(c, &out);
+        }
         const char *model = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "model"));
         if (model && *model) {
             snprintf(c->model, sizeof c->model, "%s", model);

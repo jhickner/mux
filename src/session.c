@@ -31,6 +31,7 @@ struct session {
     Backend *agent;
     char    *backend;
     char    *cwd;
+    char    *workdir; /* where the agent last said it was working; NULL -> cwd */
     char    *model;
     char    *effort;
     char    *resolved;
@@ -207,11 +208,18 @@ static void on_event(void *ud, const backend_event *ev)
         return;
     }
 
+    if (ev->kind == BACKEND_EV_CWD) {
+        if (ev->text && *ev->text)
+            replace(&s->workdir, ev->text);
+        return;
+    }
+
     if (s->quiet || !live)
         return;
 
     switch (ev->kind) {
     case BACKEND_EV_INIT: /* handled above; listed to keep -Wswitch exhaustive */
+    case BACKEND_EV_CWD:
         break;
 
     case BACKEND_EV_ASSISTANT:
@@ -537,6 +545,7 @@ void session_free(struct session *s)
         s->agent->close(s->agent);
     free(s->backend);
     free(s->cwd);
+    free(s->workdir);
     free(s->model);
     free(s->effort);
     free(s->resolved);
@@ -1124,6 +1133,10 @@ int session_can_resume(const struct session *s)
 }
 
 const char *session_cwd(const struct session *s) { return s->cwd; }
+const char *session_workdir(const struct session *s)
+{
+    return s->workdir ? s->workdir : s->cwd;
+}
 const char *session_backend(const struct session *s) { return s->backend; }
 const char *session_last_reply(const struct session *s) { return s->last_reply; }
 const char *session_failed_prompt(const struct session *s)

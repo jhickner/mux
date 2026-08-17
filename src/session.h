@@ -81,6 +81,8 @@ const char *session_effort_label(const struct session *s);
 
 int session_can_resume(const struct session *s);
 const char *session_cwd(const struct session *s);
+/* Where the agent is actually working: its cwd, or the worktree it moved into. */
+const char *session_workdir(const struct session *s);
 const char *session_backend(const struct session *s);
 const char *session_last_reply(const struct session *s);
 
