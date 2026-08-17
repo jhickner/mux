@@ -19,6 +19,8 @@
 
 #define REPL_STYLE_NONE ((signed char)-1)
 
+#define QUEUE_ROWS_MAX 64
+
 struct cell {
     uint32_t    cp;
     signed char style;
@@ -58,6 +60,8 @@ struct prompt {
     int          live_block;
     int          frame_ok;
     char        *painted_head;
+    int          above_widths[QUEUE_ROWS_MAX];
+    int          above_rows;
 };
 
 static void history_append(struct prompt *p, const char *line)
@@ -266,8 +270,9 @@ static int caret_offset(const struct prompt *p, int cols)
     if (p->painted_head)
         up += reflowed_rows(p->painted_head, sticky_budget(p->painted_cols),
                             cols, STICKY_LINES, STICKY_DONE) + 1;
-    for (int i = 0; i < p->queued_count; i++)
-        up += reflowed_rows(p->queued[i], budget, cols, 0, NULL);
+    if (!p->live_block)
+        for (int i = 0; i < p->queued_count; i++)
+            up += reflowed_rows(p->queued[i], budget, cols, 0, NULL);
 
     return up + input_offset(p, cols);
 }
@@ -319,6 +324,8 @@ static int caret_is_synthetic(const Repl *r)
 static int rows_above(const struct prompt *p, const char *head, int cols)
 {
     int rows = head ? wrapped_rows(head, sticky_budget(cols), STICKY_LINES) + 1 : 0;
+    if (p->live_block)
+        return rows;
     size_t budget = queued_budget(cols);
     for (int i = 0; i < p->queued_count; i++)
         rows += wrapped_rows(p->queued[i], budget, 0);
@@ -341,6 +348,8 @@ static void paint_above(const struct prompt *p, const char *head, int cols)
         ui_esc(UI_ERASE_EOL);
         ui_put("\n");
     }
+    if (p->live_block)
+        return;
     size_t budget = queued_budget(cols);
     for (int i = 0; i < p->queued_count; i++)
         paint_bars(p->queued[i], budget, UI_DIM, 0, NULL);
@@ -1037,4 +1046,36 @@ void prompt_live_paint(void *ud, int *rows, int *caret_row, int *caret_col)
 int prompt_live_offset(void *ud)
 {
     return caret_offset(ud, ui_columns());
+}
+
+// Queued lines sit above the spinner, separated from it by a blank row.
+void prompt_queue_paint(void *ud)
+{
+    struct prompt *p = ud;
+
+    p->above_rows = 0;
+    if (p->queued_count == 0)
+        return;
+
+    size_t budget = queued_budget(ui_columns());
+    for (int i = 0; i < p->queued_count && p->above_rows < QUEUE_ROWS_MAX; i++) {
+        struct ui_wrap w = bar_wrap(budget, UI_DIM, 0, NULL);
+        w.widths = p->above_widths + p->above_rows;
+        w.widths_max = QUEUE_ROWS_MAX - p->above_rows;
+        int rows = ui_wrap_paint(p->queued[i], &w);
+        p->above_rows += rows;
+        if (p->above_rows > QUEUE_ROWS_MAX)
+            p->above_rows = QUEUE_ROWS_MAX;
+    }
+
+    ui_esc(UI_ERASE_EOL);
+    ui_put("\n");
+    if (p->above_rows < QUEUE_ROWS_MAX)
+        p->above_widths[p->above_rows++] = 0;
+}
+
+int prompt_queue_rows(void *ud)
+{
+    struct prompt *p = ud;
+    return p->above_rows ? ui_reflow_rows(p->above_widths, p->above_rows, ui_columns()) : 0;
 }

@@ -296,6 +296,7 @@ int main(int argc, char **argv)
 
     session_set_typeahead(prompt_live_key, prompt);
     status_set_below(prompt_live_paint, prompt_live_offset, prompt);
+    status_set_above(prompt_queue_paint, prompt_queue_rows, prompt);
     prompt_set_live_command(prompt, live_command, session);
     prompt_set_idle(prompt, idle_fds, idle_render, idle_busy, session);
     prompt_set_restart(prompt, restart_pending, idle_restart, session);
@@ -349,6 +350,7 @@ int main(int argc, char **argv)
     sidechannel_close_all();
     session_set_typeahead(NULL, NULL);
     status_set_below(NULL, NULL, NULL);
+    status_set_above(NULL, NULL, NULL);
     prompt_free(prompt);
     sessionfork_exit_note(session);
     session_free(session);

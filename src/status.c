@@ -26,6 +26,10 @@ static char    note[128];
 static status_paint_fn  below;
 static status_offset_fn below_offset;
 static void            *below_ud;
+static status_above_fn  above;
+static status_offset_fn above_rows_fn;
+static void            *above_ud;
+static int              above_painted;
 static int              caret_row;
 static int              caret_col;
 static int              painted;
@@ -84,6 +88,18 @@ void status_set_below(status_paint_fn paint_fn, status_offset_fn offset_fn, void
     below_ud = ud;
 }
 
+void status_set_above(status_above_fn paint_fn, status_offset_fn rows_fn, void *ud)
+{
+    above = paint_fn;
+    above_rows_fn = rows_fn;
+    above_ud = ud;
+}
+
+static int above_rows(void)
+{
+    return above_painted && above_rows_fn ? above_rows_fn(above_ud) : 0;
+}
+
 static int size_changing(void)
 {
     unsigned epoch = tty_resize_epoch();
@@ -104,8 +120,8 @@ static int rows_above_caret(void)
     int head = sticky_rows ? ui_reflow_rows(sticky_widths, sticky_rows, cols) : 0;
 
     if (!below)
-        return painted_gap + head + (spin > 0 ? spin - 1 : 0);
-    return painted_gap + head + spin +
+        return painted_gap + head + above_rows() + (spin > 0 ? spin - 1 : 0);
+    return painted_gap + head + above_rows() + spin +
            (below_offset ? below_offset(below_ud) : caret_row - 1);
 }
 
@@ -119,6 +135,7 @@ static void erase_block(void)
     spin_width = 0;
     painted_gap = 0;
     sticky_rows = 0;
+    above_painted = 0;
     painted = 0;
 }
 
@@ -182,7 +199,7 @@ int status_sticky_rows(void)
 static void block_rows(int below_rows)
 {
     int cols = ui_columns();
-    chrome_rows = painted_gap + below_rows +
+    chrome_rows = painted_gap + below_rows + above_rows() +
                   (sticky_rows ? ui_reflow_rows(sticky_widths, sticky_rows, cols) : 0) +
                   (spin_width ? ui_reflow_rows(&spin_width, 1, cols) : 0);
     if (chrome_rows > block_tallest)
@@ -234,6 +251,11 @@ static void paint(void)
     if (painted_gap)
         ui_put("\n");
     paint_sticky();
+
+    if (above) {
+        above(above_ud);
+        above_painted = 1;
+    }
 
     paint_spin();
 
