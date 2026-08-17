@@ -691,6 +691,11 @@ static int gk_handle(grok_client *c, cJSON *ev, int want_id, char **acc, int *ok
         }
         if (strcmp(method->valuestring, "session/update") == 0) {
             cJSON *params = cJSON_GetObjectItem(ev, "params");
+            /* Subagent sessions stream over this same connection, tagged with
+             * their own id. Their chunks would interleave into our text. */
+            const char *sid = params ? gk_str(params, "sessionId") : NULL;
+            if (c->session_id[0] && sid && strcmp(sid, c->session_id) != 0)
+                return 0;
             cJSON *u = params ? cJSON_GetObjectItem(params, "update") : NULL;
             const char *su = u ? cJSON_GetStringValue(cJSON_GetObjectItem(u, "sessionUpdate")) : NULL;
             if (su) {
