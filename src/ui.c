@@ -195,17 +195,36 @@ void ui_cursor_restore(void)
 
 void ui_raw(int on) { raw_newlines = on; }
 
-static int scroll_rows;
-static int scroll_col = 1;
+/* Cells per line emitted since the mark, banked rather than turned into rows at
+   emit time: a resize reflows everything already on screen, so how many rows
+   that output occupies is only answerable at the width being asked about. Past
+   SCROLL_LINES the answer is "further back than any screen is tall". */
+#define SCROLL_LINES 512
+static int scroll_widths[SCROLL_LINES];
+static int scroll_count;
+static int scroll_lost;
+static int scroll_cells;
 static int scroll_track = 1;
 
 void ui_scroll_mark(void)
 {
-    scroll_rows = 0;
-    scroll_col = 1;
+    scroll_count = 0;
+    scroll_lost = 0;
+    scroll_cells = 0;
 }
 
-int ui_scroll_rows(void) { return scroll_rows; }
+int ui_scroll_rows(void)
+{
+    if (scroll_lost)
+        return SCROLL_LINES;
+    int cols = ui_columns();
+    int rows = ui_reflow_rows(scroll_widths, scroll_count, cols);
+    /* The terminal defers the wrap until a cell past the last column, so the
+       line still being built has only scrolled once it passes that. */
+    if (scroll_cells > 0 && cols > 0)
+        rows += (scroll_cells - 1) / cols;
+    return rows;
+}
 
 void ui_scroll_track(int on) { scroll_track = on ? 1 : 0; }
 
@@ -213,22 +232,18 @@ static void scroll_text(const char *s, size_t n)
 {
     if (!scroll_track || !n)
         return;
-    int cols = tty_columns();
-    scroll_col += (int)ui_cells_n(s, n);
-    /* The terminal defers the wrap until a cell past the last column, so a row
-       that ends exactly at `cols` has not scrolled yet. */
-    if (scroll_col > cols + 1) {
-        scroll_rows += (scroll_col - 2) / cols;
-        scroll_col = (scroll_col - 2) % cols + 2;
-    }
+    scroll_cells += (int)ui_cells_n(s, n);
 }
 
 static void scroll_linefeed(void)
 {
     if (!scroll_track)
         return;
-    scroll_rows++;
-    scroll_col = 1;
+    if (scroll_count < SCROLL_LINES)
+        scroll_widths[scroll_count++] = scroll_cells;
+    else
+        scroll_lost = 1;
+    scroll_cells = 0;
 }
 
 void ui_putn(const char *s, size_t n)
@@ -419,7 +434,6 @@ int ui_wrap_paint(const char *text, const struct ui_wrap *w)
 {
     const char *p = text ? text : "";
     size_t budget = w->budget ? w->budget : 1;
-    int gutter_cells = w->gutter ? (int)ui_cells(w->gutter) : 0;
     int mark_cells = w->mark ? (int)ui_cells(w->mark) : 0;
     int rows = 0;
     int reflowed = 0;
@@ -429,6 +443,10 @@ int ui_wrap_paint(const char *text, const struct ui_wrap *w)
         size_t skip = 0;
         size_t row = *p ? ui_wrap_row(p, budget, &skip) : 0;
         int indent = first ? w->first_indent : w->indent;
+        const char *gutter = w->gutter;
+        if (w->gutters && rows < w->gutters_n && w->gutters[rows])
+            gutter = w->gutters[rows];
+        int gutter_cells = gutter ? (int)ui_cells(gutter) : 0;
         int width = gutter_cells + (first ? mark_cells : 0) + (int)ui_cells_n(p, row);
 
         if (!w->measure) {
@@ -437,8 +455,8 @@ int ui_wrap_paint(const char *text, const struct ui_wrap *w)
                 ui_esc(ui_style(w->role));
             if (w->erase)
                 ui_esc(UI_ERASE_EOL);
-            if (w->gutter)
-                ui_put(w->gutter);
+            if (gutter)
+                ui_put(gutter);
             if (w->mark && first)
                 ui_put(w->mark);
             ui_putn(p, row);

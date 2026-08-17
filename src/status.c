@@ -44,6 +44,7 @@ static int   sticky_widths[STICKY_ROWS_MAX];
 static int   sticky_rows;
 static int   sticky_tracking;
 static int   block_tallest;
+static int   stack_tick;
 
 static unsigned resize_epoch;
 static double   resize_at;
@@ -97,6 +98,10 @@ static int size_changing(void)
         resize_epoch = epoch;
         resize_at = now_seconds();
         dirty = 1;
+        /* The high-water mark reserves room so the block cannot land on top of
+           the prompt echo. It has to be re-earned at the new size, or a window
+           that was once tall keeps the sticky copy appearing too early. */
+        block_tallest = 0;
     }
     return resize_at > 0 && (now_seconds() - resize_at) * 1000.0 < TTY_RESIZE_SETTLE_MS;
 }
@@ -149,6 +154,29 @@ static int sticky_gone(void)
     return ui_scroll_rows() >= (gone_at > 0 ? gone_at : 0);
 }
 
+/* One braille cell is a 2x4 dot grid, so N stacked cells give a 2-column dot
+   canvas N cells tall that is still one character wide. Dots 1-3 climb the left
+   column and 4-6 descend the right (7/8 are skipped so the dot rows stay evenly
+   spaced across the line break), making a ring of 6N positions. A lit arc half
+   the ring long travels that outline. */
+static void stack_frame(int tick, int rows, char out[][8], const char *ptrs[])
+{
+    int ring = 6 * rows, arc = ring / 2;
+    unsigned char bits[STICKY_ROWS_MAX] = {0};
+
+    for (int k = 0; k < arc; k++) {
+        int i = ((tick - k) % ring + ring) % ring;
+        int down = i < arc ? arc - 1 - i : i - arc;
+        bits[down / 3] |= (i < arc ? 1 : 8) << (down % 3);
+    }
+    for (int r = 0; r < rows; r++) {
+        unsigned cp = 0x2800u + bits[r];
+        snprintf(out[r], 8, "%c%c%c ", (char)(0xE0 | cp >> 12),
+                 (char)(0x80 | (cp >> 6 & 0x3F)), (char)(0x80 | (cp & 0x3F)));
+        ptrs[r] = out[r];
+    }
+}
+
 static void paint_sticky(void)
 {
     if (!sticky_on || !sticky_text || !*sticky_text || !sticky_gone())
@@ -170,6 +198,20 @@ static void paint_sticky(void)
     w.erase = 1;
     w.widths = sticky_widths;
     w.widths_max = STICKY_ROWS_MAX - 1;
+
+    /* Measured first because the arc has to be laid out over a known height. */
+    char cells[STICKY_ROWS_MAX][8];
+    const char *gutters[STICKY_ROWS_MAX];
+    struct ui_wrap m = w;
+    m.measure = 1;
+    int rows = ui_wrap_paint(sticky_text, &m);
+    if (rows > 0) {
+        if (rows > STICKY_ROWS_MAX)
+            rows = STICKY_ROWS_MAX;
+        stack_frame(stack_tick, rows, cells, gutters);
+        w.gutters = gutters;
+        w.gutters_n = rows;
+    }
 
     sticky_rows = ui_wrap_paint(sticky_text, &w);
     if (sticky_rows > w.widths_max)
@@ -263,6 +305,9 @@ static int paint_spin_only(void)
     int cols = ui_columns();
     if (!painted || !below || cols < 24)
         return 0;
+    /* The sticky block animates too, so it cannot be left alone. */
+    if (sticky_on && sticky_text && *sticky_text && sticky_gone())
+        return 0;
 
     if (!spin_width || ui_reflow_rows(&spin_width, 1, cols) != 1)
         return 0;
@@ -289,6 +334,7 @@ void status_begin(void)
 {
     started = now_seconds();
     frame = 0;
+    stack_tick = 0;
     frame_at = started;
     active = 1;
     visible = 1;
@@ -311,6 +357,7 @@ void status_tick(void)
     int advanced = 0;
     if ((t - frame_at) * 1000.0 >= FRAME_MS) {
         frame = (frame + 1) % FRAME_COUNT;
+        stack_tick++;
         frame_at = t;
         advanced = 1;
     }

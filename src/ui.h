@@ -95,6 +95,8 @@ struct ui_wrap {
     int          first_indent; /* pad cells before the first row */
     int          indent;       /* pad cells before the rest */
     const char  *gutter;       /* drawn before the text on every row */
+    const char *const *gutters; /* optional per-row gutter, falls back to gutter */
+    int          gutters_n;
     const char  *mark;         /* drawn after the gutter, first row only */
     enum ui_role role;         /* UI_RESET leaves the text unstyled */
     int          max_rows;     /* 0 = unlimited; adds "…" when text remains */
