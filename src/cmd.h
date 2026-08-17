@@ -21,6 +21,9 @@ int cmd_is_live(const char *line);
 
 void cmd_dispatch_live(struct session *s, const char *line);
 
+// Runs the commands cmd_dispatch_live() held back because a turn was running.
+void cmd_run_deferred(struct session *s);
+
 int cmd_resume(struct session *s);
 
 #endif

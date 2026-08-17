@@ -18,6 +18,7 @@
 #include "session.h"
 #include "sessionfork.h"
 #include "settings.h"
+#include "sidechannel.h"
 #include "status.h"
 #include "tty.h"
 #include "ui.h"
@@ -63,13 +64,22 @@ static void usage(void)
             "  -s         safe mode: skip skills, CLAUDE.md, MCP servers, hooks\n"
             "  -r         --resume: pick a past conversation to continue\n"
             "  --session id  resume a specific conversation (used by the fork commands)\n"
+            "  --fork     with --session: branch off it instead of writing back to it\n"
             "  -h         this help\n"
             "\n"
             "With a prompt on the command line, answer it and exit.\n",
             choices);
 }
 
-static int idle_fd(void *ud)     { return session_idle_fd(ud); }
+static int idle_fds(void *ud, int *out, int max)
+{
+    int n = 0;
+    int fd = session_idle_fd(ud);
+    if (fd >= 0 && n < max)
+        out[n++] = fd;
+    return n + sidechannel_fds(out + n, max - n);
+}
+
 static void offer_project_trust(struct session *s)
 {
     if (!session_take_trust_request(s))
@@ -83,6 +93,7 @@ static void offer_project_trust(struct session *s)
 
 static int idle_render(void *ud)
 {
+    sidechannel_poll();
     return session_idle_pump(ud);
 }
 static int idle_busy(void *ud)   { return session_idle_busy(ud); }
@@ -98,6 +109,7 @@ static int idle_restart(void *ud)
 {
     // Returns only when the new build could not be run at all, in which case
     // this session keeps going on the old one.
+    sidechannel_close_all();
     if (!restart_exec(ud)) {
         ui_error("could not restart — staying on this build");
         ui_put("\n");
@@ -127,6 +139,7 @@ int main(int argc, char **argv)
         {"safe",    no_argument,       NULL, 's'},
         {"resume",  no_argument,       NULL, 'r'},
         {"session", required_argument, NULL, 'S'},
+        {"fork",    no_argument,       NULL, 'F'},
         {"help",    no_argument,       NULL, 'h'},
         {NULL,      0,                 NULL, 0},
     };
@@ -136,6 +149,7 @@ int main(int argc, char **argv)
     const char *effort = NULL;
     const char *dir = NULL;
     const char *session_arg = NULL;
+    int fork_session = 0;
     int safe_mode = 0;
     int resume = 0;
     int opt;
@@ -149,6 +163,7 @@ int main(int argc, char **argv)
         case 's': safe_mode = 1; break;
         case 'r': resume = 1; break;
         case 'S': session_arg = optarg; break;
+        case 'F': fork_session = 1; break;
         default:  usage(); return opt == 'h' ? 0 : 2;
         }
     }
@@ -224,6 +239,7 @@ int main(int argc, char **argv)
     struct session *session = session_new(backend, cwd, model, effort);
     if (session) {
         session_set_customizations(session, !safe_mode);
+        session_set_fork(session, fork_session && session_arg);
         session_set_thinking(session, settings_get_int(SETTING_THINKING, 1));
         session_set_compact(session, settings_get_int(SETTING_COMPACT, 0));
         session_set_permission(session,
@@ -281,7 +297,7 @@ int main(int argc, char **argv)
     session_set_typeahead(prompt_live_key, prompt);
     status_set_below(prompt_live_paint, prompt_live_offset, prompt);
     prompt_set_live_command(prompt, live_command, session);
-    prompt_set_idle(prompt, idle_fd, idle_render, idle_busy, session);
+    prompt_set_idle(prompt, idle_fds, idle_render, idle_busy, session);
     prompt_set_restart(prompt, restart_pending, idle_restart, session);
     prompt_set_replay(prompt, replay, session);
 
@@ -310,6 +326,7 @@ int main(int argc, char **argv)
             if (text) {
                 status_sticky_prompt(line);
                 session_turn(session, text);
+                cmd_run_deferred(session);
                 free(text);
             }
             free(line);
@@ -324,10 +341,12 @@ int main(int argc, char **argv)
         if (r == CMD_NOT_A_COMMAND) {
             status_sticky_prompt(line);
             session_turn(session, line);
+            cmd_run_deferred(session);
         }
         free(line);
     }
 
+    sidechannel_close_all();
     session_set_typeahead(NULL, NULL);
     status_set_below(NULL, NULL, NULL);
     prompt_free(prompt);
