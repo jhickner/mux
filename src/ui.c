@@ -246,8 +246,57 @@ static void scroll_linefeed(void)
     scroll_cells = 0;
 }
 
+static char  *capture;
+static size_t capture_len, capture_cap;
+static int    capture_on, capture_cols;
+
+/* The one place every painter's bytes pass through, so a capture can stand in
+   for the terminal without each of them knowing. */
+static void emit(const char *s, size_t n)
+{
+    if (!capture_on) {
+        fwrite(s, 1, n, stdout);
+        return;
+    }
+    if (capture_len + n + 1 > capture_cap) {
+        size_t cap = capture_cap ? capture_cap : 1024;
+        while (cap < capture_len + n + 1)
+            cap *= 2;
+        char *grown = realloc(capture, cap);
+        if (!grown)
+            return;
+        capture = grown;
+        capture_cap = cap;
+    }
+    memcpy(capture + capture_len, s, n);
+    capture_len += n;
+    capture[capture_len] = '\0';
+}
+
+void ui_capture_begin(int columns)
+{
+    capture_len = 0;
+    capture_cols = columns;
+    capture_on = 1;
+    if (capture)
+        capture[0] = '\0';
+}
+
+char *ui_capture_end(void)
+{
+    capture_on = 0;
+    capture_cols = 0;
+    char *taken = capture_len ? strdup(capture) : NULL;
+    capture_len = 0;
+    return taken;
+}
+
 void ui_putn(const char *s, size_t n)
 {
+    if (capture_on) {
+        emit(s, n);
+        return;
+    }
     if (!raw_newlines) {
         fwrite(s, 1, n, stdout);
         return;
@@ -300,13 +349,13 @@ void ui_printf(const char *fmt, ...)
 void ui_esc(const char *s)
 {
     if (s)
-        fputs(s, stdout);
+        emit(s, strlen(s));
 }
 
 void ui_pad(int cells)
 {
     for (int i = 0; i < cells; i++)
-        fputc(' ', stdout);
+        emit(" ", 1);
 }
 
 void ui_move(int count, char direction)
@@ -333,7 +382,7 @@ int ui_reflow_rows(const int *row_widths, int count, int cols)
 
 void ui_flush(void) { fflush(stdout); }
 
-int ui_columns(void) { return tty_columns(); }
+int ui_columns(void) { return capture_cols > 0 ? capture_cols : tty_columns(); }
 
 static unsigned decode(const char *s, size_t n, size_t *i)
 {
@@ -398,6 +447,70 @@ size_t ui_cells_n(const char *s, size_t n)
 }
 
 size_t ui_cells(const char *s) { return s ? ui_cells_n(s, strlen(s)) : 0; }
+
+/* Walks one escape sequence or one character, returning where it ends and
+   adding what it costs on screen. */
+static size_t step_visible(const char *s, size_t n, size_t i, size_t *cells)
+{
+    if (s[i] == '\x1b') {
+        size_t j = i + 1;
+        if (j < n && s[j] == '[') {
+            for (j++; j < n && (s[j] < '@' || s[j] > '~'); j++)
+                ;
+        } else if (j < n && s[j] == ']') {
+            for (j++; j < n && s[j] != '\a' && s[j] != '\x1b'; j++)
+                ;
+            if (j < n && s[j] == '\x1b')
+                j++;
+        }
+        return j < n ? j + 1 : n;
+    }
+    size_t start = i++;
+    while (i < n && ((unsigned char)s[i] & 0xC0) == 0x80)
+        i++;
+    *cells += ui_cells_n(s + start, i - start);
+    return i;
+}
+
+size_t ui_cells_visible(const char *s, size_t n)
+{
+    if (!s)
+        return 0;
+    size_t cells = 0, i = 0;
+    while (i < n)
+        i = step_visible(s, n, i, &cells);
+    return cells;
+}
+
+size_t ui_fit_visible(const char *s, size_t n, size_t budget)
+{
+    if (!s)
+        return 0;
+    size_t cells = 0, i = 0, fit = 0;
+    while (i < n) {
+        size_t next = step_visible(s, n, i, &cells);
+        if (cells > budget)
+            break;
+        i = fit = next;
+    }
+    return fit;
+}
+
+size_t ui_fit_bytes(const char *s, size_t budget)
+{
+    if (!s)
+        return 0;
+    size_t n = 0, fit = 0;
+    while (s[n]) {
+        n++;
+        while (((unsigned char)s[n] & 0xC0) == 0x80)
+            n++;
+        if (ui_cells_n(s, n) > budget)
+            break;
+        fit = n;
+    }
+    return fit;
+}
 
 size_t ui_wrap_row(const char *s, size_t budget, size_t *skip)
 {

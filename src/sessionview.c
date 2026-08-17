@@ -5,8 +5,98 @@
 #include <string.h>
 
 #include "text.h"
+#include "vendor/cJSON.h"
 
 #define TOOL_INDENT 2
+
+#define COUNT(a) (sizeof (a) / sizeof *(a))
+
+/* One list for both readers: view_tool_argument takes the first match in this
+   order, view_tool_path considers only the entries flagged as naming a file. */
+static const struct {
+    const char *key;
+    int         is_path;
+} TOOL_ARG_KEYS[] = {
+    {"command", 0},          {"file_path", 1}, {"target_file", 1},
+    {"path", 1},             {"target_directory", 0},
+    {"pattern", 0},          {"url", 0},       {"query", 0},
+    {"prompt", 0},           {"description", 0},
+    {"notebook_path", 1},
+};
+
+static const char *shorten_path(const char *cwd, const char *value, char *scratch,
+                                size_t size)
+{
+    if (value[0] != '/')
+        return value;
+    if (cwd) {
+        size_t n = strlen(cwd);
+        if (strncmp(value, cwd, n) == 0 && value[n] == '/')
+            return value + n + 1;
+    }
+    const char *home = getenv("HOME");
+    if (home && *home) {
+        size_t n = strlen(home);
+        if (strncmp(value, home, n) == 0 && value[n] == '/') {
+            snprintf(scratch, size, "~/%s", value + n + 1);
+            return scratch;
+        }
+    }
+    return value;
+}
+
+void view_tool_argument(const backend_event *ev, const char *cwd, char *out, size_t size)
+{
+    char arg[4096] = "";
+
+    if (ev->input_json) {
+        cJSON *input = cJSON_Parse(ev->input_json);
+        if (input) {
+            for (size_t i = 0; i < COUNT(TOOL_ARG_KEYS); i++) {
+                const char *v =
+                    cJSON_GetStringValue(cJSON_GetObjectItem(input, TOOL_ARG_KEYS[i].key));
+                if (v && *v) {
+                    char scratch[1024];
+                    text_one_line(shorten_path(cwd, v, scratch, sizeof scratch), arg,
+                                  sizeof arg);
+                    break;
+                }
+            }
+            cJSON_Delete(input);
+        }
+    } else if (ev->arg) {
+        text_one_line(ev->arg, arg, sizeof arg);
+    }
+    snprintf(out, size, "%s", arg);
+}
+
+int view_tool_path(const char *input_json, const char *cwd, char *out, size_t size)
+{
+    if (!input_json)
+        return 0;
+
+    cJSON *input = cJSON_Parse(input_json);
+    if (!input)
+        return 0;
+
+    const char *found = NULL;
+    for (size_t i = 0; i < COUNT(TOOL_ARG_KEYS) && !found; i++) {
+        if (!TOOL_ARG_KEYS[i].is_path)
+            continue;
+        const char *v =
+            cJSON_GetStringValue(cJSON_GetObjectItem(input, TOOL_ARG_KEYS[i].key));
+        if (v && *v)
+            found = v;
+    }
+    if (found) {
+        if (found[0] == '/')
+            snprintf(out, size, "%s", found);
+        else
+            snprintf(out, size, "%s/%s", cwd ? cwd : ".", found);
+    }
+    cJSON_Delete(input);
+    return found != NULL;
+}
 
 void view_activity(const char *marker, const char *text, enum ui_role role)
 {

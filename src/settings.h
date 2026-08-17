@@ -11,6 +11,8 @@
 
 #define ECHO_ROWS_DEFAULT 10
 
+#define SETTING_MUX_BACKENDS "mux_backends"
+
 #define SETTING_COLOR_INPUT    "color_input"
 #define SETTING_COLOR_EMPHASIS "color_emphasis"
 

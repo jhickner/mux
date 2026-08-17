@@ -27,6 +27,8 @@ typedef enum {
     TK_WORD_RIGHT,
     TK_HOME,
     TK_END,
+    TK_PAGE_UP,
+    TK_PAGE_DOWN,
     TK_RESIZE,
     TK_EOF,
 } tty_key;
