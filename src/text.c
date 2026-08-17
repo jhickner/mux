@@ -29,6 +29,38 @@ void text_one_line(const char *in, char *out, size_t size)
     out[o] = '\0';
 }
 
+void text_block(const char *in, char *out, size_t size)
+{
+    if (!size)
+        return;
+
+    size_t o = 0, keep = 0;
+    int    seen = 0;
+    for (const char *p = in; *p && o + 1 < size; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '\r')
+            continue;
+        if (c == '\n') {
+            if (!seen)
+                continue;
+            o = keep;
+            if (o + 1 < size)
+                out[o++] = '\n';
+            continue;
+        }
+        if (c == '\t')
+            c = ' ';
+        if (c == ' ' && !seen)
+            continue;
+        out[o++] = (char)c;
+        if (c != ' ') {
+            keep = o;
+            seen = 1;
+        }
+    }
+    out[keep] = '\0';
+}
+
 void text_chomp(char *s)
 {
     size_t n = strlen(s);

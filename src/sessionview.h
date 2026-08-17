@@ -38,4 +38,6 @@ void view_cluster_paint(struct turnview *v);
 
 void view_tool_output(const char *text, enum ui_role role);
 
+void view_tool_error(const char *text);
+
 #endif

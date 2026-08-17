@@ -228,7 +228,7 @@ static const char *entry_painted(struct entry *e, int width)
             } else {
                 char line[4096];
                 snprintf(line, sizeof line, "failed: %s", why);
-                view_tool_output(line, UI_ERROR);
+                view_tool_error(line);
             }
         } else if (!e->diff || !filediff_render_patch(e->diff)) {
             view_tool_output(e->text, UI_DIM);

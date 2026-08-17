@@ -88,8 +88,12 @@ $(BUILD)/pastetest: tools/pastetest.c src/paste.o | $(BUILD)
 $(BUILD)/transcripttest: tools/transcripttest.c src/transcript.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
+$(BUILD)/sessionviewtest: tools/sessionviewtest.c src/sessionview.o src/ui.o src/settings.o src/tty.o src/text.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
+	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
+
 CHECKS  := reflowtest toolstyletest sessionlisttest claudetest codextest \
-           groktest filedifftest pitest agenttabstest statustest transcripttest
+           groktest filedifftest pitest agenttabstest statustest transcripttest \
+           sessionviewtest
 
 check: $(addprefix $(BUILD)/,$(CHECKS))
 	$(BUILD)/reflowtest
@@ -103,6 +107,7 @@ check: $(addprefix $(BUILD)/,$(CHECKS))
 	$(BUILD)/agenttabstest
 	$(BUILD)/statustest
 	$(BUILD)/transcripttest
+	$(BUILD)/sessionviewtest
 
 install: $(BIN)
 	install -d $(PREFIX)/bin

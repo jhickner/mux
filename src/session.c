@@ -225,7 +225,7 @@ static void on_event(void *ud, const backend_event *ev)
                 } else {
                     char line[4096];
                     snprintf(line, sizeof line, "failed: %s", why);
-                    view_tool_output(line, UI_ERROR);
+                    view_tool_error(line);
                 }
             }
             s->view.after_activity = 1;

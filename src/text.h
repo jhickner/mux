@@ -6,6 +6,8 @@
 
 void text_one_line(const char *in, char *out, size_t size);
 
+void text_block(const char *in, char *out, size_t size);
+
 void text_chomp(char *s);
 
 char *text_slurp(const char *path, size_t max_bytes, size_t *len_out);

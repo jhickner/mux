@@ -55,15 +55,15 @@ void view_tool_argument(const backend_event *ev, const char *cwd, char *out, siz
                     cJSON_GetStringValue(cJSON_GetObjectItem(input, TOOL_ARG_KEYS[i].key));
                 if (v && *v) {
                     char scratch[1024];
-                    text_one_line(shorten_path(cwd, v, scratch, sizeof scratch), arg,
-                                  sizeof arg);
+                    text_block(shorten_path(cwd, v, scratch, sizeof scratch), arg,
+                               sizeof arg);
                     break;
                 }
             }
             cJSON_Delete(input);
         }
     } else if (ev->arg) {
-        text_one_line(ev->arg, arg, sizeof arg);
+        text_block(ev->arg, arg, sizeof arg);
     }
     snprintf(out, size, "%s", arg);
 }
@@ -132,6 +132,8 @@ static void tool_tag(const char *name, char *out, size_t size)
     out[t] = '\0';
 }
 
+#define TOOL_CALL_ROWS 24
+
 void view_tool_call(const char *name, const char *arg)
 {
     char tag[64];
@@ -158,6 +160,7 @@ void view_tool_call(const char *name, const char *arg)
     w.budget = (size_t)budget;
     w.indent = indent;
     w.role = UI_RESET;
+    w.max_rows = TOOL_CALL_ROWS;
     ui_wrap_paint(arg, &w);
 }
 
@@ -180,16 +183,18 @@ void view_cluster_start(struct turnview *v, const char *name, const char *arg)
     char tag[64];
     tool_tag(name, tag, sizeof tag);
 
+    char flat[4096];
+    text_one_line(arg ? arg : "", flat, sizeof flat);
+
     int budget = cluster_budget() - (int)ui_cells(tag) - 1;
     if (budget < 8)
         budget = 8;
 
     size_t skip = 0;
-    size_t fit = arg && *arg ? ui_wrap_row(arg, strlen(arg), (size_t)budget, &skip, NULL) : 0;
+    size_t fit = *flat ? ui_wrap_row(flat, strlen(flat), (size_t)budget, &skip, NULL) : 0;
 
     char row[4096];
-    snprintf(row, sizeof row, "%s %.*s%s", tag, (int)fit, arg ? arg : "",
-             arg && arg[fit] ? "…" : "");
+    snprintf(row, sizeof row, "%s %.*s%s", tag, (int)fit, flat, flat[fit] ? "…" : "");
 
     view_cluster_forget(v);
     snprintf(v->tool, sizeof v->tool, "%s", name);
@@ -205,8 +210,11 @@ int view_cluster_extend(struct turnview *v, const char *name, const char *arg)
     if (!arg || !*arg)
         return 1;
 
+    char flat[4096];
+    text_one_line(arg, flat, sizeof flat);
+
     char row[4096];
-    snprintf(row, sizeof row, "%s, %s", v->line, arg);
+    snprintf(row, sizeof row, "%s, %s", v->line, flat);
     if ((int)ui_cells(row) > cluster_budget())
         return 0;
 
@@ -239,6 +247,93 @@ void view_cluster_paint(struct turnview *v)
 }
 
 #define TOOL_PREVIEW_ROWS 3
+
+static int preview_budget(void)
+{
+    int budget = ui_columns() - 6;
+    return budget < 8 ? 8 : budget;
+}
+
+static int preview_line(const char *start, size_t n, int budget, enum ui_role role)
+{
+    char line[1024];
+    if (n >= sizeof line)
+        n = sizeof line - 1;
+    memcpy(line, start, n);
+    line[n] = '\0';
+
+    char clipped[1024];
+    text_one_line(line, clipped, sizeof clipped);
+    if (!*clipped)
+        return 0;
+
+    size_t skip = 0;
+    size_t fit = ui_wrap_row(clipped, strlen(clipped), (size_t)budget, &skip, NULL);
+    ui_put("    ");
+    ui_esc(ui_style(role));
+    ui_putn(clipped, fit);
+    if (clipped[fit])
+        ui_put("…");
+    ui_esc(ui_style(UI_RESET));
+    ui_put("\n");
+    return 1;
+}
+
+static void preview_elision(int lines)
+{
+    if (lines <= 0)
+        return;
+    ui_put("    ");
+    ui_esc(ui_style(UI_DIM));
+    ui_printf("+%d line%s", lines, lines == 1 ? "" : "s");
+    ui_esc(ui_style(UI_RESET));
+    ui_put("\n");
+}
+
+void view_tool_error(const char *text)
+{
+    if (!text || !*text)
+        return;
+
+    const char *head = NULL;
+    size_t      head_n = 0;
+    const char *tail[TOOL_PREVIEW_ROWS] = {0};
+    size_t      tail_n[TOOL_PREVIEW_ROWS] = {0};
+    int         total = 0;
+
+    for (const char *p = text; *p;) {
+        const char *nl = strchr(p, '\n');
+        size_t      n = nl ? (size_t)(nl - p) : strlen(p);
+        size_t      i = 0;
+        while (i < n && (p[i] == ' ' || p[i] == '\t' || p[i] == '\r'))
+            i++;
+        if (i < n) {
+            if (!total++) {
+                head = p;
+                head_n = n;
+            } else {
+                int slot = (total - 2) % TOOL_PREVIEW_ROWS;
+                tail[slot] = p;
+                tail_n[slot] = n;
+            }
+        }
+        if (!nl)
+            break;
+        p = nl + 1;
+    }
+    if (!total)
+        return;
+
+    int budget = preview_budget();
+    preview_line(head, head_n, budget, UI_ERROR);
+
+    int kept = total - 1 < TOOL_PREVIEW_ROWS ? total - 1 : TOOL_PREVIEW_ROWS;
+    preview_elision(total - 1 - kept);
+    for (int i = 0; i < kept; i++) {
+        int slot = (total - 1 - kept + i) % TOOL_PREVIEW_ROWS;
+        preview_line(tail[slot], tail_n[slot], budget, UI_ERROR);
+    }
+}
 
 void view_tool_output(const char *text, enum ui_role role)
 {
