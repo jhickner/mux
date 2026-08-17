@@ -75,6 +75,46 @@ static int python_program(const char *word)
     return 1;
 }
 
+static int ieq(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++) {
+        char x = *a >= 'A' && *a <= 'Z' ? (char)(*a + 32) : *a;
+        char y = *b >= 'A' && *b <= 'Z' ? (char)(*b + 32) : *b;
+        if (x != y)
+            return 0;
+    }
+    return !*a && !*b;
+}
+
+/* Language implied by a file extension, e.g. the target of `cat > gen.py`. */
+static enum lang ext_lang(const char *word)
+{
+    const char *dot = strrchr(word, '.');
+    if (!dot)
+        return LANG_NONE;
+    dot++;
+    if (ieq(dot, "py"))
+        return LANG_PYTHON;
+    if (ieq(dot, "sh") || ieq(dot, "bash") || ieq(dot, "zsh"))
+        return LANG_SHELL;
+    return LANG_NONE;
+}
+
+/* Language implied by a heredoc tag, e.g. `<<'PY'`. */
+static enum lang tag_lang(const char *s, size_t len)
+{
+    char tag[16];
+    if (len >= sizeof tag)
+        return LANG_NONE;
+    memcpy(tag, s, len);
+    tag[len] = '\0';
+    if (ieq(tag, "py") || ieq(tag, "python"))
+        return LANG_PYTHON;
+    if (ieq(tag, "sh") || ieq(tag, "bash") || ieq(tag, "shell"))
+        return LANG_SHELL;
+    return LANG_NONE;
+}
+
 static size_t skip_pair(struct lex *L, size_t i, size_t to, char open, char close)
 {
     int depth = 0;
@@ -322,8 +362,8 @@ static void shell_region(struct lex *L, size_t from, size_t to, int depth)
     struct heredoc pending[MAX_HEREDOCS];
     int            npending = 0;
     int            cmdpos = 1, naming = 0;
-    enum lang      lang = LANG_NONE;
-    int            want_code = 0;
+    enum lang      lang = LANG_NONE, redir_lang = LANG_NONE;
+    int            want_code = 0, want_target = 0;
 
     for (size_t i = from; i < to;) {
         char c = s[i];
@@ -341,7 +381,9 @@ static void shell_region(struct lex *L, size_t from, size_t to, int depth)
             cmdpos = 1;
             naming = 0;
             lang = LANG_NONE;
+            redir_lang = LANG_NONE;
             want_code = 0;
+            want_target = 0;
             continue;
         }
         if (c == '#' && (i == from || blank(s[i - 1]) || s[i - 1] == '\n')) {
@@ -361,7 +403,9 @@ static void shell_region(struct lex *L, size_t from, size_t to, int depth)
             cmdpos = 1;
             naming = 0;
             lang = LANG_NONE;
+            redir_lang = LANG_NONE;
             want_code = 0;
+            want_target = 0;
             continue;
         }
         if (c == '(' || c == ')' || c == '{' || c == '}') {
@@ -393,10 +437,15 @@ static void shell_region(struct lex *L, size_t from, size_t to, int depth)
             }
             paint(L, j, word_end, UI_SYN_STRING);
             if (npending < MAX_HEREDOCS && tag_end > tag) {
+                enum lang body = lang;
+                if (body == LANG_NONE)
+                    body = tag_lang(s + tag, tag_end - tag);
+                if (body == LANG_NONE)
+                    body = redir_lang;
                 pending[npending].tag = tag;
                 pending[npending].tag_len = tag_end - tag;
                 pending[npending].strip = strip;
-                pending[npending].lang = lang;
+                pending[npending].lang = body;
                 npending++;
             }
             i = word_end;
@@ -416,6 +465,7 @@ static void shell_region(struct lex *L, size_t from, size_t to, int depth)
             }
             paint(L, i, j, UI_SYN_OP);
             i = j;
+            want_target = 1;
             continue;
         }
 
@@ -429,7 +479,11 @@ static void shell_region(struct lex *L, size_t from, size_t to, int depth)
         int  literal = word_text(L, i, end, word, sizeof word);
         const char *base = literal ? basename_of(word) : "";
 
-        if (literal && python_program(base))
+        if (want_target) {
+            want_target = 0;
+            if (literal && redir_lang == LANG_NONE)
+                redir_lang = ext_lang(base);
+        } else if (literal && python_program(base))
             lang = LANG_PYTHON;
         else if (literal && in_list(SHELL_NAMES, COUNT(SHELL_NAMES), base))
             lang = LANG_SHELL;
