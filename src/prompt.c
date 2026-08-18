@@ -764,7 +764,8 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
             delete_forward(p);
             return KEY_OK;
         }
-        if (ev->cp == 3 && live)
+        if (ev->cp == 3 && live && p->repl.len == 0 &&
+            !p->repl.dropdown_open && !p->repl.searching)
             return KEY_CANCEL;
         if (ev->cp == 22) {
             paste_clipboard(p, live);
