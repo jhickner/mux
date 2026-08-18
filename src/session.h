@@ -49,6 +49,8 @@ const char *session_failed_prompt(const struct session *s);
 
 int session_clear(struct session *s);
 
+int session_set_cwd(struct session *s, const char *path);
+
 int session_set_model(struct session *s, const char *model);
 
 int session_set_effort(struct session *s, const char *effort);

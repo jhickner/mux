@@ -15,6 +15,8 @@ void prompt_history_open(struct prompt *p, const char *path);
 
 void prompt_file_completion(struct prompt *p, const char *root);
 
+void prompt_rehome(const char *root);
+
 char *prompt_read(struct prompt *p);
 
 int  prompt_live_key(void *ud, tty_event *ev);

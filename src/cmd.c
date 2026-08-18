@@ -1,6 +1,8 @@
 #include "cmd.h"
 
 #include <stdarg.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +11,7 @@
 #include "fanout.h"
 #include "hud.h"
 #include "pick.h"
+#include "prompt.h"
 #include "restart.h"
 #include "session.h"
 #include "image.h"
@@ -16,6 +19,7 @@
 #include "sessionlist.h"
 #include "sidechannel.h"
 #include "settings.h"
+#include "text.h"
 #include "status.h"
 #include "ui.h"
 #include "vendor/agents/backend.h"
@@ -26,6 +30,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/model", "switch model", "[name]"},
     {"/effort", "set reasoning/thinking effort", "[level]"},
     {"/backend", "continue with another backend", "<name>"},
+    {"/cd", "work in another directory, starting fresh there", "<path>"},
     {"/mux", "ask several backends the same thing", "<prompt>"},
     {"/btw", "answer this on the side, without waiting", "<prompt>"},
     {"/thinking", "show or hide the model's reasoning", "[on|off]"},
@@ -546,6 +551,50 @@ static void do_new(struct session *s)
     ui_flush();
 }
 
+static void do_cd(struct session *s, const char *arg)
+{
+    char shown[4096];
+    if (!arg || !*arg) {
+        path_home_relative(session_cwd(s), shown, sizeof shown);
+        reply_note("%s", shown);
+        return;
+    }
+
+    char *expanded = path_expand_home(arg);
+    char  resolved[4096];
+    const char *want = expanded ? expanded : arg;
+    int ok = realpath(want, resolved) != NULL;
+    free(expanded);
+    if (!ok) {
+        reply_error("no such directory: %s", arg);
+        return;
+    }
+    struct stat st;
+    if (stat(resolved, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        reply_error("not a directory: %s", arg);
+        return;
+    }
+    if (!strcmp(resolved, session_cwd(s))) {
+        path_home_relative(resolved, shown, sizeof shown);
+        reply_note("already in %s", shown);
+        return;
+    }
+
+    if (!session_set_cwd(s, resolved)) {
+        reply_error("could not start %s in %s", session_backend(s), resolved);
+        return;
+    }
+    if (chdir(resolved) != 0)
+        reply_error("the agent moved, but mux could not follow");
+    prompt_rehome(resolved);
+
+    status_sticky_prompt(NULL);
+    path_home_relative(resolved, shown, sizeof shown);
+    ui_bar(ui_style(UI_DIM), "new conversation in %s", shown);
+    ui_put("\n");
+    ui_flush();
+}
+
 static void do_copy(struct session *s)
 {
     const char *reply = session_last_reply(s);
@@ -701,6 +750,8 @@ static enum cmd_result run_command(struct session *s, const char *name,
         do_effort(s, arg);
     } else if (!strcmp(name, "/backend")) {
         do_backend(s, arg);
+    } else if (!strcmp(name, "/cd")) {
+        do_cd(s, arg);
     } else if (!strcmp(name, "/mux")) {
         do_mux(s, arg);
     } else if (!strcmp(name, "/btw")) {

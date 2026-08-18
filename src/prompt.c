@@ -506,8 +506,11 @@ struct prompt *prompt_new(const ReplCommand *commands, int command_count)
     return p;
 }
 
+static struct prompt *completion_owner;
+
 void prompt_file_completion(struct prompt *p, const char *root)
 {
+    completion_owner = p;
     free(p->file_root);
     p->file_root = strdup(root);
     if (p->file_root)
@@ -515,10 +518,18 @@ void prompt_file_completion(struct prompt *p, const char *root)
     files_prefetch(p->file_root);
 }
 
+void prompt_rehome(const char *root)
+{
+    if (completion_owner && root && *root)
+        prompt_file_completion(completion_owner, root);
+}
+
 void prompt_free(struct prompt *p)
 {
     if (!p)
         return;
+    if (completion_owner == p)
+        completion_owner = NULL;
     repl_free(&p->repl);
     files_forget();
     free(p->frame.cells);

@@ -132,6 +132,11 @@ static void on_event(void *ud, const backend_event *ev)
         return;
     }
 
+    // Kept even when nothing is being drawn: a turn that ends without a reply
+    // still has this to fall back on.
+    if (ev->kind == BACKEND_EV_ASSISTANT && ev->text && *ev->text)
+        replace(&s->last_block, ev->text);
+
     if (s->quiet || !live)
         return;
 
@@ -158,7 +163,6 @@ static void on_event(void *ud, const backend_event *ev)
             ui_put("\n");
         md_render(ev->text, 0);
         ui_put("\n");
-        replace(&s->last_block, ev->text);
         stream_append(s, ev->text);
         view_cluster_forget(&s->view);
         s->view.after_activity = 0;
@@ -780,6 +784,55 @@ int session_resume(struct session *s, const char *id)
     return 1;
 }
 
+int session_set_cwd(struct session *s, const char *path)
+{
+    if (!s || !path || !*path)
+        return 0;
+    if (s->cwd && strcmp(s->cwd, path) == 0)
+        return 1;
+
+    char *next = strdup(path);
+    if (!next)
+        return 0;
+
+    Backend *previous = s->agent;
+    char    *was = s->cwd;
+    s->cwd = next;
+    s->agent = NULL;
+    if (!agent(s) || !s->agent->start(s->agent, NULL)) {
+        if (s->agent)
+            s->agent->close(s->agent);
+        s->agent = previous;
+        free(s->cwd);
+        s->cwd = was;
+        return 0;
+    }
+    if (previous)
+        previous->close(previous);
+    free(was);
+
+    s->turns = 0;
+    s->cost_usd = 0;
+    s->context_tokens = 0;
+    replace(&s->workdir, NULL);
+    replace(&s->last_reply, NULL);
+    replace(&s->failed_prompt, NULL);
+    replace(&s->last_block, NULL);
+    transcript_clear(&s->transcript);
+    s->title[0] = '\0';
+    s->retitle = 1;
+    s->named = 0;
+    status_set_note(NULL);
+
+    s->id[0] = '\0';
+    const char *id = s->agent->session_id(s->agent);
+    if (id)
+        set_id(s, id);
+    gitinfo_forget();
+    await_model(s);
+    return 1;
+}
+
 int session_clear(struct session *s)
 {
     if (!s->agent || !s->agent->reset(s->agent))
@@ -912,9 +965,20 @@ int session_turn(struct session *s, const char *text)
     int shown = (s->last_block && strcmp(reply, s->last_block) == 0) ||
                 (s->streamed && strcmp(reply, s->streamed) == 0);
     if (s->quiet) {
-        if (*reply) {
-            ui_put(reply);
+        // A turn can end with no closing text — the last thing it said is the
+        // answer then, and if it never said anything the caller still needs a
+        // reason, which only stderr can carry once stdout is empty.
+        const char *text = *reply ? reply : (s->last_block ? s->last_block : "");
+        if (*text) {
+            ui_put(text);
             ui_put("\n");
+        } else {
+            const char *detail = s->agent->last_error(s->agent);
+            fprintf(stderr, "%s\n",
+                    detail && *detail    ? detail
+                    : meta.interrupted   ? "the turn was interrupted"
+                    : meta.is_error      ? "the turn ended in an error"
+                                         : "the turn ended without a reply");
         }
     } else if (*reply && !shown) {
         if (s->view.after_activity)
