@@ -374,6 +374,45 @@ static char *backend_claude_ask_ex(Backend *b, const char *user, backend_result 
     if (!backend_claude_ready(b)) return NULL;
     claude_result *cr = &x->live;
     char *reply = claude_send_ex(x->client, user, cr);
+
+    /* A subscription access token normally refreshes invisibly. If its refresh
+     * token has expired too, let the CLI open its browser login, then replace
+     * only the headless child and reconnect it to the same persisted session.
+     * Retrying once keeps a second auth failure from becoming a login loop. */
+    if (reply && cr->is_error &&
+        strstr(reply, "OAuth session expired and could not be refreshed")) {
+        backend_event notice = {
+            .kind = BACKEND_EV_WARNING,
+            .text = "Claude login expired; signing in again in your browser..."
+        };
+        backend_emit(&x->st, &notice);
+
+        char resume[128] = {0};
+        const char *id = claude_session_id(x->client);
+        if (!id) id = x->st.resume;
+        if (id) snprintf(resume, sizeof resume, "%s", id);
+
+        if (claude_auth_login(x->client)) {
+            notice.text = "Claude sign-in complete; retrying your message...";
+            backend_emit(&x->st, &notice);
+            free(reply);
+            reply = NULL;
+
+            /* This is a reconnect, not the user-requested fork that may have
+             * created this session originally. */
+            int fork_session = x->st.fork_session;
+            x->st.fork_session = 0;
+            int restarted = backend_claude_start(b, *resume ? resume : NULL);
+            x->st.fork_session = fork_session;
+            if (restarted) {
+                cr = &x->live;
+                reply = claude_send_ex(x->client, user, cr);
+            }
+        } else {
+            notice.text = "Claude sign-in did not complete.";
+            backend_emit(&x->st, &notice);
+        }
+    }
     if (meta) {
         meta->cost_usd = cr->cost_usd;
         meta->input_tokens = cr->input_tokens;

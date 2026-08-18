@@ -85,6 +85,8 @@ void ui_sync_end(void);
 int ui_reflow_rows(const int *row_widths, int count, int cols);
 
 int    ui_columns(void);
+int    ui_screen_columns(void);
+int    ui_too_narrow(void);
 size_t ui_cells(const char *s);
 size_t ui_cells_n(const char *s, size_t n);
 

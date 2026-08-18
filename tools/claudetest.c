@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include "vendor/agents/claude/claude.h"
+#include "vendor/agents/backend.h"
 #include "vendor/cJSON.h"
 
 static const char *message_text(cJSON *msg)
@@ -64,6 +65,16 @@ static int has_option(int argc, char **argv, const char *option, const char *val
 
 static int mock_cli(int argc, char **argv)
 {
+    if (argc > 2 && !strcmp(argv[1], "auth") && !strcmp(argv[2], "login")) {
+        const char *marker = getenv("CLAUDETEST_AUTH_MARKER");
+        if (!has_arg(argc, argv, "--claudeai") || getenv("ANTHROPIC_API_KEY") || !marker)
+            return 3;
+        FILE *f = fopen(marker, "w");
+        if (!f) return 4;
+        fclose(f);
+        return 0;
+    }
+
     if (!has_arg(argc, argv, "--no-session-persistence") ||
         !has_option(argc, argv, "--name", "title helper") ||
         !has_option(argc, argv, "--tools", ""))
@@ -100,6 +111,20 @@ static int mock_cli(int argc, char **argv)
         else if (text && !strcmp(text, "continue"))
             result("done");
 
+        else if (text && !strcmp(text, "reauth")) {
+            const char *marker = getenv("CLAUDETEST_AUTH_MARKER");
+            if (marker && access(marker, F_OK) == 0 &&
+                has_option(argc, argv, "--resume", "session-1")) {
+                result("recovered");
+            } else {
+                printf("{\"type\":\"result\",\"subtype\":\"error_during_execution\","
+                       "\"is_error\":true,\"result\":\"Failed to authenticate: "
+                       "OAuth session expired and could not be refreshed\","
+                       "\"session_id\":\"session-1\"}\n");
+                fflush(stdout);
+            }
+        }
+
         else if (text && !strcmp(text, "fanout")) {
             printf("{\"type\":\"system\",\"subtype\":\"background_tasks_changed\","
                    "\"tasks\":[{\"task_id\":\"a\"},{\"task_id\":\"b\"}]}\n");
@@ -129,7 +154,7 @@ static int mock_cli(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
-    if (argc > 1 && !strcmp(argv[1], "--print"))
+    if (argc > 1 && (!strcmp(argv[1], "--print") || !strcmp(argv[1], "auth")))
         return mock_cli(argc, argv);
 
     claude_opts opts = {
@@ -175,6 +200,62 @@ int main(int argc, char **argv)
         return 1;
     }
     free(reply);
+
+    char auth_root[] = "/tmp/claudetest.XXXXXX";
+    if (!mkdtemp(auth_root)) {
+        perror("claudetest: mkdtemp");
+        claude_stop(client);
+        return 1;
+    }
+    char marker[4096], cli_link[4096];
+    snprintf(marker, sizeof marker, "%s/authenticated", auth_root);
+    snprintf(cli_link, sizeof cli_link, "%s/claude", auth_root);
+    char self[4096];
+    if (!realpath(argv[0], self) || symlink(self, cli_link) != 0) {
+        perror("claudetest: mock cli link");
+        rmdir(auth_root);
+        claude_stop(client);
+        return 1;
+    }
+    const char *old_path = getenv("PATH");
+    size_t path_size = strlen(auth_root) + 2 + (old_path ? strlen(old_path) : 0);
+    char *test_path = malloc(path_size);
+    if (!test_path) {
+        unlink(cli_link);
+        rmdir(auth_root);
+        claude_stop(client);
+        return 1;
+    }
+    snprintf(test_path, path_size, "%s:%s", auth_root, old_path ? old_path : "");
+    setenv("PATH", test_path, 1);
+    setenv("CLAUDETEST_AUTH_MARKER", marker, 1);
+    setenv("ANTHROPIC_API_KEY", "must not reach auth login", 1);
+
+    backend_opts backend_options = {
+        .name = "claude",
+        .session_name = "title helper",
+        .ephemeral = 1,
+        .disable_tools = 1,
+    };
+    Backend *backend = backend_open_ex(&backend_options);
+    backend_result backend_meta = {0};
+    char *recovered = backend ? backend->ask_ex(backend, "reauth", &backend_meta) : NULL;
+    if (!recovered || strcmp(recovered, "recovered") || backend_meta.is_error) {
+        fprintf(stderr, "claudetest: OAuth login did not recover the turn (%s)\n",
+                recovered ? recovered : "none");
+        free(recovered);
+        if (backend) backend->close(backend);
+        free(test_path);
+        unlink(marker); unlink(cli_link); rmdir(auth_root);
+        claude_stop(client);
+        return 1;
+    }
+    free(recovered);
+    backend->close(backend);
+    free(test_path);
+    unlink(marker);
+    unlink(cli_link);
+    rmdir(auth_root);
 
     reply = claude_send(client, "fanout");
     if (!reply || claude_background_tasks(client) != 2) {

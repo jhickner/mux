@@ -61,7 +61,13 @@ unsigned tty_resize_epoch(void);
 
 #define TTY_RESIZE_SETTLE_MS 250
 
+#define TTY_MIN_COLUMNS 20
+
+// The width the layout is built for, floored at TTY_MIN_COLUMNS.
 int  tty_columns(void);
+
+// The width the screen actually has, however narrow.
+int  tty_screen_columns(void);
 
 int  tty_rows(void);
 

@@ -384,6 +384,17 @@ void ui_flush(void) { fflush(stdout); }
 
 int ui_columns(void) { return capture_cols > 0 ? capture_cols : tty_columns(); }
 
+int ui_screen_columns(void)
+{
+    return capture_cols > 0 ? capture_cols : tty_screen_columns();
+}
+
+// The layout has a floor, so a narrower pane gets lines wider than the screen.
+// Every row we count is then several rows the terminal holds, so the cursor-up
+// rewind falls short and each repaint stacks a fresh copy into the scrollback.
+// Draw nothing until the pane is wide enough to hold a painted row.
+int ui_too_narrow(void) { return ui_screen_columns() < TTY_MIN_COLUMNS; }
+
 static unsigned decode(const char *s, size_t n, size_t *i)
 {
     unsigned char b = (unsigned char)s[*i];

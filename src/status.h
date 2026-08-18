@@ -19,6 +19,10 @@ void   status_set_above(status_above_fn paint, status_offset_fn rows, void *ud);
 
 int    status_chrome_rows(void);
 
+// Screen rows the chrome painted so far may still spend. Callers that paint
+// above the spinner must stop once this reaches zero.
+int    status_rows_left(void);
+
 void   status_set_word(const char *text);
 
 void   status_set_note(const char *text);

@@ -105,6 +105,11 @@ const char *claude_effort(claude_client *c);
  * "ANTHROPIC_API_KEY". NULL until the first turn has been sent. */
 const char *claude_auth_source(claude_client *c);
 
+/* Run the CLI's claude.ai OAuth login, waiting until the browser flow finishes.
+ * Concurrent callers share one successful login instead of opening several
+ * browser windows. The abort predicate remains live while login is waiting. */
+int claude_auth_login(claude_client *c);
+
 /* Clear conversation context by sending Claude Code's /clear command over the
  * existing JSONL stream. Returns nonzero on success; the process stays alive. */
 int claude_reset(claude_client *c);
@@ -228,6 +233,7 @@ void claude_stop(claude_client *c);
 
 struct claude_client {
     pid_t pid;
+    char  cli[4096];          /* executable used for this client and auth login */
     int   in_fd;              /* write user turns here (child stdin)   */
     int   out_fd;             /* read JSONL events here (child stdout) */
     int   err_fd;             /* read the child's stderr here          */
@@ -370,30 +376,38 @@ static void cl_note_effort(claude_client *c, cJSON *ev) {
 
 /* Read whatever the child has written to stderr, keeping only the tail. Never
  * blocks: the fd is non-blocking. */
-static void cl_drain_stderr(claude_client *c) {
-    if (c->err_fd < 0) return;
+static void cl_append_error(claude_client *c, const char *text, size_t n) {
+    if (!c || !text || !n) return;
+    if (n >= CLAUDE_ERR_MAX) {          /* keep only the last chunk */
+        memcpy(c->err, text + n - (CLAUDE_ERR_MAX - 1), CLAUDE_ERR_MAX - 1);
+        c->err_len = CLAUDE_ERR_MAX - 1;
+    } else {
+        if (c->err_len + n > CLAUDE_ERR_MAX - 1) {
+            size_t drop = c->err_len + n - (CLAUDE_ERR_MAX - 1);
+            memmove(c->err, c->err + drop, c->err_len - drop);
+            c->err_len -= drop;
+        }
+        memcpy(c->err + c->err_len, text, n);
+        c->err_len += n;
+    }
+    c->err[c->err_len] = '\0';
+}
+
+static void cl_drain_error_fd(claude_client *c, int fd) {
+    if (fd < 0) return;
     char tmp[1024];
     for (;;) {
-        ssize_t r = read(c->err_fd, tmp, sizeof tmp);
+        ssize_t r = read(fd, tmp, sizeof tmp);
         if (r <= 0) {
             if (r < 0 && errno == EINTR) continue;
             return;
         }
-        size_t n = (size_t)r;
-        if (n >= CLAUDE_ERR_MAX) {          /* keep only the last chunk */
-            memcpy(c->err, tmp + n - (CLAUDE_ERR_MAX - 1), CLAUDE_ERR_MAX - 1);
-            c->err_len = CLAUDE_ERR_MAX - 1;
-        } else {
-            if (c->err_len + n > CLAUDE_ERR_MAX - 1) {
-                size_t drop = c->err_len + n - (CLAUDE_ERR_MAX - 1);
-                memmove(c->err, c->err + drop, c->err_len - drop);
-                c->err_len -= drop;
-            }
-            memcpy(c->err + c->err_len, tmp, n);
-            c->err_len += n;
-        }
-        c->err[c->err_len] = '\0';
+        cl_append_error(c, tmp, (size_t)r);
     }
+}
+
+static void cl_drain_stderr(claude_client *c) {
+    if (c) cl_drain_error_fd(c, c->err_fd);
 }
 
 const char *claude_last_error(claude_client *c) {
@@ -491,6 +505,7 @@ claude_client *claude_start(const claude_opts *opts) {
         return NULL;
     }
     c->pid = pid;
+    snprintf(c->cli, sizeof c->cli, "%s", cli);
     c->in_fd = in_pipe[1];
     c->out_fd = out_pipe[0];
     c->err_fd = err_pipe[0];
@@ -855,6 +870,88 @@ static int cl_await_ready(claude_client *c) {
         c->warm_joinable = 0;
     }
     return atomic_load_explicit(&c->warm_state, memory_order_acquire) == 1;
+}
+
+/* A burst of expired sessions should result in one browser login. Every caller
+ * snapshots the generation before taking the lock; if another caller advanced
+ * it while this one waited, the credential it just wrote is the one we need. */
+static pthread_mutex_t cl_auth_lock = PTHREAD_MUTEX_INITIALIZER;
+static atomic_ulong cl_auth_generation;
+
+static int cl_wait_auth_child(claude_client *c, pid_t pid, int output_fd) {
+    int status = 0;
+    for (;;) {
+        cl_drain_error_fd(c, output_fd);
+        pid_t got = waitpid(pid, &status, WNOHANG);
+        if (got == pid) break;
+        if (got < 0 && errno != EINTR) return 0;
+        if (c->abort && c->abort()) {
+            kill(pid, SIGTERM);
+            for (int waited = 0; waited < 250; waited += 5) {
+                if (waitpid(pid, &status, WNOHANG) == pid) return 0;
+                usleep(5000);
+            }
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            return 0;
+        }
+        usleep(CL_TICK_MS * 1000);
+    }
+    cl_drain_error_fd(c, output_fd);
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+int claude_auth_login(claude_client *c) {
+    if (!c || !c->cli[0]) return 0;
+
+    unsigned long seen = atomic_load_explicit(&cl_auth_generation, memory_order_acquire);
+    pthread_mutex_lock(&cl_auth_lock);
+    if (atomic_load_explicit(&cl_auth_generation, memory_order_relaxed) != seen) {
+        pthread_mutex_unlock(&cl_auth_lock);
+        return 1;
+    }
+
+    int output[2];
+    if (pipe(output) != 0) {
+        pthread_mutex_unlock(&cl_auth_lock);
+        return 0;
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(output[0]);
+        int null_fd = open("/dev/null", O_RDONLY);
+        if (null_fd >= 0) {
+            dup2(null_fd, STDIN_FILENO);
+            if (null_fd != STDIN_FILENO) close(null_fd);
+        }
+        dup2(output[1], STDOUT_FILENO);
+        dup2(output[1], STDERR_FILENO);
+        if (output[1] != STDOUT_FILENO && output[1] != STDERR_FILENO)
+            close(output[1]);
+        unsetenv("ANTHROPIC_API_KEY");
+        const char *argv[] = {c->cli, "auth", "login", "--claudeai", NULL};
+        execvp(c->cli, (char *const *)argv);
+        _exit(127);
+    }
+    close(output[1]);
+    if (pid < 0) {
+        close(output[0]);
+        pthread_mutex_unlock(&cl_auth_lock);
+        return 0;
+    }
+
+    fcntl(output[0], F_SETFL, O_NONBLOCK);
+    c->err_len = 0;
+    c->err[0] = '\0';
+    int ok = cl_wait_auth_child(c, pid, output[0]);
+    close(output[0]);
+    if (ok) {
+        c->err_len = 0;
+        c->err[0] = '\0';
+        atomic_fetch_add_explicit(&cl_auth_generation, 1, memory_order_release);
+    }
+    pthread_mutex_unlock(&cl_auth_lock);
+    return ok;
 }
 
 int claude_interrupt(claude_client *c) {

@@ -69,12 +69,18 @@ int tty_input_waiting(void)
 
 unsigned tty_resize_epoch(void) { return (unsigned)winch_count; }
 
-int tty_columns(void)
+int tty_screen_columns(void)
 {
     struct winsize ws;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
-        return ws.ws_col < 20 ? 20 : ws.ws_col;
+        return ws.ws_col;
     return 80;
+}
+
+int tty_columns(void)
+{
+    int cols = tty_screen_columns();
+    return cols < TTY_MIN_COLUMNS ? TTY_MIN_COLUMNS : cols;
 }
 
 int tty_rows(void)

@@ -49,6 +49,13 @@ static int   block_tallest;
 
 static int   chrome_rows = 4;
 
+// A block taller than the screen cannot be erased: the cursor-up rewind
+// saturates at the top of the screen while the rest has already scrolled into
+// the scrollback, so every repaint stacks another copy there. Each paint hands
+// the optional chrome a row budget and it yields once the budget is spent.
+static int   chrome_budget;
+static int   chrome_spent;
+
 static unsigned resize_epoch;
 static double   resize_at;
 
@@ -152,6 +159,12 @@ static void humanize(double seconds, char *out, size_t n)
         snprintf(out, n, "%ldh %ldm", total / 3600, (total % 3600) / 60);
 }
 
+int status_rows_left(void)
+{
+    int left = chrome_budget - chrome_spent;
+    return left > 0 ? left : 0;
+}
+
 static int sticky_gone(void)
 {
     if (!sticky_tracking)
@@ -179,6 +192,20 @@ static void paint_sticky(void)
     w.erase = 1;
     w.widths = sticky_widths;
     w.widths_max = STICKY_ROWS_MAX - 1;
+
+    // A narrow pane floors the wrap budget above what fits, so one painted row
+    // spans several screen rows; measure with reflow and skip the head when it
+    // no longer leaves room for the spinner and the prompt.
+    struct ui_wrap m = w;
+    m.measure = 1;
+    m.erase = 0;
+    m.widths = NULL;
+    m.widths_max = 0;
+    m.reflow_cols = cols;
+    int need = ui_wrap_paint(sticky_text, &m) + 1;
+    if (need > status_rows_left())
+        return;
+    chrome_spent += need;
 
     sticky_rows = ui_wrap_paint(sticky_text, &w);
     if (sticky_rows > w.widths_max)
@@ -242,19 +269,38 @@ static void paint_spin(void)
 
 static void paint(void)
 {
+    // See ui_too_narrow(): a pane this narrow cannot hold a painted row, so the
+    // rewind falls short and each repaint leaks another block into the
+    // scrollback. Draw nothing, and forget the block so no rewind is attempted.
+    if (ui_too_narrow()) {
+        caret_row = 0;
+        spin_width = 0;
+        painted_gap = 0;
+        sticky_rows = 0;
+        above_painted = 0;
+        painted = 0;
+        return;
+    }
+
     ui_sync_begin();
 
     ui_scroll_track(0);
     erase_block();
 
+    chrome_budget = tty_rows() - 3;
+    chrome_spent = 0;
+
     painted_gap = gap;
-    if (painted_gap)
+    if (painted_gap) {
         ui_put("\n");
+        chrome_spent++;
+    }
     paint_sticky();
 
     if (above) {
         above(above_ud);
         above_painted = 1;
+        chrome_spent += above_rows();
     }
 
     paint_spin();

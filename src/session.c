@@ -149,8 +149,11 @@ static void on_event(void *ud, const backend_event *ev)
         break;
 
     case BACKEND_EV_WARNING:
-        if (ev->text && *ev->text)
+        if (ev->text && *ev->text) {
+            status_pause();
+            paused = 1;
             ui_note("%s", ev->text);
+        }
         break;
 
     case BACKEND_EV_ASSISTANT:
