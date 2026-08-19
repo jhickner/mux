@@ -8,7 +8,6 @@
 #include <time.h>
 
 #include "app.h"
-#include "block.h"
 #include "filediff.h"
 #include "md.h"
 #include "restart.h"
@@ -80,12 +79,13 @@ struct worker {
     int           laid;
 };
 
+// The board is one transcript entry that knows how to draw itself. It is
+// redrawn in place while the turns run and again when they are all back, and
+// a resize re-renders it at the new width like anything else.
 struct board {
-    struct worker *w;
-    int            n;
-
-    int            scroll[FAN_MAX];
-    int            sel;
+    struct worker w[FAN_MAX];
+    int           n;
+    int           live;         /* still running: only the tail of a column shows */
 };
 
 static atomic_int      aborted;
@@ -273,6 +273,7 @@ static void column_row(struct worker *w, const char *text, size_t bytes, int wid
     w->rows[w->nrows++] = (struct cell){text, bytes, (int)ui_cells_visible(text, bytes)};
 }
 
+// Called with the board locked: the workers are still writing to their logs.
 static void column_lay(struct worker *w, int width)
 {
     if (w->rows_width != width) {
@@ -281,9 +282,7 @@ static void column_lay(struct worker *w, int width)
         w->laid = 0;
     }
 
-    pthread_mutex_lock(&board_lock);
     int count = w->count;
-    pthread_mutex_unlock(&board_lock);
 
     for (; w->laid < count; w->laid++) {
         const char *p = entry_painted(&w->log[w->laid], width);
@@ -312,23 +311,20 @@ static int board_height(const struct board *b)
     return tallest;
 }
 
-static void board_row(const struct board *b, int width, const int *from, int r,
-                      int erase, int pad_tail)
+static void board_row(const struct board *b, int width, const int *from, int r)
 {
     int last = -1;
     for (int i = 0; i < b->n; i++)
         if (from[i] + r < b->w[i].nrows)
             last = i;
 
-    if (erase)
-        ui_esc(UI_ERASE_EOL);
     for (int i = 0; i < b->n; i++) {
-        if (!pad_tail && i > last)
+        if (i > last)
             break;
         int cell = width - (i + 1 < b->n ? 0 : 1);
         int at = from[i] + r;
         if (at >= b->w[i].nrows) {
-            if (pad_tail || i < last)
+            if (i < last)
                 ui_pad(cell);
             continue;
         }
@@ -336,27 +332,21 @@ static void board_row(const struct board *b, int width, const int *from, int r,
         ui_putn(c->text, c->bytes);
 
         ui_esc(ui_style(UI_RESET));
-        if (pad_tail || i < last)
+        if (i < last)
             ui_pad(cell - c->width);
     }
     ui_put("\n");
 }
 
-static void label_row(const struct board *b, int width, int closing, int erase)
+static void label_row(const struct board *b, int width, int closing)
 {
-    if (erase)
-        ui_esc(UI_ERASE_EOL);
-    pthread_mutex_lock(&board_lock);
     for (int i = 0; i < b->n; i++) {
         const struct worker *w = &b->w[i];
         char text[160];
-        enum ui_role role = b->sel == i ? UI_ACCENT : UI_BOLD;
+        enum ui_role role = UI_BOLD;
 
         if (!closing) {
-            if (b->scroll[i])
-                snprintf(text, sizeof text, "%s \xe2\x86\x91%d", w->name, b->scroll[i]);
-            else
-                snprintf(text, sizeof text, "%s", w->name);
+            snprintf(text, sizeof text, "%s", w->name);
         } else if (w->state == FAN_FAIL) {
             snprintf(text, sizeof text, "%s \xc2\xb7 failed", w->name);
             role = UI_ERROR;
@@ -369,138 +359,85 @@ static void label_row(const struct board *b, int width, int closing, int erase)
         ui_esc(ui_style(role));
         ui_putn(text, bytes);
         ui_esc(ui_style(UI_RESET));
-        if (i + 1 < b->n || erase)
-            ui_pad(width - (i + 1 < b->n ? 0 : 1) - (int)ui_cells_n(text, bytes));
+        if (i + 1 < b->n)
+            ui_pad(width - (int)ui_cells_n(text, bytes));
     }
-    pthread_mutex_unlock(&board_lock);
     ui_put("\n");
 }
 
-static void widget_paint(struct board *b, const char *word, double elapsed, int frame)
+// Too narrow to put side by side: one column after another, each under its
+// own heading.
+static void board_stacked(struct board *b, int cols)
 {
-    static const char *const FRAMES[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
-
-    int cols = ui_columns();
-    int width = board_width(b, cols);
-    board_lay(b, width);
-
-    int body = tty_rows() - 2;
-    if (body < 1)
-        body = 1;
-
-    int from[FAN_MAX];
     for (int i = 0; i < b->n; i++) {
-        int tail = b->w[i].nrows > body ? b->w[i].nrows - body : 0;
-        if (b->scroll[i] > tail)
-            b->scroll[i] = tail;
-        from[i] = tail - b->scroll[i];
+        struct worker *w = &b->w[i];
+        ui_bar(ui_style(UI_CHROME), "%s \xc2\xb7 %.1fs", w->name, w->secs);
+        ui_put("\n");
+        for (int e = 0; e < w->count; e++) {
+            const char *painted = entry_painted(&w->log[e], cols);
+            if (painted)
+                ui_put(painted);
+        }
+        ui_put("\n");
     }
-
-    ui_sync_begin();
-    ui_esc(UI_HOME);
-    label_row(b, width, 0, 1);
-    for (int r = 0; r < body; r++)
-        board_row(b, width, from, r, 1, 0);
-
-    ui_esc(UI_ERASE_EOL);
-    char clock[32];
-    snprintf(clock, sizeof clock, "%s %.0fs \xc2\xb7 %s", FRAMES[frame % 10], elapsed, word);
-    ui_esc(ui_style(UI_SPIN));
-    ui_put(clock);
-    ui_esc(ui_style(UI_DIM));
-    ui_put("  esc interrupt \xc2\xb7 \xe2\x86\x90\xe2\x86\x92 column \xc2\xb7 "
-           "\xe2\x86\x91\xe2\x86\x93/pgup scroll \xc2\xb7 end follow");
-    ui_esc(ui_style(UI_RESET));
-    ui_sync_end();
-    ui_flush();
 }
 
-#define WIDGET_STEP 3
-
-static int widget_keys(struct board *b, int wait_ms, int *moved)
+// How much of a running board is shown. Its columns only grow, and it is at
+// the end of the transcript, so without a cap a long turn would push
+// everything else off the screen.
+static int live_rows(void)
 {
-    int interrupt = 0;
-    int page = tty_rows() - 4;
-    if (page < 1)
-        page = 1;
-
-    tty_event ev;
-    for (int first = 1; tty_read(&ev, first ? wait_ms : 0); first = 0) {
-
-        enum { KEEP, TOP, FOLLOW } jump = KEEP;
-        int step = 0;
-
-        switch (ev.key) {
-        case TK_TEXT:      free(ev.text);                                    break;
-        case TK_EOF:
-        case TK_ESCAPE:    interrupt = 1;                                    break;
-        case TK_CHAR:      interrupt |= ev.cp == 3;                          break;
-        case TK_LEFT:      b->sel = b->sel < 0 ? b->n - 1 : b->sel - 1;
-                           *moved = 1;                                       break;
-        case TK_RIGHT:     b->sel = b->sel + 1 >= b->n ? -1 : b->sel + 1;
-                           *moved = 1;                                       break;
-        case TK_UP:        step = WIDGET_STEP;                               break;
-        case TK_DOWN:      step = -WIDGET_STEP;                              break;
-        case TK_PAGE_UP:
-        case TK_WORD_LEFT: step = page;                                      break;
-        case TK_PAGE_DOWN:
-        case TK_WORD_RIGHT:step = -page;                                     break;
-        case TK_HOME:      jump = TOP;                                       break;
-        case TK_END:       jump = FOLLOW;                                    break;
-        default:                                                             break;
-        }
-
-        if (jump == KEEP && !step)
-            continue;
-        for (int i = 0; i < b->n; i++) {
-            if (b->sel >= 0 && b->sel != i)
-                continue;
-            int at = jump == TOP    ? b->w[i].nrows
-                   : jump == FOLLOW ? 0
-                                    : b->scroll[i] + step;
-            b->scroll[i] = at < 0 ? 0 : at;
-        }
-        *moved = 1;
-    }
-    return interrupt;
+    int rows = tty_rows() * 2 / 3;
+    return rows < 6 ? 6 : rows;
 }
 
-static void board_print(struct board *b, int cols)
+static void board_render(void *ud, int cols)
 {
+    struct board *b = ud;
+
+    // The workers write to their logs as they go, and this runs on whatever
+    // paint asked for it.
+    pthread_mutex_lock(&board_lock);
+
     int width = board_width(b, cols);
-
     if (width < FAN_COL_MIN) {
-
-        for (int i = 0; i < b->n; i++) {
-            struct worker *w = &b->w[i];
-            ui_bar(ui_style(UI_CHROME), "%s \xc2\xb7 %.1fs", w->name, w->secs);
-            ui_put("\n");
-            for (int e = 0; e < w->count; e++) {
-                const char *painted = entry_painted(&w->log[e], cols);
-                if (painted)
-                    ui_put(painted);
-            }
-            ui_put("\n");
-        }
-        ui_flush();
+        board_stacked(b, cols);
+        pthread_mutex_unlock(&board_lock);
         return;
     }
 
     board_lay(b, width);
-
-    memset(b->scroll, 0, sizeof b->scroll);
-    b->sel = -1;
-
-    int from[FAN_MAX] = {0};
     int height = board_height(b);
+    int body = height;
+    if (b->live && body > live_rows())
+        body = live_rows();
+
+    int from[FAN_MAX];
+    for (int i = 0; i < b->n; i++) {
+        int tail = b->w[i].nrows > body ? b->w[i].nrows - body : 0;
+        from[i] = tail;
+    }
 
     ui_put("\n");
-    label_row(b, width, 0, 0);
-    for (int r = 0; r < height; r++)
-        board_row(b, width, from, r, 0, 0);
-    label_row(b, width, 1, 0);
+    label_row(b, width, 0);
+    for (int r = 0; r < body; r++)
+        board_row(b, width, from, r);
+    if (!b->live)
+        label_row(b, width, 1);
     ui_put("\n");
-    ui_flush();
+
+    pthread_mutex_unlock(&board_lock);
+}
+
+static void board_free(void *ud)
+{
+    struct board *b = ud;
+    for (int i = 0; i < b->n; i++) {
+        free(b->w[i].reply);
+        free(b->w[i].rows);
+        log_free(&b->w[i]);
+    }
+    free(b);
 }
 
 static void *fan_work(void *arg)
@@ -596,116 +533,113 @@ int fanout_run(struct session *s, const char *prompt)
     if (!prompt || !*prompt)
         return 0;
 
-    struct worker w[FAN_MAX];
-    memset(w, 0, sizeof w);
+    // The board outlives this call: the transcript keeps it and draws it again
+    // at whatever width the screen has later.
+    struct board *b = calloc(1, sizeof *b);
+    if (!b)
+        return 0;
 
     const char *spec = settings_get_str(SETTING_MUX_BACKENDS, FAN_ROSTER);
-    int n = roster(w, FAN_MAX, spec);
+    int n = roster(b->w, FAN_MAX, spec);
     if (n < 1) {
+        free(b);
         ui_error("no known backends in " SETTING_MUX_BACKENDS " (%s)", spec);
         ui_put("\n");
         ui_flush();
         return 0;
     }
+    b->n = n;
+    b->live = 1;
 
     for (int i = 0; i < n; i++) {
-        const char *model = session_saved_model(w[i].name);
-        const char *effort = session_saved_effort(w[i].name);
+        struct worker *w = &b->w[i];
+        const char *model = session_saved_model(w->name);
+        const char *effort = session_saved_effort(w->name);
         if (model)
-            snprintf(w[i].model, sizeof w[i].model, "%s", model);
+            snprintf(w->model, sizeof w->model, "%s", model);
         if (effort)
-            snprintf(w[i].effort, sizeof w[i].effort, "%s", effort);
-        w[i].cwd = session_cwd(s);
-        w[i].prompt = prompt;
-        w[i].permission = session_permission(s);
+            snprintf(w->effort, sizeof w->effort, "%s", effort);
+        w->cwd = session_cwd(s);
+        w->prompt = prompt;
+        w->permission = session_permission(s);
     }
 
     atomic_store(&aborted, 0);
     atomic_store(&show_thinking, session_thinking(s));
     for (int i = 0; i < n; i++) {
-        if (pthread_create(&w[i].thread, NULL, fan_work, &w[i]) == 0) {
-            w[i].started = 1;
+        struct worker *w = &b->w[i];
+        if (pthread_create(&w->thread, NULL, fan_work, w) == 0) {
+            w->started = 1;
         } else {
             pthread_mutex_lock(&board_lock);
-            w[i].state = FAN_FAIL;
-            snprintf(w[i].error, sizeof w[i].error, "could not start a worker");
-            log_add(&w[i], FAN_NOTE, w[i].error);
+            w->state = FAN_FAIL;
+            snprintf(w->error, sizeof w->error, "could not start a worker");
+            log_add(w, FAN_NOTE, w->error);
             pthread_mutex_unlock(&board_lock);
-            atomic_store(&w[i].done, 1);
+            atomic_store(&w->done, 1);
         }
     }
 
-    struct board board = {.w = w, .n = n, .sel = -1};
-
-    int widget = board_width(&board, ui_columns()) >= FAN_COL_MIN;
-    if (widget) {
-        viewport_suspend();
-        ui_esc(UI_ALT_ON);
-        ui_esc(UI_CURSOR_HIDE);
-        ui_flush();
-    } else {
-        status_set_word("fanning out");
-        status_begin();
+    // With no viewport there is no transcript to keep the board in, so it is
+    // printed once at the end and freed here instead.
+    unsigned mark = 0;
+    int      kept = viewport_active();
+    if (kept) {
+        mark = viewport_item_begin(board_render, b, board_free);
+        board_render(b, ui_columns());
+        viewport_item_end();
     }
 
-    double started = now_seconds();
+    status_set_word("fanning out");
+    status_begin();
+
     double painted = 0;
     for (;;) {
         int done = 0;
         for (int i = 0; i < n; i++)
-            done += atomic_load(&w[i].done);
+            done += atomic_load(&b->w[i].done);
         if (done == n)
             break;
 
-        char word[96];
-        snprintf(word, sizeof word, "%d of %d back", done, n);
+        if (session_poll_input())
+            atomic_store(&aborted, 1);
 
+        char line[128];
+        snprintf(line, sizeof line, "fanning out \xc2\xb7 %d of %d back", done, n);
+        status_set_word(line);
+        status_tick();
+
+        // The columns only change as fast as the turns write to them, and each
+        // redraw lays out every row that has arrived.
         double now = now_seconds();
-        if (widget) {
-            int moved = 0;
-            if (widget_keys(&board, 15, &moved))
-                atomic_store(&aborted, 1);
-            now = now_seconds();
-            if (moved || now - painted >= 0.09) {
-                painted = now;
-                widget_paint(&board, word, now - started, (int)((now - started) / 0.09));
-            }
-            continue;
-        } else {
-            if (session_poll_input())
-                atomic_store(&aborted, 1);
-            char line[128];
-            snprintf(line, sizeof line, "fanning out \xc2\xb7 %s", word);
-            status_set_word(line);
-            status_tick();
+        if (kept && now - painted >= 0.09) {
+            painted = now;
+            viewport_item_update(mark);
         }
 
         struct timespec nap = {0, 15 * 1000 * 1000};
         nanosleep(&nap, NULL);
     }
 
-    if (widget) {
-        ui_esc(UI_ALT_OFF);
-        ui_esc(UI_CURSOR_SHOW);
-        ui_flush();
-        viewport_resume();
-        block_forget();
-    } else {
-        status_end();
-    }
+    status_end();
 
     for (int i = 0; i < n; i++)
-        if (w[i].started)
-            pthread_join(w[i].thread, NULL);
+        if (b->w[i].started)
+            pthread_join(b->w[i].thread, NULL);
 
-    board_print(&board, ui_columns());
+    // Done: the whole board, with what each turn cost under it.
+    b->live = 0;
+    if (kept) {
+        viewport_item_update(mark);
+    } else {
+        board_render(b, ui_columns());
+        ui_flush();
+    }
 
     int answered = 0;
-    for (int i = 0; i < n; i++) {
-        answered += w[i].reply && *w[i].reply;
-        free(w[i].reply);
-        free(w[i].rows);
-        log_free(&w[i]);
-    }
+    for (int i = 0; i < n; i++)
+        answered += b->w[i].reply && *b->w[i].reply;
+    if (!kept)
+        board_free(b);
     return answered;
 }
