@@ -243,7 +243,8 @@ int main(int argc, char **argv)
         session_set_thinking(session, settings_get_int(SETTING_THINKING, 1));
         session_set_compact(session, settings_get_int(SETTING_COMPACT, 0));
         session_set_permission(session,
-            session_permission_name(settings_get_int(SETTING_PERMISSION, 0)));
+            session_permission_name(settings_get_int(SETTING_PERMISSION,
+                                                     session_permission_default())));
 
         session_adopt_id(session, session_arg);
     }

@@ -64,6 +64,7 @@ int         session_permission_count(void);
 const char *session_permission_name(int index);
 const char *session_permission_desc(int index);
 int         session_permission_index(const char *mode);
+int         session_permission_default(void);
 
 int session_resume(struct session *s, const char *id);
 

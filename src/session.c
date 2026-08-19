@@ -720,8 +720,10 @@ static const struct {
     {"plan", "read-only: research and propose, no changes"},
 };
 #define PERMISSION_COUNT (COUNT(PERMISSIONS))
+#define PERMISSION_DEFAULT 1     /* auto */
 
 int session_permission_count(void) { return PERMISSION_COUNT; }
+int session_permission_default(void) { return PERMISSION_DEFAULT; }
 
 const char *session_permission_name(int index)
 {
@@ -745,7 +747,7 @@ int session_permission_index(const char *mode)
 
 const char *session_permission(const struct session *s)
 {
-    return (s && s->permission) ? s->permission : PERMISSIONS[0].name;
+    return (s && s->permission) ? s->permission : PERMISSIONS[PERMISSION_DEFAULT].name;
 }
 
 int session_set_permission(struct session *s, const char *mode)
