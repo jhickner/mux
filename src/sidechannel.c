@@ -469,8 +469,22 @@ void sidechannel_poll(void)
         int status = 0;
         while (waitpid(c->pid, &status, 0) < 0 && errno == EINTR)
             ;
-        emit(c, status);
-        slot_free(c);
+
+        // The slot is taken out of service before anything that might paint,
+        // because a paint can reach back into this poll: chrome asks the
+        // prompt whether the session is busy, the session asks the driver, and
+        // the driver services the client, which runs the abort check that
+        // calls this. A slot still holding a reaped pid answers the same
+        // question again at every level it is re-entered.
+        struct side done = *c;
+        slot_init(c);
+
+        emit(&done, status);
+
+        stream_free(&done.out);
+        stream_free(&done.err);
+        free(done.question);
+
         // The question is no longer pending, so the row it had must go.
         chrome_paint();
     }

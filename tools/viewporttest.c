@@ -304,6 +304,42 @@ static void width_render(void *ud, int cols)
     ui_put("\n");
 }
 
+// One begin/end pair is one entry, whatever was already in hand when it
+// started. Anything that prints a block relies on this: an entry printed twice
+// is a block of transcript repeated, which is what a duplicate reply looks
+// like from the outside.
+static void check_item_counting(struct screen *s)
+{
+    viewport_clear();
+    set_size(80, 24);
+
+    unsigned before = viewport_mark();
+    viewport_item_begin(width_render, NULL, NULL);
+    width_render(NULL, 80);
+    viewport_item_end();
+    if (viewport_mark() - before != 1)
+        fail("a begin/end pair makes exactly one entry");
+
+    // Unwrapped output already in hand is closed into an entry of its own
+    // rather than being swept into the one being opened.
+    viewport_write("LOOSE\n", 6);
+    viewport_write("PARTIAL", 7);
+    before = viewport_mark();
+    viewport_item_begin(width_render, NULL, NULL);
+    width_render(NULL, 80);
+    viewport_item_end();
+    if (viewport_mark() - before != 2)
+        fail("output in hand becomes an entry of its own");
+
+    refresh(s, 80, 24);
+    if (count_on_screen(s, "LOOSE") != 1)
+        fail("a loose row is on screen once");
+    if (count_on_screen(s, "PARTIAL") != 1)
+        fail("a partial row is on screen once");
+    if (count_on_screen(s, "WIDTH-80") != 2)
+        fail("each entry is on screen once");
+}
+
 static void check_reflow(struct screen *s)
 {
     viewport_clear();
@@ -389,6 +425,7 @@ int main(void)
     check_bottom_up(&s);
     check_scroll(&s);
     check_soft_wrap(&s);
+    check_item_counting(&s);
     check_reflow(&s);
     check_live_entry(&s);
     check_scroll_is_cheap(&s);
