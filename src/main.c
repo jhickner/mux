@@ -8,6 +8,7 @@
 #include "agenttabs.h"
 #include "app.h"
 #include "bash.h"
+#include "chrome.h"
 #include "cmd.h"
 #include "confirm.h"
 #include "gitinfo.h"
@@ -22,6 +23,7 @@
 #include "status.h"
 #include "tty.h"
 #include "ui.h"
+#include "viewport.h"
 #include "vendor/agents/backend.h"
 #include "vendor/repl.h"
 #include "text.h"
@@ -46,6 +48,7 @@ static int backend_known(const char *name)
 
 static void restore_terminal(void)
 {
+    viewport_end();
     ui_cursor_restore();
     tty_raw_end();
 }
@@ -94,7 +97,17 @@ static void offer_project_trust(struct session *s)
 static int idle_render(void *ud)
 {
     sidechannel_poll();
+    sidechannel_tick();
     return session_idle_pump(ud);
+}
+
+static int side_busy(void *ud)  { (void)ud; return sidechannel_busy(); }
+
+static void side_tick(void *ud)
+{
+    (void)ud;
+    sidechannel_poll();
+    sidechannel_tick();
 }
 static int idle_busy(void *ud)   { return session_idle_busy(ud); }
 static void replay(void *ud)      { session_replay(ud); }
@@ -118,12 +131,19 @@ static int idle_restart(void *ud)
     return 0;
 }
 
+static int echo_filter(void *ud, const char *line)
+{
+    (void)ud;
+    return !cmd_self_echoes(line);
+}
+
 static int live_command(void *ud, const char *line)
 {
     if (!cmd_is_live(line))
         return 0;
     status_pause();
-    prompt_echo_message(line);
+    if (!cmd_self_echoes(line))
+        prompt_echo_message(line);
     cmd_dispatch_live(ud, line);
     status_resume();
     return 1;
@@ -224,6 +244,7 @@ int main(int argc, char **argv)
         atexit(restore_terminal);
         ui_raw(1);
         ui_cursor_plain();
+        viewport_begin();
 
         // Whatever was typed before raw mode landed was echoed by the terminal
         // onto the line we are about to draw on. Wipe it: the bytes themselves
@@ -296,12 +317,13 @@ int main(int argc, char **argv)
     }
 
     session_set_typeahead(prompt_live_key, prompt);
-    status_set_below(prompt_live_paint, prompt);
-    status_set_above(prompt_queue_paint, prompt);
+    chrome_bind(prompt);
     prompt_set_live_command(prompt, live_command, session);
+    prompt_set_echo_filter(prompt, echo_filter, NULL);
     prompt_set_idle(prompt, idle_fds, idle_render, idle_busy, session);
     prompt_set_restart(prompt, restart_pending, idle_restart, session);
     prompt_set_replay(prompt, replay, session);
+    prompt_set_animate(prompt, side_busy, side_tick, session);
 
     ui_put("\n");
 
@@ -314,9 +336,10 @@ int main(int argc, char **argv)
         offer_project_trust(session);
 
         char *line = prompt_take_queued(prompt);
-        if (line)
-            prompt_echo_message(line);
-        else
+        if (line) {
+            if (!cmd_self_echoes(line))
+                prompt_echo_message(line);
+        } else
             line = prompt_read(prompt);
         if (!line)
             break;
@@ -350,11 +373,11 @@ int main(int argc, char **argv)
 
     sidechannel_close_all();
     session_set_typeahead(NULL, NULL);
-    status_set_below(NULL, NULL);
-    status_set_above(NULL, NULL);
+    chrome_bind(NULL);
     prompt_free(prompt);
     sessionfork_exit_note(session);
     session_free(session);
+    viewport_end();
     ui_raw(0);
     tty_raw_end();
     return 0;

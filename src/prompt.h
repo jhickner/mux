@@ -20,17 +20,40 @@ void prompt_rehome(const char *root);
 char *prompt_read(struct prompt *p);
 
 int  prompt_live_key(void *ud, tty_event *ev);
-void prompt_live_paint(void *ud, int *rows, int *caret_row, int *caret_col);
+// The sections chrome.c composes.
+int  prompt_input_rows(struct prompt *p, int cols);
+void prompt_paint_input(struct prompt *p, int rows, int *caret_row, int *caret_col);
+// A queued line is a reminder of what is waiting, not the thing itself, so a
+// long one is cut short rather than allowed to push everything else off the
+// chrome. Consecutive ones are separated by a blank row, so several read as a
+// list rather than as one run-on block.
+#define QUEUED_LINES 2
+
+int  prompt_queued_rows(struct prompt *p, int cols);
+void prompt_paint_queued(struct prompt *p, int room);
+int  prompt_busy(struct prompt *p);
 
 
-void prompt_queue_paint(void *ud);
 
 void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud);
 
 typedef int (*prompt_live_fn)(void *ud, const char *line);
 void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud);
 
+// Whether a submitted line should be echoed into the transcript. Some commands
+// put their own line there and would otherwise be printed twice. Unset means
+// everything is echoed.
+void prompt_set_echo_filter(struct prompt *p, int (*fn)(void *ud, const char *line),
+                            void *ud);
+int  prompt_echoes(struct prompt *p, const char *line);
+
 void prompt_set_restart(struct prompt *p, int (*pending)(void *ud), int (*run)(void *ud),
+                        void *ud);
+
+// A thing that animates while the prompt is idle. `busy` says whether anything
+// is running; while it is, the read waits in frames instead of indefinitely so
+// `tick` can advance it.
+void prompt_set_animate(struct prompt *p, int (*busy)(void *ud), void (*tick)(void *ud),
                         void *ud);
 
 void prompt_set_idle(struct prompt *p, int (*fds)(void *ud, int *out, int max),

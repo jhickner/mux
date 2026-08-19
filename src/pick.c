@@ -4,47 +4,37 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "block.h"
+#include "chrome.h"
 #include "tty.h"
 #include "ui.h"
 
 #define VISIBLE_MAX 10
 
 struct view {
-    int rows;
     int top;
     int visible;
+    const char *title;
+    const struct pick_item *items;
+    int count;
+    int sel;
 };
 
-static void erase(struct view *v)
+// A modal section: chrome.c paints it in place of the whole stack.
+static void paint(void *ud)
 {
-    if (v->rows == 0)
-        return;
-    printf("\x1b[%dA\r\x1b[J", v->rows);
-    fflush(stdout);
-    v->rows = 0;
-    block_forget();
-}
-
-static void paint(struct view *v, const char *title, const struct pick_item *items, int count,
-                  int sel)
-{
-    block_clear();
+    struct view *v = ud;
+    const char *title = v->title;
+    const struct pick_item *items = v->items;
+    int count = v->count, sel = v->sel;
 
     if (sel < v->top)
         v->top = sel;
     if (sel >= v->top + v->visible)
         v->top = sel - v->visible + 1;
 
-    if (v->rows > 0)
-        printf("\x1b[%dA\r", v->rows);
-    fputs(UI_CURSOR_HIDE, stdout);
-    ui_scroll_track(0);
-
     int columns = ui_columns();
     int rows = 0;
 
-    fputs(UI_ERASE_EOL, stdout);
     ui_esc(ui_style(UI_CHROME));
     ui_put(UI_BAR);
     ui_esc(ui_style(UI_RESET));
@@ -58,14 +48,13 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
             ui_put("…");
     }
     ui_esc(ui_style(UI_RESET));
-    ui_put("\r\n");
+    ui_put("\n");
     rows++;
 
     int end = v->top + v->visible;
     if (end > count)
         end = count;
     for (int i = v->top; i < end; i++) {
-        fputs(UI_ERASE_EOL, stdout);
         int selected = (i == sel);
         ui_esc(ui_style(selected ? UI_ACCENT : UI_RESET));
         ui_put(selected ? "  \xe2\x86\x92 " : "    ");
@@ -94,23 +83,19 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
                 ui_esc(ui_style(UI_RESET));
             }
         }
-        ui_put("\r\n");
+        ui_put("\n");
         rows++;
     }
 
     if (count > v->visible) {
-        fputs(UI_ERASE_EOL, stdout);
         ui_esc(ui_style(UI_DIM));
-        ui_printf("    %d–%d of %d", v->top + 1, end, count);
+        ui_printf("    %d\u2013%d of %d", v->top + 1, end, count);
         ui_esc(ui_style(UI_RESET));
-        ui_put("\r\n");
+        ui_put("\n");
         rows++;
     }
 
-    fputs("\x1b[J\x1b[?25h", stdout);
-    ui_scroll_track(1);
-    fflush(stdout);
-    v->rows = rows;
+    (void)rows;
 }
 
 int pick_run(const char *title, const struct pick_item *items, int count, int initial)
@@ -120,8 +105,11 @@ int pick_run(const char *title, const struct pick_item *items, int count, int in
 
     struct view v = {0};
     v.visible = count < VISIBLE_MAX ? count : VISIBLE_MAX;
-    int sel = (initial >= 0 && initial < count) ? initial : 0;
-    paint(&v, title, items, count, sel);
+    v.title = title;
+    v.items = items;
+    v.count = count;
+    v.sel = (initial >= 0 && initial < count) ? initial : 0;
+    chrome_modal(paint, &v);
 
     for (;;) {
         tty_event ev;
@@ -133,38 +121,40 @@ int pick_run(const char *title, const struct pick_item *items, int count, int in
         }
         switch (ev.key) {
         case TK_UP:
-            sel = sel > 0 ? sel - 1 : count - 1;
+            v.sel = v.sel > 0 ? v.sel - 1 : count - 1;
             break;
         case TK_DOWN:
-            sel = sel + 1 < count ? sel + 1 : 0;
+            v.sel = v.sel + 1 < count ? v.sel + 1 : 0;
             break;
         case TK_HOME:
-            sel = 0;
+            v.sel = 0;
             break;
         case TK_END:
-            sel = count - 1;
+            v.sel = count - 1;
             break;
-        case TK_ENTER:
-            erase(&v);
-            return sel;
+        case TK_ENTER: {
+            int chosen = v.sel;
+            chrome_modal(NULL, NULL);
+            return chosen;
+        }
         case TK_ESCAPE:
         case TK_EOF:
-            erase(&v);
+            chrome_modal(NULL, NULL);
             return -1;
         case TK_CHAR:
             if (ev.cp == 3 || ev.cp == 4) {
-                erase(&v);
+                chrome_modal(NULL, NULL);
                 return -1;
             }
 
             if (ev.cp >= '1' && ev.cp <= '9' && (int)(ev.cp - '1') < count)
-                sel = (int)(ev.cp - '1');
+                v.sel = (int)(ev.cp - '1');
             break;
         case TK_RESIZE:
             break;
         default:
             continue;
         }
-        paint(&v, title, items, count, sel);
+        chrome_paint();
     }
 }

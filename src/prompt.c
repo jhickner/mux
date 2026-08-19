@@ -9,16 +9,20 @@
 
 #include "app.h"
 #include "bash.h"
+#include "chrome.h"
 #include "block.h"
 #include "files.h"
 #include "paste.h"
 #include "settings.h"
+#include "sidechannel.h"
 #include "status.h"
 #include "tty.h"
 #include "ui.h"
+#include "viewport.h"
 #include "text.h"
 
 #define REPL_STYLE_NONE ((signed char)-1)
+
 
 struct cell {
     uint32_t    cp;
@@ -40,6 +44,8 @@ struct prompt {
     char        *history_path;
     prompt_live_fn live_command;
     void          *live_ud;
+    int          (*echo_filter)(void *ud, const char *line);
+    void          *echo_ud;
     char       **queued;
     int          queued_count;
     int          queued_cap;
@@ -50,10 +56,12 @@ struct prompt {
     void        *idle_ud;
     void       (*replay)(void *ud);
     void        *replay_ud;
+    int        (*animate_busy)(void *ud);
+    void       (*animate_tick)(void *ud);
+    void        *animate_ud;
     int        (*restart_pending)(void *ud);
     int        (*restart)(void *ud);
     void        *restart_ud;
-    int          live_block;
     int          frame_ok;
 };
 
@@ -193,24 +201,16 @@ static size_t queued_budget(int cols)
     return (size_t)(cols - 2 > 4 ? cols - 2 : 4);
 }
 
-static const char *head_text(const struct prompt *p)
-{
-    return p->live_block ? NULL : status_sticky_offscreen();
-}
-
-#define STICKY_DONE "\xe2\x9c\x93 "
-
-#define STICKY_BUSY "\xe2\x8b\xaf "
-
-static size_t sticky_budget(int cols)
-{
-    return (size_t)(cols - 5 > 4 ? cols - 5 : 4);
-}
-
 static struct ui_wrap bar_wrap(size_t budget, enum ui_role role, int cap,
                                const char *mark)
 {
     struct ui_wrap w = {0};
+    // The ellipsis a clipped block ends with is written past the budget, so a
+    // capped block keeps a cell back for it. Without that it lands one column
+    // beyond the row and is clipped away with the wrapping turned off, and a
+    // block that was cut short gives no sign of it.
+    if (cap > 0 && budget > 1)
+        budget--;
     w.budget = budget;
     w.gutter = UI_BAR " ";
     w.mark = mark;
@@ -228,55 +228,9 @@ static int painted_rows(const char *text, size_t budget, int cap, const char *ma
     return ui_wrap_paint(text, &w);
 }
 
-static void erase_block(struct prompt *p)
-{
-    p->above_painted = 0;
-    block_clear();
-}
-
-// Ctrl-D leaves what was painted above the input where it is: those rows stop
-// being chrome and stay in the transcript.
-static void erase_input(struct prompt *p)
-{
-    block_keep(p->above_painted);
-    p->above_painted = 0;
-}
-
 static int caret_is_synthetic(const Repl *r)
 {
     return r->cursor >= r->len || r->buf[r->cursor] == '\n';
-}
-
-static int rows_above(const struct prompt *p, const char *head, int cols, int show_queued)
-{
-    int rows = head ? painted_rows(head, sticky_budget(cols), STICKY_LINES, STICKY_DONE) + 1
-                    : 0;
-    if (!show_queued)
-        return rows;
-    size_t budget = queued_budget(cols);
-    for (int i = 0; i < p->queued_count; i++)
-        rows += painted_rows(p->queued[i], budget, 0, NULL);
-    return rows;
-}
-
-// The block is painted onto absolute rows and never wraps, so it has to fit the
-// screen. Drop the queued lines, then the sticky head, until it does.
-static void fit_above(const struct prompt *p, const char **head, int *show_queued,
-                      int cols, int input_rows)
-{
-    int limit = tty_rows() - 1;
-
-    *show_queued = !p->live_block;
-    if (rows_above(p, *head, cols, *show_queued) + input_rows <= limit)
-        return;
-
-    if (*show_queued) {
-        *show_queued = 0;
-        if (rows_above(p, *head, cols, 0) + input_rows <= limit)
-            return;
-    }
-
-    *head = NULL;
 }
 
 static void paint_bars(const char *text, size_t budget, enum ui_role role, int cap,
@@ -286,21 +240,39 @@ static void paint_bars(const char *text, size_t budget, enum ui_role role, int c
     ui_wrap_paint(text, &w);
 }
 
-static void paint_above(const struct prompt *p, const char *head, int cols,
-                        int show_queued)
+int prompt_busy(struct prompt *p)
 {
-    if (head) {
-        int busy = p->idle_busy && p->idle_busy(p->idle_ud);
-        paint_bars(head, sticky_budget(cols), busy ? UI_STICKY : UI_STICKY_DONE,
-                   STICKY_LINES, busy ? STICKY_BUSY : STICKY_DONE);
-        ui_esc(UI_ERASE_EOL);
-        ui_put("\n");
-    }
-    if (!show_queued)
-        return;
+    return p && p->idle_busy && p->idle_busy(p->idle_ud);
+}
+
+int prompt_queued_rows(struct prompt *p, int cols)
+{
+    if (!p || p->queued_count == 0)
+        return 0;
     size_t budget = queued_budget(cols);
+    int rows = p->queued_count - 1;      /* the blank between each pair */
     for (int i = 0; i < p->queued_count; i++)
-        paint_bars(p->queued[i], budget, UI_DIM, 0, NULL);
+        rows += painted_rows(p->queued[i], budget, QUEUED_LINES, NULL);
+    return rows;
+}
+
+void prompt_paint_queued(struct prompt *p, int room)
+{
+    if (!p || p->queued_count == 0)
+        return;
+    size_t budget = queued_budget(ui_columns());
+    int used = 0;
+    for (int i = 0; i < p->queued_count; i++) {
+        int need = painted_rows(p->queued[i], budget, QUEUED_LINES, NULL);
+        if (i)
+            need++;                      /* the blank above this one */
+        if (used + need > room)
+            break;
+        used += need;
+        if (i)
+            ui_put("\n");
+        paint_bars(p->queued[i], budget, UI_DIM, QUEUED_LINES, NULL);
+    }
 }
 
 static void emit_input(struct prompt *p, int rows)
@@ -338,79 +310,101 @@ static void emit_input(struct prompt *p, int rows)
     }
 }
 
-static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *caret_col)
+// Renders the input into the frame and reports how many rows it needs. The
+// frame is kept, so painting it afterwards costs nothing extra.
+int prompt_input_rows(struct prompt *p, int cols)
 {
-    int cols = ui_columns();
-    const char *head = head_text(p);
-    int cached = p->frame_ok && cols == p->painted_cols && p->frame.cells && p->frame.rows > 0;
+    if (!p)
+        return 1;
+    if (p->frame_ok && cols == p->painted_cols && p->frame.cells && p->frame.rows > 0)
+        return p->frame.rows;
 
-    int input_rows;
-    if (cached) {
-        input_rows = p->frame.rows;
-    } else {
-        input_rows = repl_input_rows(&p->repl, cols) + repl_dropdown_rows(&p->repl);
-        if (input_rows < 1)
-            input_rows = 1;
+    int rows = repl_input_rows(&p->repl, cols) + repl_dropdown_rows(&p->repl);
+    if (rows < 1)
+        rows = 1;
+
+    frame_size(&p->frame, rows, cols);
+    p->painted_cols = cols;
+    if (!p->frame.cells || p->frame.rows < rows || p->frame.cols < cols) {
+        p->frame_ok = 0;
+        return 1;
     }
+    repl_render(&p->repl, 0, 0, cols, true, draw_cell, &p->frame);
+    p->frame_ok = 1;
+    return rows;
+}
 
-    int show_queued = 0;
-    fit_above(p, &head, &show_queued, cols, input_rows);
-
-    if (!cached) {
-        frame_size(&p->frame, input_rows, cols);
-        if (!p->frame.cells || p->frame.rows < input_rows || p->frame.cols < cols) {
-            *rows_out = 1;
-            *caret_row = 0;
-            *caret_col = 0;
-            p->painted_cols = cols;
-            p->frame_ok = 0;
-            p->above_painted = 0;
-            return;
-        }
-        repl_render(&p->repl, 0, 0, cols, true, draw_cell, &p->frame);
-        p->painted_cols = cols;
-        p->frame_ok = 1;
+void prompt_paint_input(struct prompt *p, int rows, int *caret_row, int *caret_col)
+{
+    *caret_row = 0;
+    *caret_col = 0;
+    if (!p || !p->frame_ok) {
+        ui_put("");
+        return;
     }
-
-    // Rows are counted off what was painted, not off what the layout predicted,
-    // so the caret lands on the block row it was drawn into.
-    int base = ui_sink_rows();
-    paint_above(p, head, cols, show_queued);
-    p->above_painted = ui_sink_rows() - base;
-
-    emit_input(p, input_rows);
-
-    *rows_out = p->above_painted + input_rows;
-    *caret_row = p->above_painted +
-                 (p->frame.have_cursor ? p->frame.cursor_y : input_rows - 1);
+    emit_input(p, rows);
+    *caret_row = p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
     *caret_col = p->frame.have_cursor ? p->frame.cursor_x : 0;
 }
 
 static void repaint(struct prompt *p)
 {
-    int rows = 1, caret_row = 0, caret_col = 0;
+    (void)p;
+    chrome_paint();
+}
 
-    p->live_block = 0;
+struct echo_item {
+    char        *text;
+    enum ui_role role;
+    int          cap;
+};
 
-    if (ui_too_narrow()) {
-        erase_block(p);
-        return;
-    }
+static void echo_paint(const struct echo_item *e)
+{
+    struct ui_wrap w = bar_wrap(queued_budget(ui_columns()), e->role, e->cap, NULL);
+    ui_wrap_paint(e->text, &w);
+    ui_put("\n");
+}
 
-    block_begin();
-    paint_block(p, &rows, &caret_row, &caret_col);
-    block_end(caret_row, caret_col);
+static void echo_render(void *ud, int cols)
+{
+    (void)cols;
+    echo_paint(ud);
+}
+
+static void echo_free(void *ud)
+{
+    struct echo_item *e = ud;
+    free(e->text);
+    free(e);
 }
 
 void prompt_echo_message(const char *text)
 {
-    int cols = ui_columns();
-    enum ui_role role = bash_is_command(text) ? UI_BASH : UI_ECHO;
-
     int cap = settings_get_int(SETTING_ECHO_ROWS, ECHO_ROWS_DEFAULT);
-    struct ui_wrap w = bar_wrap(queued_budget(cols), role, cap > 0 ? cap : 0, NULL);
-    ui_wrap_paint(text, &w);
-    ui_put("\n");
+
+    struct echo_item *e = malloc(sizeof *e);
+    if (e) {
+        e->text = strdup(text ? text : "");
+        e->role = bash_is_command(text) ? UI_BASH : UI_ECHO;
+        e->cap = cap > 0 ? cap : 0;
+        if (!e->text) {
+            free(e);
+            e = NULL;
+        }
+    }
+    // Kept, so the bar and its wrap are laid out again for the new width
+    // rather than the rows being chopped where the old width happened to end.
+    if (e) {
+        viewport_item_begin(echo_render, e, echo_free);
+        echo_paint(e);
+        viewport_item_end();
+    } else {
+        struct echo_item fallback = {(char *)(text ? text : ""),
+                                     bash_is_command(text) ? UI_BASH : UI_ECHO,
+                                     cap > 0 ? cap : 0};
+        echo_paint(&fallback);
+    }
     ui_flush();
 }
 
@@ -589,7 +583,8 @@ static void edit_in_editor(struct prompt *p, int live)
     if (live)
         status_pause();
     else
-        erase_block(p);
+        chrome_clear();
+    viewport_suspend();
     ui_raw(0);
     tty_raw_end();
 
@@ -603,6 +598,7 @@ static void edit_in_editor(struct prompt *p, int live)
     ui_raw(1);
     ui_cursor_plain();
     block_forget();
+    viewport_resume();
 
     int ok = status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
     if (ok) {
@@ -704,8 +700,6 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
             if (live)
                 return KEY_OK;
             status_sticky_erased();
-            ui_esc(UI_CLEAR_SCREEN);
-            fflush(stdout);
             block_cleared();
             return KEY_OK;
         }
@@ -737,6 +731,22 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         const char *line = repl_line(&p->repl);
         return line && *line ? KEY_SUBMIT : KEY_OK;
     }
+
+    case TK_PAGE_UP:
+        viewport_scroll(tty_rows() / 2);
+        return KEY_OK;
+
+    case TK_PAGE_DOWN:
+        viewport_scroll(-(tty_rows() / 2));
+        return KEY_OK;
+
+    case TK_SCROLL_UP:
+        viewport_scroll(3);
+        return KEY_OK;
+
+    case TK_SCROLL_DOWN:
+        viewport_scroll(-3);
+        return KEY_OK;
 
     default: {
         static const ReplKey MAP[] = {
@@ -810,7 +820,7 @@ static void restart_check(struct prompt *p)
         return;
     if (!p->restart_pending(p->restart_ud))
         return;
-    erase_block(p);
+    chrome_clear();
     ui_flush();
     p->restart(p->restart_ud);
     repaint(p);
@@ -826,11 +836,23 @@ static char *read_loop(struct prompt *p)
     for (;;) {
         tty_event ev;
 
-        if (!tty_read(&ev, resizing ? TTY_RESIZE_SETTLE_MS : -1)) {
+        // Waiting for a keystroke costs nothing, but something animating in
+        // the transcript needs waking on a frame instead.
+        int animating = !resizing && p->animate_busy && p->animate_busy(p->animate_ud);
+        int wait = resizing ? TTY_RESIZE_SETTLE_MS : (animating ? SPIN_FRAME_MS : -1);
+
+        if (!tty_read(&ev, wait)) {
             if (resizing) {
                 resizing = 0;
+                // Whatever else drew on the pane while it was resizing, this
+                // frame goes over all of it.
+                viewport_forget();
                 repaint(p);
             } else {
+                if (animating && p->animate_tick) {
+                    p->animate_tick(p->animate_ud);
+                    repaint(p);
+                }
                 restart_check(p);
             }
             continue;
@@ -843,13 +865,13 @@ static char *read_loop(struct prompt *p)
 
         switch (feed_key(p, &ev, 0)) {
         case KEY_EOF:
-            erase_input(p);
+            chrome_keep_above();
             return NULL;
 
         case KEY_SUBMIT: {
             char *out = take_line(p);
-            erase_block(p);
-            if (out)
+            chrome_clear();
+            if (out && prompt_echoes(p, out))
                 prompt_echo_message(out);
             return out;
         }
@@ -916,10 +938,30 @@ static int recall_queued(struct prompt *p)
     return 1;
 }
 
+void prompt_set_animate(struct prompt *p, int (*busy)(void *ud), void (*tick)(void *ud),
+                        void *ud)
+{
+    p->animate_busy = busy;
+    p->animate_tick = tick;
+    p->animate_ud = ud;
+}
+
 void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud)
 {
     p->replay = fn;
     p->replay_ud = ud;
+}
+
+void prompt_set_echo_filter(struct prompt *p, int (*fn)(void *ud, const char *line),
+                            void *ud)
+{
+    p->echo_filter = fn;
+    p->echo_ud = ud;
+}
+
+int prompt_echoes(struct prompt *p, const char *line)
+{
+    return !p || !p->echo_filter || p->echo_filter(p->echo_ud, line);
 }
 
 void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud)
@@ -950,34 +992,3 @@ int prompt_live_key(void *ud, tty_event *ev)
     }
 }
 
-void prompt_live_paint(void *ud, int *rows, int *caret_row, int *caret_col)
-{
-    struct prompt *p = ud;
-    p->live_block = 1;
-    paint_block(p, rows, caret_row, caret_col);
-}
-
-// Queued lines sit above the spinner, separated from it by a blank row.
-void prompt_queue_paint(void *ud)
-{
-    struct prompt *p = ud;
-
-    if (p->queued_count == 0)
-        return;
-
-    int cols = ui_columns();
-    size_t budget = queued_budget(cols);
-    int room = status_rows_left() - 1;
-    int used = 0;
-    for (int i = 0; i < p->queued_count; i++) {
-        int need = painted_rows(p->queued[i], budget, 0, NULL);
-        if (used + need > room)
-            break;
-        used += need;
-        struct ui_wrap w = bar_wrap(budget, UI_DIM, 0, NULL);
-        ui_wrap_paint(p->queued[i], &w);
-    }
-
-    ui_esc(UI_ERASE_EOL);
-    ui_put("\n");
-}

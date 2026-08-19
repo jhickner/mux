@@ -8,7 +8,7 @@
 #include <wchar.h>
 
 #include "app.h"
-#include "block.h"
+#include "viewport.h"
 #include "settings.h"
 #include "tty.h"
 #include "vendor/screen_color.h"
@@ -28,6 +28,9 @@ static const struct {
     [UI_STICKY]  = { NULL, COLOR_BASE9, 90 },
     [UI_STICKY_DONE] = { NULL, COLOR_BASE11, 90 },
     [UI_BRAND]   = { NULL, COLOR_BASE12, 0 },
+    // A side turn's question, washed like the echo and the sticky prompt: it
+    // is something the user asked, not something the reply said.
+    [UI_SIDE]    = { NULL, COLOR_BASE12, 90 },
     [UI_CHROME]  = { NULL, COLOR_UI_BORDER_FLOAT, 0 },
     [UI_DIM]     = { NULL, COLOR_UI_DIM, 0 },
     [UI_BODY]    = { NULL, COLOR_BASE5, 0 },
@@ -95,13 +98,13 @@ static const struct {
 
 static const struct {
     const char  *key;
-    enum ui_role roles[8];
+    enum ui_role roles[10];
 } GROUPS[] = {
     [UI_GROUP_INPUT]    = {SETTING_COLOR_INPUT,
                            {UI_ACCENT, UI_ECHO, UI_STICKY, UI_RESET}},
     [UI_GROUP_EMPHASIS] = {SETTING_COLOR_EMPHASIS,
                            {UI_BOLD, UI_ITALIC, UI_CODE, UI_HEADING, UI_SPIN,
-                            UI_BRAND, UI_TOOL, UI_RESET}},
+                            UI_BRAND, UI_SIDE, UI_TOOL, UI_RESET}},
 };
 #define GROUP_N (COUNT(GROUPS))
 
@@ -212,7 +215,16 @@ static size_t sink_len;
 
 static void out(const char *s, size_t n)
 {
-    fwrite(s, 1, n, sink ? sink : stdout);
+    if (sink) {
+        fwrite(s, 1, n, sink);
+        return;
+    }
+    // The viewport keeps the transcript itself; only it writes to the screen.
+    if (viewport_active()) {
+        viewport_write(s, n);
+        return;
+    }
+    fwrite(s, 1, n, stdout);
 }
 
 void ui_sink_begin(void)
@@ -251,88 +263,96 @@ char *ui_sink_end(void)
 
 void ui_raw(int on) { raw_newlines = on; }
 
-// Painting the block moves the cursor around rows the transcript does not own,
-// so tracking is off for the duration: only what the transcript itself writes
-// moves the anchor the block is placed against.
-static int scroll_track = 1;
+// Captures nest. The viewport re-renders an entry inside one, and an entry's
+// renderer may capture on its own account — a side turn's answer renders its
+// markdown at an inner width before putting a bar down each row. With a single
+// buffer the inner begin wiped what the outer had collected and the inner end
+// switched capturing off altogether, so everything after it escaped into the
+// transcript instead of into the entry being rendered.
+#define CAPTURE_MAX 8
 
-void ui_scroll_track(int on) { scroll_track = on ? 1 : 0; }
+struct capture {
+    char  *buf;
+    size_t len, cap;
+    int    cols;
+};
 
-static void scroll_text(const char *s, size_t n)
+static struct capture captures[CAPTURE_MAX];
+static int            capture_depth;
+
+static struct capture *capture_top(void)
 {
-    if (!scroll_track || sink || !n)
-        return;
-    block_wrote(s, n);
+    if (capture_depth == 0 || capture_depth > CAPTURE_MAX)
+        return NULL;
+    return &captures[capture_depth - 1];
 }
-
-static void scroll_linefeed(void)
-{
-    if (!scroll_track || sink)
-        return;
-    block_newline();
-}
-
-static char  *capture;
-static size_t capture_len, capture_cap;
-static int    capture_on, capture_cols;
 
 static void emit(const char *s, size_t n)
 {
-    if (!capture_on) {
+    if (capture_depth == 0) {
         out(s, n);
         return;
     }
-    if (capture_len + n + 1 > capture_cap) {
-        size_t cap = capture_cap ? capture_cap : 1024;
-        while (cap < capture_len + n + 1)
+    struct capture *c = capture_top();
+    if (!c)
+        return;                         /* nested past the limit: dropped */
+    if (c->len + n + 1 > c->cap) {
+        size_t cap = c->cap ? c->cap : 1024;
+        while (cap < c->len + n + 1)
             cap *= 2;
-        char *grown = realloc(capture, cap);
+        char *grown = realloc(c->buf, cap);
         if (!grown)
             return;
-        capture = grown;
-        capture_cap = cap;
+        c->buf = grown;
+        c->cap = cap;
     }
-    memcpy(capture + capture_len, s, n);
-    capture_len += n;
-    capture[capture_len] = '\0';
+    memcpy(c->buf + c->len, s, n);
+    c->len += n;
+    c->buf[c->len] = '\0';
 }
 
 void ui_capture_begin(int columns)
 {
-    capture_len = 0;
-    capture_cols = columns;
-    capture_on = 1;
-    if (capture)
-        capture[0] = '\0';
+    // The depth is counted even past the limit, so a begin and its end always
+    // pair up and an overflow cannot pop somebody else's buffer.
+    if (capture_depth < CAPTURE_MAX) {
+        struct capture *c = &captures[capture_depth];
+        c->len = 0;
+        c->cols = columns;
+        if (c->buf)
+            c->buf[0] = '\0';
+    }
+    capture_depth++;
 }
 
 char *ui_capture_end(void)
 {
-    capture_on = 0;
-    capture_cols = 0;
-    char *taken = capture_len ? strdup(capture) : NULL;
-    capture_len = 0;
+    if (capture_depth == 0)
+        return NULL;
+    capture_depth--;
+    if (capture_depth >= CAPTURE_MAX)
+        return NULL;                    /* nested past the limit: nothing kept */
+
+    struct capture *c = &captures[capture_depth];
+    char *taken = c->len ? strdup(c->buf) : NULL;
+    c->len = 0;
+    c->cols = 0;
     return taken;
 }
 
 void ui_putn(const char *s, size_t n)
 {
-    if (capture_on) {
+    if (capture_depth) {
         emit(s, n);
         return;
     }
-    if (n && scroll_track && !sink)
-        block_before_output();
+    // The viewport splits rows itself, and a row it paints needs no carriage
+    // return: every one is placed absolutely.
+    if (!sink && viewport_active()) {
+        viewport_write(s, n);
+        return;
+    }
     if (!raw_newlines) {
-        size_t start = 0;
-        for (size_t i = 0; i < n; i++) {
-            if (s[i] != '\n')
-                continue;
-            scroll_text(s + start, i - start);
-            scroll_linefeed();
-            start = i + 1;
-        }
-        scroll_text(s + start, n - start);
         out(s, n);
         return;
     }
@@ -342,14 +362,10 @@ void ui_putn(const char *s, size_t n)
             continue;
         out(s + start, i - start);
         out("\r\n", 2);
-        scroll_text(s + start, i - start);
-        scroll_linefeed();
         start = i + 1;
     }
-    if (start < n) {
+    if (start < n)
         out(s + start, n - start);
-        scroll_text(s + start, n - start);
-    }
 }
 
 void ui_put(const char *s)
@@ -410,11 +426,23 @@ int ui_reflow_rows(const int *row_widths, int count, int cols)
 
 void ui_flush(void) { fflush(sink ? sink : stdout); }
 
-int ui_columns(void) { return capture_cols > 0 ? capture_cols : tty_columns(); }
+// The width being rendered for: the innermost capture's, if one is open.
+static int capture_width(void)
+{
+    struct capture *c = capture_top();
+    return c ? c->cols : 0;
+}
+
+int ui_columns(void)
+{
+    int cols = capture_width();
+    return cols > 0 ? cols : tty_columns();
+}
 
 int ui_screen_columns(void)
 {
-    return capture_cols > 0 ? capture_cols : tty_screen_columns();
+    int cols = capture_width();
+    return cols > 0 ? cols : tty_screen_columns();
 }
 
 // The layout has a floor, so a narrower pane gets lines wider than the screen.
@@ -484,6 +512,13 @@ size_t ui_cells_n(const char *s, size_t n)
 
 size_t ui_cells(const char *s) { return s ? ui_cells_n(s, strlen(s)) : 0; }
 
+// The string-terminated sequences: OSC, DCS, APC, PM and SOS all run to BEL or
+// to ST, and none of them puts a cell on screen.
+static int opens_string(unsigned char c)
+{
+    return c == ']' || c == 'P' || c == '_' || c == '^' || c == 'X';
+}
+
 static size_t step_visible(const char *s, size_t n, size_t i, size_t *cells)
 {
     if (s[i] == '\x1b') {
@@ -491,7 +526,7 @@ static size_t step_visible(const char *s, size_t n, size_t i, size_t *cells)
         if (j < n && s[j] == '[') {
             for (j++; j < n && (s[j] < '@' || s[j] > '~'); j++)
                 ;
-        } else if (j < n && s[j] == ']') {
+        } else if (j < n && opens_string((unsigned char)s[j])) {
             for (j++; j < n && s[j] != '\a' && s[j] != '\x1b'; j++)
                 ;
             if (j < n && s[j] == '\x1b')
@@ -508,11 +543,88 @@ static size_t step_visible(const char *s, size_t n, size_t i, size_t *cells)
 
 size_t ui_cells_visible(const char *s, size_t n)
 {
-    if (!s)
+    struct ui_cellstream st = {0};
+    return ui_cells_stream(&st, s, n);
+}
+
+// Where the stream is between calls. TEXT also covers a codepoint whose bytes
+// have not all arrived; they wait in `pending` until it is whole.
+enum { CS_TEXT, CS_ESC, CS_CSI, CS_STR, CS_STR_ESC };
+
+static size_t utf8_len(unsigned char c)
+{
+    if (c < 0x80)
+        return 1;
+    if ((c & 0xE0) == 0xC0)
+        return 2;
+    if ((c & 0xF0) == 0xE0)
+        return 3;
+    if ((c & 0xF8) == 0xF0)
+        return 4;
+    return 1;
+}
+
+size_t ui_cells_stream(struct ui_cellstream *st, const char *s, size_t n)
+{
+    if (!st || !s)
         return 0;
-    size_t cells = 0, i = 0;
-    while (i < n)
-        i = step_visible(s, n, i, &cells);
+
+    size_t cells = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+
+        switch (st->state) {
+        case CS_ESC:
+            if (c == '[')
+                st->state = CS_CSI;
+            else if (opens_string(c))
+                st->state = CS_STR;
+            else
+                st->state = CS_TEXT;
+            continue;
+
+        case CS_CSI:
+            if (c >= '@' && c <= '~')
+                st->state = CS_TEXT;
+            continue;
+
+        case CS_STR:
+            if (c == 0x07)
+                st->state = CS_TEXT;
+            else if (c == 0x1b)
+                st->state = CS_STR_ESC;
+            continue;
+
+        case CS_STR_ESC:
+            // ESC \ ends it; any other ESC-something restarts the scan.
+            st->state = c == '\\' ? CS_TEXT : CS_STR;
+            continue;
+
+        default:
+            break;
+        }
+
+        if (c == 0x1b) {
+            st->pending_n = 0;
+            st->state = CS_ESC;
+            continue;
+        }
+
+        // Hold the bytes of a codepoint until it is complete: a width can only
+        // be asked of the whole thing.
+        if (st->pending_n == 0 && c < 0x80) {
+            cells += (size_t)cell_width(c);
+            continue;
+        }
+        if (st->pending_n < sizeof st->pending)
+            st->pending[st->pending_n++] = c;
+        size_t want = utf8_len(st->pending[0]);
+        if (st->pending_n >= want) {
+            size_t at = 0;
+            cells += (size_t)cell_width(decode((const char *)st->pending, st->pending_n, &at));
+            st->pending_n = 0;
+        }
+    }
     return cells;
 }
 

@@ -374,6 +374,21 @@ done:
     ev->text = body;
 }
 
+// SGR mouse: ESC [ < button ; col ; row M|m. Only the wheel is acted on; the
+// buttons are swallowed so a click cannot fall through as a keystroke.
+static void decode_mouse(tty_event *ev, const int *params, int nparams, int final)
+{
+    if (final != 'M' || nparams < 1) {
+        emit(ev, TK_NONE);
+        return;
+    }
+    switch (params[0] & ~0x1c) {        /* drop the shift/alt/ctrl bits */
+    case 64: emit(ev, TK_SCROLL_UP); return;
+    case 65: emit(ev, TK_SCROLL_DOWN); return;
+    default: emit(ev, TK_NONE); return;
+    }
+}
+
 static void decode_csi(tty_event *ev, const int *params, int nparams, int final)
 {
     int mods = nparams >= 2 ? params[1] : 1;
@@ -426,7 +441,7 @@ static void decode_escape(tty_event *ev)
     if (b == '[') {
         pending_pos++;
         int params[8] = {0};
-        int nparams = 0, have_digits = 0;
+        int nparams = 0, have_digits = 0, private = 0;
         for (;;) {
             int c = take_byte(50);
             if (c < 0) {
@@ -446,10 +461,16 @@ static void decode_escape(tty_event *ev)
                 have_digits = 1;
                 continue;
             }
-            if (c == '?' || c == '<' || c == '>')
+            if (c == '?' || c == '<' || c == '>') {
+                private = c;
                 continue;
+            }
             if (have_digits)
                 nparams++;
+            if (private == '<') {
+                decode_mouse(ev, params, nparams, c);
+                return;
+            }
             if (c == '~' && nparams >= 1 && params[0] == 200) {
                 read_paste(ev);
                 return;
@@ -526,7 +547,10 @@ int tty_read(tty_event *ev, int timeout_ms)
 
     int b = pending[pending_pos++];
     switch (b) {
-    case 0x1b: decode_escape(ev); return 1;
+    case 0x1b:
+        decode_escape(ev);
+        // Nothing to act on: report it as no event rather than as a keystroke.
+        return ev->key == TK_NONE ? 0 : 1;
     case '\r': emit(ev, TK_ENTER); return 1;
     case '\n': emit(ev, TK_NEWLINE); return 1;
     case '\t': emit(ev, TK_TAB); return 1;

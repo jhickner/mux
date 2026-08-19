@@ -7,6 +7,7 @@
 
 #include "image.h"
 #include "ui.h"
+#include "viewport.h"
 
 #define LINK_MAX 64
 
@@ -247,7 +248,11 @@ static void emit_slice(const struct styled *s, size_t from, size_t len, enum ui_
         ui_esc(ui_style(UI_RESET));
 }
 
-static void emit_styled(const struct styled *s, int first_indent, int indent)
+// `spent` is what the caller has already put on the first row and is not
+// padding for — a bullet, a number, a quote bar. Leaving it out of the budget
+// is a row a cell or two over the width, which the screen then breaks in a
+// place nothing else knows about.
+static void emit_styled(const struct styled *s, int spent, int first_indent, int indent)
 {
     if (!s->text)
         return;
@@ -256,7 +261,7 @@ static void emit_styled(const struct styled *s, int first_indent, int indent)
     int row_indent = first_indent;
 
     while (*p || p == s->text) {
-        int budget = columns - row_indent;
+        int budget = columns - row_indent - spent;
         if (budget < 8)
             budget = 8;
         size_t skip = 0;
@@ -271,6 +276,7 @@ static void emit_styled(const struct styled *s, int first_indent, int indent)
 
         p += row + skip;
         row_indent = indent;
+        spent = 0;
         if (!*p)
             break;
     }
@@ -577,12 +583,12 @@ static void render_table(const char *first, const char **text, int indent)
     free(rows);
 }
 
-static void render_paragraph(const char *text, int first_indent, int indent)
+static void render_paragraph(const char *text, int spent, int first_indent, int indent)
 {
     struct styled s;
     styled_init(&s);
     inline_scan(text, &s);
-    emit_styled(&s, first_indent, indent);
+    emit_styled(&s, spent, first_indent, indent);
     styled_free(&s);
 }
 
@@ -648,32 +654,42 @@ static char *take_line(const char **text)
     return line;
 }
 
+// Unescaped whole and written once: an escape handed over a byte at a time
+// cannot be recognised as one, and the width tracking behind ui_putn would
+// count its bytes as cells the row does not have.
 static void render_ansi_line(const char *line, int indent)
 {
-    ui_pad(indent);
+    size_t n = strlen(line);
+    char  *out = malloc(n + 1);
+    if (!out)
+        return;
+
+    size_t at = 0;
     for (const char *p = line; *p; ) {
         if (p[0] != '\\') {
-            ui_putn(p, 1);
-            p++;
+            out[at++] = *p++;
             continue;
         }
         if (p[1] == 'e') {
-            ui_putn("\x1b", 1);
+            out[at++] = '\x1b';
             p += 2;
         } else if (p[1] == 'x' && (p[2] == '1') && (p[3] == 'b' || p[3] == 'B')) {
-            ui_putn("\x1b", 1);
+            out[at++] = '\x1b';
             p += 4;
         } else if (p[1] == '0' && p[2] == '3' && p[3] == '3') {
-            ui_putn("\x1b", 1);
+            out[at++] = '\x1b';
             p += 4;
         } else if (p[1] == '\\') {
-            ui_putn("\\", 1);
+            out[at++] = '\\';
             p += 2;
         } else {
-            ui_putn(p, 1);
-            p++;
+            out[at++] = *p++;
         }
     }
+
+    ui_pad(indent);
+    ui_putn(out, at);
+    free(out);
 
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");
@@ -719,6 +735,45 @@ static void render_code_line(const char *line, int indent)
     put_safe(line);
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");
+}
+
+struct kept {
+    char *text;
+    int   indent;
+};
+
+static void kept_render(void *ud, int cols)
+{
+    // ui_columns() reports the width being rendered for, so the renderer needs
+    // no argument beyond what it already reads.
+    (void)cols;
+    const struct kept *k = ud;
+    md_render(k->text, k->indent);
+}
+
+static void kept_free(void *ud)
+{
+    struct kept *k = ud;
+    free(k->text);
+    free(k);
+}
+
+void md_render_kept(const char *text, int indent)
+{
+    struct kept *k = malloc(sizeof *k);
+    if (k) {
+        k->text = strdup(text ? text : "");
+        k->indent = indent;
+        if (!k->text) {
+            free(k);
+            k = NULL;
+        }
+    }
+    if (k)
+        viewport_item_begin(kept_render, k, kept_free);
+    md_render(text, indent);
+    if (k)
+        viewport_item_end();
 }
 
 void md_render(const char *text, int indent)
@@ -808,7 +863,7 @@ void md_render(const char *text, int indent)
             ui_esc(ui_style(UI_DIM));
             ui_put("\xe2\x94\x82 ");
             ui_esc(ui_style(UI_RESET));
-            render_paragraph(q, 0, indent + 2);
+            render_paragraph(q, indent + 2, 0, indent + 2);
         } else {
             const char *rest;
             size_t marker = 0;
@@ -818,16 +873,17 @@ void md_render(const char *text, int indent)
                 ui_esc(ui_style(UI_CHROME));
                 ui_put("\xe2\x80\xa2 ");
                 ui_esc(ui_style(UI_RESET));
-                render_paragraph(rest, 0, item_indent + 2);
+                render_paragraph(rest, item_indent + 2, 0, item_indent + 2);
             } else if (is_ordered(body, &marker)) {
                 ui_pad(item_indent);
                 ui_esc(ui_style(UI_CHROME));
                 ui_putn(body, marker - 1);
                 ui_esc(ui_style(UI_RESET));
                 ui_put(" ");
-                render_paragraph(body + marker, 0, item_indent + (int)marker);
+                int after = item_indent + (int)marker;
+                render_paragraph(body + marker, after, 0, after);
             } else {
-                render_paragraph(body, item_indent, item_indent);
+                render_paragraph(body, 0, item_indent, item_indent);
             }
         }
         wrote_any = 1;

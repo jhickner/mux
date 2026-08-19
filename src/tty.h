@@ -29,6 +29,11 @@ typedef enum {
     TK_PAGE_DOWN,
     TK_RESIZE,
     TK_EOF,
+    TK_SCROLL_UP,
+    TK_SCROLL_DOWN,
+    // Read and understood, but nothing the caller acts on — a mouse button, or
+    // the release half of a wheel tick.
+    TK_NONE,
 } tty_key;
 
 typedef struct {
@@ -62,7 +67,10 @@ unsigned tty_resize_epoch(void);
 // Where the terminal says the cursor is, 1-based; 0 when it does not answer.
 int tty_cursor_pos(int *row, int *col);
 
-#define TTY_RESIZE_SETTLE_MS 250
+// How long a resize is left alone before the frame that ends it is painted.
+// Short enough that a zoom does not feel held back, long enough that dragging
+// a border does not repaint on every cell it crosses.
+#define TTY_RESIZE_SETTLE_MS 100
 
 #define TTY_MIN_COLUMNS 20
 

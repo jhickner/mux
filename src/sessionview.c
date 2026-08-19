@@ -4,14 +4,142 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "filediff.h"
 #include "highlight.h"
 #include "text.h"
 #include "toolstyle.h"
+#include "viewport.h"
 #include "vendor/cJSON.h"
 
 #define TOOL_INDENT 2
 
 #define COUNT(a) (sizeof (a) / sizeof *(a))
+
+/* --- kept entries --------------------------------------------------------- */
+
+// What a turn prints is kept as entries that can draw themselves again, so a
+// pane that changes width re-renders them at the width it has now instead of
+// breaking rows that were laid out for a width the screen no longer has.
+
+enum keep_kind { KEEP_ACTIVITY, KEEP_CALL, KEEP_OUTPUT, KEEP_DIFF, KEEP_CLUSTER };
+
+struct keep {
+    enum keep_kind kind;
+    char          *a;           /* marker, tool name, text or patch */
+    char          *b;           /* the argument of a tool call */
+    unsigned char *spans;       /* highlighting for a cluster row */
+    enum ui_role   role;
+    int            error;       /* output drawn as a failure */
+    int            gap;         /* a blank row above */
+};
+
+static void keep_free(void *ud)
+{
+    struct keep *k = ud;
+    free(k->a);
+    free(k->b);
+    free(k->spans);
+    free(k);
+}
+
+static void cluster_paint(const char *line, const unsigned char *spans);
+
+static void keep_render(void *ud, int cols)
+{
+    const struct keep *k = ud;
+    (void)cols;
+
+    if (k->gap)
+        ui_put("\n");
+    switch (k->kind) {
+    case KEEP_ACTIVITY: view_activity(k->a, k->b, k->role);              break;
+    case KEEP_CALL:     view_tool_call(k->a, k->b);                      break;
+    case KEEP_OUTPUT:
+        if (k->error)
+            view_tool_error(k->a);
+        else
+            view_tool_output(k->a, k->role);
+        break;
+    case KEEP_DIFF:     filediff_render_patch(k->a);                     break;
+    case KEEP_CLUSTER:  cluster_paint(k->a, k->spans);                   break;
+    }
+}
+
+// Opens the entry, draws it once, closes it. Returns the mark, for a caller
+// that will want to change what it drew.
+static unsigned keep(struct keep *k)
+{
+    // Whoever printed last may have left a blank row of its own — a side turn
+    // ends with one. Two is padding drawn twice. Settled here, once, so the
+    // entry draws the same however often it is drawn again.
+    if (k->gap && viewport_ends_blank())
+        k->gap = 0;
+
+    unsigned mark = viewport_item_begin(keep_render, k, keep_free);
+    keep_render(k, ui_columns());
+    viewport_item_end();
+    return mark;
+}
+
+static struct keep *keep_new(enum keep_kind kind)
+{
+    struct keep *k = calloc(1, sizeof *k);
+    if (k)
+        k->kind = kind;
+    return k;
+}
+
+void view_keep_activity(const char *marker, const char *text, enum ui_role role, int gap)
+{
+    struct keep *k = keep_new(KEEP_ACTIVITY);
+    if (!k)
+        return;
+    k->a = strdup(marker ? marker : "");
+    k->b = strdup(text ? text : "");
+    k->role = role;
+    k->gap = gap;
+    keep(k);
+}
+
+void view_keep_tool_call(const char *name, const char *arg, int gap)
+{
+    struct keep *k = keep_new(KEEP_CALL);
+    if (!k)
+        return;
+    k->a = strdup(name ? name : "?");
+    k->b = strdup(arg ? arg : "");
+    k->gap = gap;
+    keep(k);
+}
+
+void view_keep_output(const char *text, enum ui_role role, int error)
+{
+    if (!text || !*text)
+        return;
+    struct keep *k = keep_new(KEEP_OUTPUT);
+    if (!k)
+        return;
+    k->a = strdup(text);
+    k->role = role;
+    k->error = error;
+    keep(k);
+}
+
+// Takes the patch.
+void view_keep_diff(char *patch)
+{
+    if (!patch || !*patch) {
+        free(patch);
+        return;
+    }
+    struct keep *k = keep_new(KEEP_DIFF);
+    if (!k) {
+        free(patch);
+        return;
+    }
+    k->a = patch;
+    keep(k);
+}
 
 static const struct {
     const char *key;
@@ -213,7 +341,9 @@ static int cluster_budget(void)
     return budget < 8 ? 8 : budget;
 }
 
-void view_cluster_start(struct turnview *v, const char *name, const char *arg)
+// The whole row is kept, however long it is. What will not fit is cut off
+// when it is drawn, because the width it has to fit is only known then.
+void view_cluster_start(struct turnview *v, const char *name, const char *arg, int gap)
 {
     char tag[64];
     tool_tag(name, tag, sizeof tag);
@@ -221,27 +351,19 @@ void view_cluster_start(struct turnview *v, const char *name, const char *arg)
     char flat[4096];
     text_one_line(arg ? arg : "", flat, sizeof flat);
 
-    int budget = cluster_budget() - (int)ui_cells(tag) - 1;
-    if (budget < 8)
-        budget = 8;
-
-    size_t skip = 0;
-    size_t fit = *flat ? ui_wrap_row(flat, strlen(flat), (size_t)budget, &skip, NULL) : 0;
-
     char row[4096];
-    snprintf(row, sizeof row, "%s %.*s%s", tag, (int)fit, flat, flat[fit] ? "…" : "");
+    snprintf(row, sizeof row, "%s %s", tag, flat);
 
     view_cluster_forget(v);
     snprintf(v->tool, sizeof v->tool, "%s", name);
     v->line = strdup(row);
     v->spans = v->line ? row_spans(name, row, strlen(tag) + 1) : NULL;
-    v->columns = ui_columns();
+    v->gap = gap;
 }
 
 int view_cluster_extend(struct turnview *v, const char *name, const char *arg)
 {
-    if (!v->line || !v->after_collapse || strcmp(v->tool, name) != 0 ||
-        v->columns != ui_columns())
+    if (!v->line || !v->after_collapse || strcmp(v->tool, name) != 0)
         return 0;
     if (!arg || !*arg)
         return 1;
@@ -272,26 +394,65 @@ int view_cluster_extend(struct turnview *v, const char *name, const char *arg)
     return 1;
 }
 
+static void cluster_paint(const char *line, const unsigned char *spans)
+{
+    size_t tag = strcspn(line, "]");
+    if (line[tag])
+        tag++;
+
+    size_t len = strlen(line);
+    size_t skip = 0;
+    size_t fit = ui_wrap_row(line, len, (size_t)cluster_budget(), &skip, NULL);
+    if (fit < tag)
+        fit = tag;
+    if (fit > len)
+        fit = len;
+
+    ui_pad(TOOL_INDENT);
+    ui_esc(ui_style(UI_TOOL));
+    ui_putn(line, tag);
+    ui_esc(ui_style(UI_RESET));
+    if (spans)
+        ui_put_spans(line + tag, fit - tag, spans + tag, UI_RESET);
+    else
+        ui_putn(line + tag, fit - tag);
+    if (fit < len)
+        ui_put("…");
+    ui_esc(ui_style(UI_RESET));
+    ui_put("\n");
+}
+
+// The cluster is one entry that keeps being amended: another call of the same
+// tool changes what it says rather than printing a row of its own.
 void view_cluster_paint(struct turnview *v)
 {
     if (!v->line)
         return;
-    size_t tag = strcspn(v->line, "]");
-    if (v->line[tag])
-        tag++;
 
-    if (v->onscreen)
-        ui_esc("\x1b[1A\r\x1b[K");
-    ui_pad(TOOL_INDENT);
-    ui_esc(ui_style(UI_TOOL));
-    ui_putn(v->line, tag);
-    ui_esc(ui_style(UI_RESET));
-    if (v->spans)
-        ui_put_spans(v->line + tag, strlen(v->line) - tag, v->spans + tag, UI_RESET);
-    else
-        ui_put(v->line + tag);
-    ui_esc(ui_style(UI_RESET));
-    ui_put("\n");
+    size_t         len = strlen(v->line);
+    unsigned char *spans = NULL;
+    if (v->spans && (spans = malloc(len)))
+        memcpy(spans, v->spans, len);
+
+    struct keep *k = v->onscreen ? viewport_item_data(v->mark) : NULL;
+    if (k) {
+        free(k->a);
+        free(k->spans);
+        k->a = strdup(v->line);
+        k->spans = spans;
+        viewport_item_update(v->mark);
+        return;
+    }
+
+    k = keep_new(KEEP_CLUSTER);
+    if (!k) {
+        free(spans);
+        return;
+    }
+    k->a = strdup(v->line);
+    k->spans = spans;
+    k->gap = v->gap;
+    v->mark = keep(k);
     v->onscreen = 1;
 }
 

@@ -15,9 +15,21 @@
 
 #include "app.h"
 #include "ui.h"
+#include "viewport.h"
 
 #define TERM_H
-static void term_write_n(const char *s, int n) { fwrite(s, 1, (size_t)n, stdout); }
+// Placeholder cells are ordinary text and belong in the transcript row, so the
+// viewport repaints them with everything else. The graphics commands around
+// them are controls addressed to the terminal and go straight out: re-sending
+// a megabyte of pixels on every frame is not what a repaint should cost.
+static int term_to_row;
+static void term_write_n(const char *s, int n)
+{
+    if (term_to_row)
+        ui_putn(s, (size_t)n);
+    else
+        fwrite(s, 1, (size_t)n, stdout);
+}
 static void term_write(const char *s) { term_write_n(s, (int)strlen(s)); }
 static void term_flush(void) { fflush(stdout); }
 static void term_move_cursor(int col, int row) { printf("\x1b[%d;%dH", row + 1, col + 1); }
@@ -99,7 +111,7 @@ struct img_cache {
     char     path[4096];
     time_t   mtime;
     uint32_t id;
-    int      cols, rows;
+    int      img_w, img_h;
 };
 
 struct pending {
@@ -109,6 +121,7 @@ struct pending {
     char     tmp[4200];
     char     src[4096];
     time_t   mtime;
+    unsigned mark;              /* the entry its placeholders were drawn into */
 };
 
 static struct img_cache cache[CACHE_MAX];
@@ -129,7 +142,7 @@ static struct img_cache *cache_find(const char *path, time_t mtime)
     return NULL;
 }
 
-static void cache_store(const char *path, time_t mtime, uint32_t id, int cols, int rows)
+static void cache_store(const char *path, time_t mtime, uint32_t id, int img_w, int img_h)
 {
     struct img_cache *slot = cache_find(path, mtime);
     if (!slot) {
@@ -141,8 +154,8 @@ static void cache_store(const char *path, time_t mtime, uint32_t id, int cols, i
     snprintf(slot->path, sizeof slot->path, "%s", path);
     slot->mtime = mtime;
     slot->id = id;
-    slot->cols = cols;
-    slot->rows = rows;
+    slot->img_w = img_w;
+    slot->img_h = img_h;
 }
 
 static pid_t convert_start(const char *path, char *tmp, size_t tmp_sz)
@@ -231,17 +244,81 @@ static uint32_t next_id(void)
 static void write_placeholders(uint32_t id, int indent, int cols, int rows)
 {
     kg_virtual_place(id, cols, rows);
-    kg_placeholder_redraw_begin();
     for (int r = 0; r < rows; r++) {
         for (int i = 0; i < indent; i++)
             ui_put(" ");
+        term_to_row = 1;
         for (int c = 0; c < cols; c++)
             kg_placeholder_cell(id, r, c);
+        term_to_row = 0;
         ui_esc("\x1b[39m");
         ui_put("\n");
     }
-    kg_placeholder_redraw_end();
     ui_flush();
+}
+
+// The cell box an image is drawn into. Separate from the terminal so it can be
+// checked directly: an image comes out the wrong shape when this is wrong, and
+// that is not something to notice by eye.
+void image_fit(int img_w, int img_h, int cw, int ch, int cols_box, int rows_box,
+               int *cols, int *rows)
+{
+    if (img_w > 0 && img_h > 0 && cw > 0 && ch > 0) {
+        // Fitting is for an image too big to show whole, not a reason to blow
+        // a small one up: the box is capped at what the image occupies at its
+        // own size, so it is scaled down or left alone.
+        int natural_cols = (img_w + cw - 1) / cw;
+        int natural_rows = (img_h + ch - 1) / ch;
+        if (natural_cols > 0 && natural_cols < cols_box)
+            cols_box = natural_cols;
+        if (natural_rows > 0 && natural_rows < rows_box)
+            rows_box = natural_rows;
+
+        // The placement is scaled to fill whatever cell box it is given, so
+        // the box's shape is the image's shape. Whichever side the box runs
+        // out of first is spent in full, and the other is rounded to the
+        // nearest cell rather than up — a cell is a coarse unit, and rounding
+        // one way costs a whole cell of distortion where rounding to the
+        // nearest costs at most half.
+        long box_w = (long)cols_box * cw, box_h = (long)rows_box * ch;
+        int  c, r;
+        if ((long)img_w * box_h > (long)img_h * box_w) {
+            c = cols_box;
+            long want_h = (long)img_h * box_w / img_w;
+            r = (int)((want_h + ch / 2) / ch);
+        } else {
+            r = rows_box;
+            long want_w = (long)img_w * box_h / img_h;
+            c = (int)((want_w + cw / 2) / cw);
+        }
+
+        if (c < 1)
+            c = 1;
+        if (r < 1)
+            r = 1;
+        if (c > cols_box)
+            c = cols_box;
+        if (r > rows_box)
+            r = rows_box;
+        // A placeholder cell can only name a row or column this far along.
+        if (c > KG_DIACRITIC_COUNT)
+            c = KG_DIACRITIC_COUNT;
+        if (r > KG_DIACRITIC_COUNT)
+            r = KG_DIACRITIC_COUNT;
+        *cols = c;
+        *rows = r;
+        return;
+    }
+
+    // Nothing is known about the image yet, so neither is its shape. A square
+    // of the box is a guess that at least does not claim one.
+    int side = cols_box < rows_box * 2 ? cols_box : rows_box * 2;
+    if (side > 48)
+        side = 48;
+    *cols = side;
+    *rows = side / 2 > 0 ? side / 2 : 1;
+    if (*rows > rows_box)
+        *rows = rows_box;
 }
 
 static int box_size(int indent, int img_w, int img_h, int *cols, int *rows)
@@ -253,13 +330,49 @@ static int box_size(int indent, int img_w, int img_h, int *cols, int *rows)
     int rows_box = term_rows - 4 < max_rows ? term_rows - 4 : max_rows;
     if (cols_box < 4 || rows_box < 2)
         return 0;
-    if (img_w > 0 && img_h > 0)
-        kg_fit_cells(img_w, img_h, cw, ch, cols_box, rows_box, cols, rows, NULL, NULL);
-    else {
-        *cols = cols_box < 48 ? cols_box : 48;
-        *rows = rows_box < 8 ? rows_box : 8;
-    }
+    image_fit(img_w, img_h, cw, ch, cols_box, rows_box, cols, rows);
     return *cols > 0 && *rows > 0;
+}
+
+struct placed {
+    uint32_t id;
+    int      indent;
+    int      img_w, img_h;
+};
+
+static void place(uint32_t id, int indent, int img_w, int img_h);
+
+static void placed_render(void *ud, int cols)
+{
+    (void)cols;
+    const struct placed *p = ud;
+    place(p->id, p->indent, p->img_w, p->img_h);
+}
+
+// Kept, so a narrower pane re-fits the image to it rather than leaving a block
+// of placeholder cells sized for a width the screen no longer has.
+static unsigned place_kept(uint32_t id, int indent, int img_w, int img_h)
+{
+    unsigned mark = 0;
+    struct placed *p = malloc(sizeof *p);
+    if (p) {
+        p->id = id;
+        p->indent = indent;
+        p->img_w = img_w;
+        p->img_h = img_h;
+        mark = viewport_item_begin(placed_render, p, free);
+    }
+    place(id, indent, img_w, img_h);
+    if (p)
+        viewport_item_end();
+    return mark;
+}
+
+static void place(uint32_t id, int indent, int img_w, int img_h)
+{
+    int cols, rows;
+    if (box_size(indent, img_w, img_h, &cols, &rows))
+        write_placeholders(id, indent, cols, rows);
 }
 
 static int show_png(const unsigned char *data, size_t len, const char *path, time_t mtime,
@@ -275,9 +388,9 @@ static int show_png(const unsigned char *data, size_t len, const char *path, tim
 
     uint32_t id = next_id();
     kg_transmit_png(id, data, len);
-    write_placeholders(id, indent, cols, rows);
+    place_kept(id, indent, img_w, img_h);
     if (path)
-        cache_store(path, mtime, id, cols, rows);
+        cache_store(path, mtime, id, img_w, img_h);
     return 1;
 }
 
@@ -287,7 +400,7 @@ static int start_convert(const char *path, time_t mtime, int indent)
     for (int i = 0; i < PENDING_MAX; i++) {
         if (pending[i].live && strcmp(pending[i].src, path) == 0 &&
             pending[i].mtime == mtime) {
-            write_placeholders(pending[i].id, indent, 40, 8);
+            place_kept(pending[i].id, indent, 0, 0);
             return 1;
         }
         if (!pending[i].live && slot < 0)
@@ -317,8 +430,10 @@ static int start_convert(const char *path, time_t mtime, int indent)
     snprintf(pending[slot].tmp, sizeof pending[slot].tmp, "%s", tmp);
     snprintf(pending[slot].src, sizeof pending[slot].src, "%s", path);
     pending[slot].mtime = mtime;
-    write_placeholders(id, indent, cols, rows);
-    cache_store(path, mtime, id, cols, rows);
+    // The real dimensions only arrive with the converted PNG, so the box keeps
+    // the default fit until finish_pending() can re-fit it.
+    pending[slot].mark = place_kept(id, indent, 0, 0);
+    cache_store(path, mtime, id, 0, 0);
     return 1;
 }
 
@@ -333,7 +448,7 @@ int image_show(const char *path, int indent)
 
     struct img_cache *hit = cache_find(file, mtime);
     if (hit) {
-        write_placeholders(hit->id, indent, hit->cols, hit->rows);
+        place_kept(hit->id, indent, hit->img_w, hit->img_h);
         free(expanded);
         return 1;
     }
@@ -357,8 +472,23 @@ static void finish_pending(struct pending *p, int status)
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
         size_t len = 0;
         unsigned char *data = load_file(p->tmp, &len);
-        if (data)
+        if (data) {
             kg_transmit_png(p->id, data, len);
+
+            // Only now is the shape known. The placeholders were drawn to a
+            // default box, which fits nothing in particular; re-fit them to
+            // what the image turned out to be.
+            int w = 0, h = 0;
+            if (png_dims(data, len, &w, &h)) {
+                cache_store(p->src, p->mtime, p->id, w, h);
+                struct placed *pl = p->mark ? viewport_item_data(p->mark) : NULL;
+                if (pl) {
+                    pl->img_w = w;
+                    pl->img_h = h;
+                    viewport_item_update(p->mark);
+                }
+            }
+        }
         free(data);
     }
     discard_temp_png(p->tmp);

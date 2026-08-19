@@ -48,12 +48,29 @@ int main(void)
     /* The collapsed cluster line stays one line even for a multi-line arg. */
     struct turnview v = {0};
     ui_capture_begin(200);
-    view_cluster_start(&v, "Bash", arg);
+    view_cluster_start(&v, "Bash", arg, 0);
     view_cluster_paint(&v);
     out = ui_capture_end();
     if (!out || lines_of(out) != 1)
         return fail("cluster line spans rows", out);
     free(out);
+
+    /* The whole row is kept: a narrow pane cuts it short when it draws it,
+       rather than the row having been cut short when it was first printed. */
+    ui_capture_begin(40);
+    view_cluster_paint(&v);
+    char *cut = ui_capture_end();
+    ui_capture_begin(200);
+    view_cluster_paint(&v);
+    char *full = ui_capture_end();
+    if (!cut || !full || lines_of(cut) != 1)
+        return fail("a cluster row stays one row at any width", cut);
+    if (!strstr(cut, "\xe2\x80\xa6"))
+        return fail("a cluster row too wide for the pane is cut short", cut);
+    if (strlen(full) <= strlen(cut))
+        return fail("a cluster row is laid out for the width it is drawn at", full);
+    free(cut);
+    free(full);
     view_cluster_forget(&v);
 
     /* Errors keep the head line and the tail, where the exception lives. */

@@ -1,36 +1,17 @@
 #include "confirm.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 
-#include "block.h"
+#include "chrome.h"
 #include "tty.h"
 #include "ui.h"
 
-struct confirm_view {
-    int rows;
-};
-
-static void erase_question(struct confirm_view *view)
+// A modal section: chrome.c paints it in place of the whole stack, so a resize
+// needs nothing but another paint.
+static void paint_question(void *ud)
 {
-    if (!view->rows)
-        return;
-    fprintf(stdout, "\x1b[%dA\r\x1b[J", view->rows);
-    fflush(stdout);
-    view->rows = 0;
-    block_forget();
-}
+    const char *question = ud;
 
-static void paint_question(struct confirm_view *view, const char *question)
-{
-    block_clear();
-
-    if (view->rows)
-        fprintf(stdout, "\x1b[%dA\r", view->rows);
-    else
-        fputc('\r', stdout);
-    fputs(UI_CURSOR_HIDE UI_ERASE_EOL, stdout);
-    ui_scroll_track(0);
     ui_esc(ui_style(UI_CHROME));
     ui_put(UI_BAR);
     ui_esc(ui_style(UI_RESET));
@@ -40,14 +21,6 @@ static void paint_question(struct confirm_view *view, const char *question)
     ui_esc(ui_style(UI_ACCENT));
     ui_put("y/n");
     ui_esc(ui_style(UI_RESET));
-    ui_put("\r\n");
-    fputs("\x1b[J" UI_CURSOR_SHOW, stdout);
-    ui_scroll_track(1);
-    fflush(stdout);
-
-    size_t cells = 1 + 1 + ui_cells(question) + 1 + 3;
-    int columns = ui_columns();
-    view->rows = (int)((cells + (size_t)columns - 1) / (size_t)columns);
 }
 
 int confirm_run(const char *question)
@@ -55,8 +28,7 @@ int confirm_run(const char *question)
     if (!question || !*question)
         return 0;
 
-    struct confirm_view view = {0};
-    paint_question(&view, question);
+    chrome_modal(paint_question, (void *)question);
     for (;;) {
         tty_event ev;
         if (!tty_read(&ev, -1))
@@ -66,16 +38,16 @@ int confirm_run(const char *question)
             continue;
         }
         if (ev.key == TK_CHAR && (ev.cp == 'y' || ev.cp == 'Y')) {
-            erase_question(&view);
+            chrome_modal(NULL, NULL);
             return 1;
         }
         if ((ev.key == TK_CHAR && (ev.cp == 'n' || ev.cp == 'N' ||
                                    ev.cp == 3 || ev.cp == 4)) ||
             ev.key == TK_ESCAPE || ev.key == TK_EOF) {
-            erase_question(&view);
+            chrome_modal(NULL, NULL);
             return 0;
         }
         if (ev.key == TK_RESIZE)
-            paint_question(&view, question);
+            chrome_paint();
     }
 }

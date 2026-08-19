@@ -19,6 +19,10 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line);
 
 int cmd_is_live(const char *line);
 
+// The command puts its own line in the transcript, so echoing it the ordinary
+// way would print it twice.
+int cmd_self_echoes(const char *line);
+
 void cmd_dispatch_live(struct session *s, const char *line);
 
 // Runs the commands cmd_dispatch_live() held back because a turn was running.

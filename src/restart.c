@@ -13,6 +13,7 @@
 #include "sessionfork.h"
 #include "tty.h"
 #include "ui.h"
+#include "viewport.h"
 
 // SIGURG rather than SIGUSR1: its default action is to ignore, so `make
 // install` can signal every mux on the machine without killing the ones still
@@ -129,6 +130,7 @@ int restart_exec(struct session *s)
     // The agent CLI is a child of this process: it has to go before the exec,
     // or the replacement leaves it orphaned and still holding the session.
     session_free(s);
+    viewport_end();
     ui_raw(0);
     tty_raw_end();
 

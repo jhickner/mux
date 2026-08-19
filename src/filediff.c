@@ -198,54 +198,91 @@ static void print_note(const char *text)
     ui_put("\n");
 }
 
-static int print_ops(const struct op *ops, int nops)
+struct patch {
+    char  *buf;
+    size_t len, cap;
+};
+
+static void patch_add(struct patch *p, const char *s, size_t n)
+{
+    if (!p->buf && p->cap)
+        return;
+    if (p->len + n + 1 > p->cap) {
+        size_t want = p->cap ? p->cap * 2 : 4096;
+        while (want < p->len + n + 1)
+            want *= 2;
+        char *grown = realloc(p->buf, want);
+        if (!grown) {
+            free(p->buf);
+            p->buf = NULL;
+            p->cap = 1;
+            return;
+        }
+        p->buf = grown;
+        p->cap = want;
+    }
+    memcpy(p->buf + p->len, s, n);
+    p->len += n;
+    p->buf[p->len] = '\0';
+}
+
+// The ops as patch text: the changed lines with their context, hunks split
+// where the file was skipped over. What is worth showing is decided here;
+// how wide it is drawn is decided every time it is drawn.
+static char *patch_of_ops(const struct op *ops, int nops, const char *path)
 {
     char *show = calloc((size_t)nops, 1);
     if (!show)
-        return 0;
+        return NULL;
+    int any = 0;
     for (int k = 0; k < nops; k++) {
         if (ops[k].sign == ' ')
             continue;
+        any = 1;
         int from = k - CONTEXT < 0 ? 0 : k - CONTEXT;
         for (int m = from; m <= k + CONTEXT && m < nops; m++)
             show[m] = 1;
     }
+    if (!any) {
+        free(show);
+        return NULL;
+    }
 
-    int rows = 0, dropped = 0, gap = 0;
+    struct patch p = {0};
+    if (path && *path) {
+        patch_add(&p, "@@file ", 7);
+        patch_add(&p, path, strlen(path));
+        patch_add(&p, "\n", 1);
+    }
+
+    int open = 0, gap = 1;
     for (int k = 0; k < nops; k++) {
         if (!show[k]) {
             gap = 1;
             continue;
         }
-        if (rows >= MAX_ROWS) {
-            if (ops[k].sign != ' ')
-                dropped++;
-            continue;
+        if (gap || !open) {
+            patch_add(&p, "@@\n", 3);
+            open = 1;
+            gap = 0;
         }
-        if (gap && rows > 0)
-            print_note("\xe2\x8b\xae");
-        gap = 0;
-        print_row(&ops[k]);
-        rows++;
+        patch_add(&p, &ops[k].sign, 1);
+        patch_add(&p, ops[k].p, ops[k].n);
+        patch_add(&p, "\n", 1);
     }
     free(show);
-
-    if (dropped > 0) {
-        char note[64];
-        snprintf(note, sizeof note, "+%d more line%s", dropped, dropped == 1 ? "" : "s");
-        print_note(note);
-    }
-    return rows > 0;
+    return p.buf;
 }
 
-static int print_diff(const char *a_text, size_t a_len, const char *b_text, size_t b_len)
+static char *patch_diff(const char *a_text, size_t a_len, const char *b_text, size_t b_len,
+                        const char *path)
 {
     struct linevec a, b;
     if (!lines_split(&a, a_text, a_len))
-        return 0;
+        return NULL;
     if (!lines_split(&b, b_text, b_len)) {
         lines_free(&a);
-        return 0;
+        return NULL;
     }
 
     int limit = a.count < b.count ? a.count : b.count;
@@ -272,12 +309,27 @@ static int print_diff(const char *a_text, size_t a_len, const char *b_text, size
     int tail = a.count - post;
     op_block(&ops, &nops, &cap, ' ', &a, tail, tail + CONTEXT < a.count ? tail + CONTEXT : a.count);
 
-    int drew = nops > 0 ? print_ops(ops, nops) : 0;
+    char *patch = nops > 0 ? patch_of_ops(ops, nops, path) : NULL;
 
     free(ops);
     lines_free(&a);
     lines_free(&b);
-    return drew;
+    return patch;
+}
+
+int filediff_patch_draws(const char *patch)
+{
+    if (!patch)
+        return 0;
+    for (const char *p = patch; *p;) {
+        if (*p == '+' || *p == '-')
+            return 1;
+        const char *nl = strchr(p, '\n');
+        if (!nl)
+            break;
+        p = nl + 1;
+    }
+    return 0;
 }
 
 int filediff_render_patch(const char *patch)
@@ -304,6 +356,9 @@ int filediff_render_patch(const char *patch)
             continue;
         }
         if (n >= 2 && p[0] == '@' && p[1] == '@') {
+            // A hunk after another is a stretch of the file passed over.
+            if (in_hunk && rows > 0 && rows < MAX_ROWS)
+                print_note("\xe2\x8b\xae");
             in_hunk = 1;
             continue;
         }
@@ -365,18 +420,19 @@ void filediff_snapshot(const char *path)
     snap.have = 1;
 }
 
-int filediff_render(void)
+char *filediff_take_patch(void)
 {
     if (!snap.have)
-        return 0;
+        return NULL;
 
     size_t after_len = 0;
     char *after = text_slurp(snap.path, MAX_BYTES, &after_len);
-    int drew = 0;
+    char *patch = NULL;
     if (after && !(after_len == snap.before_len && memcmp(after, snap.before, after_len) == 0))
-        drew = print_diff(snap.before, snap.before_len, after, after_len);
+        // No file name: the tool call above it already says which file.
+        patch = patch_diff(snap.before, snap.before_len, after, after_len, NULL);
 
     free(after);
     filediff_clear();
-    return drew;
+    return patch;
 }
