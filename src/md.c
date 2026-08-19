@@ -1,16 +1,23 @@
 #include "md.h"
 
 #include <ctype.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "image.h"
 #include "ui.h"
 
+#define LINK_MAX 64
+
 struct styled {
-    char       *text;
+    char        *text;
     signed char *style;
-    size_t      len, cap;
+    signed char *link;
+    size_t       len, cap;
+    char        *url[LINK_MAX];
+    int          nurls;
+    int          cur_link;
 };
 
 static void styled_init(struct styled *s)
@@ -19,32 +26,78 @@ static void styled_init(struct styled *s)
     s->len = 0;
     s->text = malloc(s->cap);
     s->style = calloc(s->cap, 1);
+    s->link = calloc(s->cap, 1);
+    s->nurls = 0;
+    s->cur_link = 0;
 }
 
 static void styled_free(struct styled *s)
 {
     free(s->text);
     free(s->style);
+    free(s->link);
+    for (int i = 0; i < s->nurls; i++)
+        free(s->url[i]);
+    s->nurls = 0;
+}
+
+// OSC 8 URIs cannot carry controls, and a scheme is what makes a terminal
+// treat the target as a link at all.
+static int url_ok(const char *p, size_t n)
+{
+    size_t i = 0;
+    if (!n || !isalpha((unsigned char)p[0]))
+        return 0;
+    while (i < n && (isalnum((unsigned char)p[i]) || p[i] == '+' || p[i] == '.' || p[i] == '-'))
+        i++;
+    if (i == 0 || i >= n || p[i] != ':')
+        return 0;
+    for (i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)p[i];
+        if (c < 0x21 || c == 0x7f)
+            return 0;
+    }
+    return 1;
+}
+
+static int styled_link(struct styled *s, const char *url, size_t n)
+{
+    if (s->nurls >= LINK_MAX || !url_ok(url, n))
+        return 0;
+    for (int i = 0; i < s->nurls; i++)
+        if (strlen(s->url[i]) == n && memcmp(s->url[i], url, n) == 0)
+            return i + 1;
+    char *copy = malloc(n + 1);
+    if (!copy)
+        return 0;
+    memcpy(copy, url, n);
+    copy[n] = '\0';
+    s->url[s->nurls++] = copy;
+    return s->nurls;
 }
 
 static void styled_push(struct styled *s, const char *bytes, size_t n, int role)
 {
-    if (!s->text || !s->style)
+    if (!s->text || !s->style || !s->link)
         return;
     if (s->len + n + 1 > s->cap) {
         size_t want = (s->len + n + 1) * 2;
         char *t = realloc(s->text, want);
         signed char *y = realloc(s->style, want);
-        if (!t || !y) {
+        signed char *l = realloc(s->link, want);
+        if (!t || !y || !l) {
             free(t ? t : s->text);
             free(y ? y : s->style);
+            free(l ? l : s->link);
             s->text = NULL;
             s->style = NULL;
+            s->link = NULL;
             s->len = 0;
             return;
         }
         s->text = t;
         s->style = y;
+        s->link = l;
         s->cap = want;
     }
 
@@ -55,6 +108,7 @@ static void styled_push(struct styled *s, const char *bytes, size_t n, int role)
             continue;
         s->text[out] = (char)c;
         s->style[out] = (signed char)role;
+        s->link[out] = (signed char)s->cur_link;
         out++;
     }
     s->len = out;
@@ -122,7 +176,9 @@ static void inline_scan(const char *p, struct styled *out)
             if (close && close[1] == '(') {
                 const char *paren = find_close(close + 2, ")", 1);
                 if (paren) {
+                    out->cur_link = styled_link(out, close + 2, (size_t)(paren - close - 2));
                     styled_push(out, p + 1, (size_t)(close - p - 1), UI_LINK + 1);
+                    out->cur_link = 0;
                     p = paren + 1;
                     continue;
                 }
@@ -132,7 +188,9 @@ static void inline_scan(const char *p, struct styled *out)
             const char *end = p;
             while (*end && !isspace((unsigned char)*end) && *end != ')' && *end != '>')
                 end++;
+            out->cur_link = styled_link(out, p, (size_t)(end - p));
             styled_push(out, p, (size_t)(end - p), UI_LINK + 1);
+            out->cur_link = 0;
             p = end;
             continue;
         }
@@ -141,22 +199,50 @@ static void inline_scan(const char *p, struct styled *out)
     }
 }
 
+static void link_open(const struct styled *s, int id)
+{
+    char buf[1024];
+    if (!ui_color())
+        return;
+    int n = snprintf(buf, sizeof buf, "\x1b]8;id=mux%d;%s\x1b\\", id, s->url[id - 1]);
+    if (n > 0 && (size_t)n < sizeof buf)
+        ui_esc(buf);
+}
+
+static void link_close(void)
+{
+    if (ui_color())
+        ui_esc("\x1b]8;;\x1b\\");
+}
+
 static void emit_slice(const struct styled *s, size_t from, size_t len, enum ui_role base)
 {
     int open = -1;
+    int link = 0;
     for (size_t i = 0; i < len; ) {
         signed char style = s->style[from + i];
+        signed char id = s->link ? s->link[from + i] : 0;
         if (style != open) {
             ui_esc(ui_style(UI_RESET));
             ui_esc(ui_style(style ? (enum ui_role)(style - 1) : base));
             open = style;
         }
+        if (id != link) {
+            if (link)
+                link_close();
+            if (id)
+                link_open(s, id);
+            link = id;
+        }
         size_t run = 1;
-        while (i + run < len && s->style[from + i + run] == style)
+        while (i + run < len && s->style[from + i + run] == style &&
+               (s->link ? s->link[from + i + run] : 0) == id)
             run++;
         ui_putn(s->text + from + i, run);
         i += run;
     }
+    if (link)
+        link_close();
     if (open >= 0)
         ui_esc(ui_style(UI_RESET));
 }

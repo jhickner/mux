@@ -184,6 +184,8 @@ const char *ui_style(enum ui_role role)
     return styles[role];
 }
 
+int ui_color(void) { return use_color; }
+
 void ui_cursor_plain(void)
 {
     if (!use_color)
