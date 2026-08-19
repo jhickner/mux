@@ -17,6 +17,7 @@
 #include "md.h"
 #include "sessionprefs.h"
 #include "sessionview.h"
+#include "viewport.h"
 #include "settings.h"
 #include "sidechannel.h"
 #include "status.h"
@@ -163,7 +164,7 @@ static void on_event(void *ud, const backend_event *ev)
         status_pause();
         paused = 1;
 
-        if (s->view.after_activity)
+        if (s->view.after_activity && !viewport_ends_blank())
             ui_put("\n");
         md_render_kept(ev->text, 0);
         ui_put("\n");
@@ -180,9 +181,7 @@ static void on_event(void *ud, const backend_event *ev)
         status_pause();
         paused = 1;
         view_cluster_forget(&s->view);
-        if (s->view.after_tool)
-            ui_put("\n");
-        view_activity("\xe2\x9c\xbb", ev->text, UI_THINKING);
+        view_keep_activity("\xe2\x9c\xbb", ev->text, UI_THINKING, s->view.after_tool);
         s->view.after_activity = 1;
         s->view.after_tool = 1;
         s->view.after_collapse = 0;
@@ -197,17 +196,13 @@ static void on_event(void *ud, const backend_event *ev)
         status_pause();
         paused = 1;
         if (collapsed) {
-            if (!view_cluster_extend(&s->view, name, arg)) {
-                if (s->view.after_tool && !s->view.after_collapse)
-                    ui_put("\n");
-                view_cluster_start(&s->view, name, arg);
-            }
+            if (!view_cluster_extend(&s->view, name, arg))
+                view_cluster_start(&s->view, name, arg,
+                                   s->view.after_tool && !s->view.after_collapse);
             view_cluster_paint(&s->view);
         } else {
             view_cluster_forget(&s->view);
-            if (s->view.after_tool)
-                ui_put("\n");
-            view_tool_call(name, arg);
+            view_keep_tool_call(name, arg, s->view.after_tool);
         }
 
         char path[4096];
@@ -231,11 +226,11 @@ static void on_event(void *ud, const backend_event *ev)
             {
                 const char *why = ev->text && *ev->text ? ev->text : NULL;
                 if (!why || !strcmp(why, "failed")) {
-                    view_tool_output("failed", UI_ERROR);
+                    view_keep_output("failed", UI_ERROR, 0);
                 } else {
                     char line[4096];
                     snprintf(line, sizeof line, "failed: %s", why);
-                    view_tool_error(line);
+                    view_keep_output(line, UI_ERROR, 1);
                 }
             }
             s->view.after_activity = 1;
@@ -248,15 +243,21 @@ static void on_event(void *ud, const backend_event *ev)
             status_pause();
             paused = 1;
 
-            int drew;
+            // The patch is kept, not the rows it drew: a diff has to be able
+            // to lay itself out again at another width.
+            char *patch;
             if (ev->diff) {
-                drew = filediff_render_patch(ev->diff);
+                patch = strdup(ev->diff);
                 filediff_clear();
             } else {
-                drew = filediff_render();
+                patch = filediff_take_patch();
             }
-            if (!drew)
-                view_tool_output(ev->text, UI_DIM);
+            if (filediff_patch_draws(patch)) {
+                view_keep_diff(patch);
+            } else {
+                free(patch);
+                view_keep_output(ev->text, UI_DIM, 0);
+            }
         }
         s->view.after_activity = 1;
         s->view.after_tool = 1;

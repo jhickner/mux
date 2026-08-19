@@ -289,19 +289,6 @@ void viewport_write(const char *s, size_t n)
     dirty = 1;
 }
 
-void viewport_drop_row(void)
-{
-    if (open_len) {
-        open_len = 0;
-        dirty = 1;
-        return;
-    }
-    if (nitems > 0) {
-        item_free(&items[--nitems]);
-        dirty = 1;
-    }
-}
-
 // Escapes take no cells, so a row of nothing but styling is still blank.
 static int row_is_blank(const char *s, size_t n)
 {

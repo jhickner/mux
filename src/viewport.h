@@ -59,10 +59,6 @@ void viewport_chrome_row(int at, const char *s);
 // The first `keep` chrome rows stop being chrome and become transcript.
 void viewport_chrome_keep(int keep);
 
-// Drop the last transcript row, so a caller that repaints a row it just wrote
-// can replace it instead of stacking copies.
-void viewport_drop_row(void);
-
 // Whether the transcript already ends in a blank row, so a caller that wants
 // one above what it is about to print can tell whether it is owed one.
 int viewport_ends_blank(void);
