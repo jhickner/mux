@@ -300,10 +300,12 @@ static int spawn(struct side *c, const struct session *s, const char *prompt)
     return 1;
 }
 
-int sidechannel_start(const struct session *s, const char *prompt)
+int sidechannel_start(const struct session *s, const char *prompt, const char *label)
 {
     if (!prompt || !*prompt)
         return 0;
+    if (!label || !*label)
+        label = prompt;
 
     if (!session_can_resume(s)) {
         ui_error("%s cannot fork a conversation, so /btw has nothing to run in",
@@ -333,7 +335,7 @@ int sidechannel_start(const struct session *s, const char *prompt)
         return 0;
     }
 
-    c->question = strdup(prompt);
+    c->question = strdup(label);
     chrome_paint();
     return 1;
 }

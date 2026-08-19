@@ -419,7 +419,10 @@ static void do_btw(struct session *s, const char *arg)
                    "conversation, without waiting for the current turn");
         return;
     }
-    sidechannel_start(s, arg);
+    // The child is asked the question alone; what is shown is what was typed.
+    char label[4096];
+    snprintf(label, sizeof label, "/btw %s", arg);
+    sidechannel_start(s, arg, label);
     ui_flush();
 }
 
@@ -677,6 +680,17 @@ static enum live_class live_class(const char *name)
 #define DEFERRED_MAX 8
 static char *deferred[DEFERRED_MAX];
 static int   deferred_count;
+
+// /btw shows the question itself: on a pinned row while it waits, then above
+// the answer. The ordinary echo would be a third copy of the same line.
+int cmd_self_echoes(const char *line)
+{
+    char name[32];
+    const char *arg;
+    if (!split_command(line, name, sizeof name, &arg))
+        return 0;
+    return !strcmp(name, "/btw") && arg && *arg;
+}
 
 int cmd_is_live(const char *line)
 {

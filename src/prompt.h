@@ -34,6 +34,13 @@ void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud);
 typedef int (*prompt_live_fn)(void *ud, const char *line);
 void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud);
 
+// Whether a submitted line should be echoed into the transcript. Some commands
+// put their own line there and would otherwise be printed twice. Unset means
+// everything is echoed.
+void prompt_set_echo_filter(struct prompt *p, int (*fn)(void *ud, const char *line),
+                            void *ud);
+int  prompt_echoes(struct prompt *p, const char *line);
+
 void prompt_set_restart(struct prompt *p, int (*pending)(void *ud), int (*run)(void *ud),
                         void *ud);
 

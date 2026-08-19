@@ -44,6 +44,8 @@ struct prompt {
     char        *history_path;
     prompt_live_fn live_command;
     void          *live_ud;
+    int          (*echo_filter)(void *ud, const char *line);
+    void          *echo_ud;
     char       **queued;
     int          queued_count;
     int          queued_cap;
@@ -856,7 +858,7 @@ static char *read_loop(struct prompt *p)
         case KEY_SUBMIT: {
             char *out = take_line(p);
             chrome_clear();
-            if (out)
+            if (out && prompt_echoes(p, out))
                 prompt_echo_message(out);
             return out;
         }
@@ -935,6 +937,18 @@ void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud)
 {
     p->replay = fn;
     p->replay_ud = ud;
+}
+
+void prompt_set_echo_filter(struct prompt *p, int (*fn)(void *ud, const char *line),
+                            void *ud)
+{
+    p->echo_filter = fn;
+    p->echo_ud = ud;
+}
+
+int prompt_echoes(struct prompt *p, const char *line)
+{
+    return !p || !p->echo_filter || p->echo_filter(p->echo_ud, line);
 }
 
 void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud)

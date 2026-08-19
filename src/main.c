@@ -131,12 +131,19 @@ static int idle_restart(void *ud)
     return 0;
 }
 
+static int echo_filter(void *ud, const char *line)
+{
+    (void)ud;
+    return !cmd_self_echoes(line);
+}
+
 static int live_command(void *ud, const char *line)
 {
     if (!cmd_is_live(line))
         return 0;
     status_pause();
-    prompt_echo_message(line);
+    if (!cmd_self_echoes(line))
+        prompt_echo_message(line);
     cmd_dispatch_live(ud, line);
     status_resume();
     return 1;
@@ -311,6 +318,7 @@ int main(int argc, char **argv)
     session_set_typeahead(prompt_live_key, prompt);
     chrome_bind(prompt);
     prompt_set_live_command(prompt, live_command, session);
+    prompt_set_echo_filter(prompt, echo_filter, NULL);
     prompt_set_idle(prompt, idle_fds, idle_render, idle_busy, session);
     prompt_set_restart(prompt, restart_pending, idle_restart, session);
     prompt_set_replay(prompt, replay, session);
@@ -327,9 +335,10 @@ int main(int argc, char **argv)
         offer_project_trust(session);
 
         char *line = prompt_take_queued(prompt);
-        if (line)
-            prompt_echo_message(line);
-        else
+        if (line) {
+            if (!cmd_self_echoes(line))
+                prompt_echo_message(line);
+        } else
             line = prompt_read(prompt);
         if (!line)
             break;
