@@ -20,6 +20,15 @@
 
 #define SIDE_MAX 4
 
+// A side turn is a note in the margin. The person who asked is in the middle
+// of another conversation and never sees a prompt from this one, so anything
+// that ends in a question to them is a dead end on the screen.
+#define BTW_PREAMBLE                                                            \
+    "Answer the question below as an aside in a conversation you are not part " \
+    "of. The person asking cannot reply to you: you get one answer and the "    \
+    "exchange ends there. Do not ask follow-up questions, do not offer to do "  \
+    "more, and do not ask what they want next. Be brief.\n\n"
+
 struct stream {
     int    fd;
     char  *buf;
@@ -32,6 +41,7 @@ struct btw {
     char *question;
     char *answer;
     int   failed;
+    int   gap;                  /* owed a blank row above */
 };
 
 struct side {
@@ -107,8 +117,12 @@ static void btw_render(void *ud, int cols)
     snprintf(mark, sizeof mark, "%s", b->failed ? BTW_FAIL : BTW_DONE);
 
     // A blank row above: this lands wherever the main turn had got to, which
-    // is as likely as not to be the last line of some tool's output.
-    ui_put("\n");
+    // is as likely as not to be the last line of some tool's output. Whether
+    // one was owed was settled when the entry was made — asking again while
+    // redrawing would answer about the transcript as it is now, with this
+    // entry already in it.
+    if (b->gap)
+        ui_put("\n");
 
     int budget = ui_columns() - 5;
     struct ui_wrap w = {0};
@@ -334,13 +348,21 @@ int sidechannel_start(const struct session *s, const char *prompt, const char *l
         return 0;
     }
 
+    size_t want = sizeof BTW_PREAMBLE + strlen(prompt);
+    char  *asked = malloc(want);
+    if (!asked)
+        return 0;
+    snprintf(asked, want, "%s%s", BTW_PREAMBLE, prompt);
+
     slot_init(c);
-    if (!spawn(c, s, prompt)) {
+    if (!spawn(c, s, asked)) {
         slot_free(c);
+        free(asked);
         ui_error("could not start the side turn");
         ui_put("\n");
         return 0;
     }
+    free(asked);
 
     c->question = strdup(label);
     chrome_paint();
@@ -413,6 +435,7 @@ static void emit(struct side *c, int status)
     b->question = strdup(c->question ? c->question : "");
     b->answer = strdup(answer);
     b->failed = failed;
+    b->gap = !viewport_ends_blank();
     if (!b->question || !b->answer) {
         btw_free(b);
         return;
