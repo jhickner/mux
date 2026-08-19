@@ -131,7 +131,6 @@ int restart_exec(struct session *s)
     // or the replacement leaves it orphaned and still holding the session.
     session_free(s);
     viewport_end();
-    viewport_dump();
     ui_raw(0);
     tty_raw_end();
 

@@ -376,9 +376,7 @@ int main(int argc, char **argv)
     prompt_free(prompt);
     sessionfork_exit_note(session);
     session_free(session);
-    // Leave the conversation on the normal screen, the way it used to be left.
     viewport_end();
-    viewport_dump();
     ui_raw(0);
     tty_raw_end();
     return 0;

@@ -80,10 +80,6 @@ void *viewport_item_data(unsigned mark);
 // The entry's payload changed: draw it again.
 void  viewport_item_update(unsigned mark);
 
-// Write the transcript to the normal screen, so leaving mux leaves the
-// conversation in the terminal's own scrollback.
-void viewport_dump(void);
-
 void viewport_scroll(int delta);
 void viewport_scroll_end(void);
 int  viewport_scrolled(void);

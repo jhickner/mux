@@ -868,22 +868,6 @@ void viewport_end(void)
     fflush(stdout);
 }
 
-void viewport_dump(void)
-{
-    int W = tty_screen_columns();
-    for (int i = 0; i < nitems; i++) {
-        item_rows(&items[i], W);
-        for (int r = 0; r < items[i].nrows; r++) {
-            direct_str(items[i].rows[r]);
-            direct_str("\x1b[0m\r\n");
-        }
-    }
-    if (open_len) {
-        direct(open_buf, open_len);
-        direct_str("\x1b[0m\r\n");
-    }
-    fflush(stdout);
-}
 
 void viewport_suspend(void)
 {
