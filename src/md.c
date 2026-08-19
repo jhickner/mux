@@ -248,7 +248,11 @@ static void emit_slice(const struct styled *s, size_t from, size_t len, enum ui_
         ui_esc(ui_style(UI_RESET));
 }
 
-static void emit_styled(const struct styled *s, int first_indent, int indent)
+// `spent` is what the caller has already put on the first row and is not
+// padding for — a bullet, a number, a quote bar. Leaving it out of the budget
+// is a row a cell or two over the width, which the screen then breaks in a
+// place nothing else knows about.
+static void emit_styled(const struct styled *s, int spent, int first_indent, int indent)
 {
     if (!s->text)
         return;
@@ -257,7 +261,7 @@ static void emit_styled(const struct styled *s, int first_indent, int indent)
     int row_indent = first_indent;
 
     while (*p || p == s->text) {
-        int budget = columns - row_indent;
+        int budget = columns - row_indent - spent;
         if (budget < 8)
             budget = 8;
         size_t skip = 0;
@@ -272,6 +276,7 @@ static void emit_styled(const struct styled *s, int first_indent, int indent)
 
         p += row + skip;
         row_indent = indent;
+        spent = 0;
         if (!*p)
             break;
     }
@@ -578,12 +583,12 @@ static void render_table(const char *first, const char **text, int indent)
     free(rows);
 }
 
-static void render_paragraph(const char *text, int first_indent, int indent)
+static void render_paragraph(const char *text, int spent, int first_indent, int indent)
 {
     struct styled s;
     styled_init(&s);
     inline_scan(text, &s);
-    emit_styled(&s, first_indent, indent);
+    emit_styled(&s, spent, first_indent, indent);
     styled_free(&s);
 }
 
@@ -858,7 +863,7 @@ void md_render(const char *text, int indent)
             ui_esc(ui_style(UI_DIM));
             ui_put("\xe2\x94\x82 ");
             ui_esc(ui_style(UI_RESET));
-            render_paragraph(q, 0, indent + 2);
+            render_paragraph(q, indent + 2, 0, indent + 2);
         } else {
             const char *rest;
             size_t marker = 0;
@@ -868,16 +873,17 @@ void md_render(const char *text, int indent)
                 ui_esc(ui_style(UI_CHROME));
                 ui_put("\xe2\x80\xa2 ");
                 ui_esc(ui_style(UI_RESET));
-                render_paragraph(rest, 0, item_indent + 2);
+                render_paragraph(rest, item_indent + 2, 0, item_indent + 2);
             } else if (is_ordered(body, &marker)) {
                 ui_pad(item_indent);
                 ui_esc(ui_style(UI_CHROME));
                 ui_putn(body, marker - 1);
                 ui_esc(ui_style(UI_RESET));
                 ui_put(" ");
-                render_paragraph(body + marker, 0, item_indent + (int)marker);
+                int after = item_indent + (int)marker;
+                render_paragraph(body + marker, after, 0, after);
             } else {
-                render_paragraph(body, item_indent, item_indent);
+                render_paragraph(body, 0, item_indent, item_indent);
             }
         }
         wrote_any = 1;
