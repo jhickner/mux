@@ -27,6 +27,7 @@ struct screen {
     int  rows, cols;
     char cell[ROWS_MAX][COLS_MAX + 1];
     int  cur_r, cur_c;
+    int  top, bot;              /* scroll region, 0-based inclusive */
 };
 
 static void screen_init(struct screen *s, int rows, int cols)
@@ -34,8 +35,41 @@ static void screen_init(struct screen *s, int rows, int cols)
     memset(s, 0, sizeof *s);
     s->rows = rows;
     s->cols = cols;
+    s->top = 0;
+    s->bot = rows - 1;
     for (int r = 0; r < rows; r++)
         memset(s->cell[r], ' ', (size_t)cols);
+}
+
+// Scroll the region by n rows: positive moves content toward the top, which is
+// what ESC[nS does, and negative is ESC[nT.
+static void scroll_region(struct screen *s, int n)
+{
+    if (n == 0)
+        return;
+    int height = s->bot - s->top + 1;
+    if (height <= 0)
+        return;
+    if (n > height || -n > height)
+        n = n > 0 ? height : -height;
+
+    if (n > 0) {
+        for (int r = s->top; r <= s->bot; r++) {
+            int from = r + n;
+            if (from <= s->bot)
+                memcpy(s->cell[r], s->cell[from], (size_t)s->cols);
+            else
+                memset(s->cell[r], ' ', (size_t)s->cols);
+        }
+    } else {
+        for (int r = s->bot; r >= s->top; r--) {
+            int from = r + n;
+            if (from >= s->top)
+                memcpy(s->cell[r], s->cell[from], (size_t)s->cols);
+            else
+                memset(s->cell[r], ' ', (size_t)s->cols);
+        }
+    }
 }
 
 // Only what the viewport emits: absolute placement, erase-to-end-of-line, and
@@ -70,6 +104,15 @@ static void feed(struct screen *s, const char *p, size_t n)
                 } else if (p[j] == 'K' && s->cur_r < s->rows) {
                     for (int c = s->cur_c; c < s->cols; c++)
                         s->cell[s->cur_r][c] = ' ';
+                } else if (p[j] == 'r') {
+                    s->top = argc > 0 && args[0] > 0 ? args[0] - 1 : 0;
+                    s->bot = argc > 1 && args[1] > 0 ? args[1] - 1 : s->rows - 1;
+                    if (s->bot >= s->rows)
+                        s->bot = s->rows - 1;
+                } else if (p[j] == 'S') {
+                    scroll_region(s, argc > 0 && args[0] > 0 ? args[0] : 1);
+                } else if (p[j] == 'T') {
+                    scroll_region(s, -(argc > 0 && args[0] > 0 ? args[0] : 1));
                 }
             }
             i = j < n ? j + 1 : n;
@@ -92,21 +135,18 @@ static void feed(struct screen *s, const char *p, size_t n)
 
 static int tap_read = -1;
 
+// What a paint cost, in bytes actually sent to the terminal.
+static size_t pumped;
+
 static void pump(struct screen *s)
 {
     fflush(stdout);
     char    buf[65536];
     ssize_t n;
-    while ((n = read(tap_read, buf, sizeof buf)) > 0)
+    while ((n = read(tap_read, buf, sizeof buf)) > 0) {
+        pumped += (size_t)n;
         feed(s, buf, (size_t)n);
-}
-
-static void drop(void)
-{
-    fflush(stdout);
-    char    buf[65536];
-    while (read(tap_read, buf, sizeof buf) > 0)
-        ;
+    }
 }
 
 static int count_on_screen(const struct screen *s, const char *needle)
@@ -126,6 +166,23 @@ static void say(const char *text)
 {
     viewport_write(text, strlen(text));
     viewport_write("\n", 1);
+}
+
+// A real terminal keeps what it was last sent, and the painter only sends what
+// changed, so the model has to persist across paints the way a screen does.
+static void redraw(struct screen *s)
+{
+    viewport_paint();
+    pump(s);
+}
+
+// The screen is blank and nothing on it is ours: the next paint sends all of
+// it. What a resize does, and what the test needs between cases.
+static void refresh(struct screen *s, int cols, int rows)
+{
+    screen_init(s, rows, cols);
+    viewport_forget();
+    redraw(s);
 }
 
 static void set_size(int cols, int rows)
@@ -160,10 +217,7 @@ static void check_resize_strands_nothing(struct screen *s)
     const int W[] = {80, 20, 34, 52, 100, 24};
     for (int i = 0; i < (int)(sizeof W / sizeof *W); i++) {
         set_size(W[i], 24);
-        drop();
-        screen_init(s, 24, W[i]);
-        viewport_paint();
-        pump(s);
+        refresh(s, W[i], 24);
 
         if (count_on_screen(s, "CHROME-prompt") != 1)
             fail("the chrome is on screen exactly once after a resize");
@@ -185,10 +239,7 @@ static void check_bottom_up(struct screen *s)
     say("third");
     chrome("CHROME-prompt", NULL);
 
-    drop();
-    screen_init(s, 24, 80);
-    viewport_paint();
-    pump(s);
+    refresh(s, 80, 24);
 
     // 24 rows, 1 of chrome: the chrome is row 24 and the three rows sit on
     // 21, 22, 23 rather than 1, 2, 3.
@@ -216,10 +267,7 @@ static void check_tail(struct screen *s)
     }
     chrome("CHROME-prompt", NULL);
 
-    drop();
-    screen_init(s, 24, 80);
-    viewport_paint();
-    pump(s);
+    refresh(s, 80, 24);
 
     // 24 rows, 1 of chrome, so the last 23 transcript rows: 77..99.
     if (count_on_screen(s, "row 99") != 1)
@@ -241,8 +289,7 @@ static void check_scroll(struct screen *s)
     }
     chrome("CHROME-prompt", NULL);
 
-    drop();
-    screen_init(s, 24, 80);
+    refresh(s, 80, 24);
     viewport_scroll(10);
     pump(s);
     if (count_on_screen(s, "row 89") != 1)
@@ -250,8 +297,7 @@ static void check_scroll(struct screen *s)
     if (count_on_screen(s, "row 99") != 0)
         fail("scrolling up drops the newest rows off the bottom");
 
-    drop();
-    screen_init(s, 24, 80);
+    refresh(s, 80, 24);
     viewport_scroll_end();
     pump(s);
     if (count_on_screen(s, "row 99") != 1)
@@ -259,13 +305,54 @@ static void check_scroll(struct screen *s)
 
     // Output arriving while scrolled up follows the tail again.
     viewport_scroll(10);
-    drop();
-    screen_init(s, 24, 80);
-    say("newest");
-    viewport_paint();
     pump(s);
+    say("newest");
+    redraw(s);
     if (count_on_screen(s, "newest") != 1)
         fail("new output returns the window to the tail");
+}
+
+// A screen full of long rows is what an image looks like from here: every row
+// is kilobytes of placeholder cells. Scrolling has to move what the terminal
+// already has rather than resend it, or a wheel tick costs the whole screen.
+static void check_scroll_is_cheap(struct screen *s)
+{
+    viewport_clear();
+    set_size(80, 24);
+
+    char line[400];
+    memset(line, 'x', sizeof line - 1);
+    line[sizeof line - 1] = '\0';
+    for (int i = 0; i < 200; i++)
+        say(line);
+    chrome("CHROME-prompt", NULL);
+
+    refresh(s, 80, 24);
+
+    // A full repaint is the cost to beat.
+    viewport_forget();
+    pumped = 0;
+    redraw(s);
+    size_t full = pumped;
+    if (full < 2000)
+        fail("the screen under test is actually expensive to repaint");
+
+    // A repaint with nothing changed sends only the frame's own preamble.
+    pumped = 0;
+    redraw(s);
+    if (pumped > full / 20)
+        fail("a paint with nothing changed sends next to nothing");
+
+    pumped = 0;
+    viewport_scroll(3);
+    pump(s);
+    size_t scrolled_cost = pumped;
+    if (scrolled_cost >= full / 3)
+        fail("scrolling costs a fraction of a full repaint");
+
+    // ...and it still lands on the right rows.
+    if (count_on_screen(s, "CHROME-prompt") != 1)
+        fail("the chrome survives a scroll that moved rows");
 }
 
 // A kept entry can be changed after it is printed: the payload is looked up by
@@ -295,10 +382,7 @@ static void check_live_entry(struct screen *s)
     live_render(l, 80);
     viewport_item_end();
 
-    drop();
-    screen_init(s, 24, 80);
-    viewport_paint();
-    pump(s);
+    refresh(s, 80, 24);
     if (count_on_screen(s, "LIVE-spin-0") != 1)
         fail("a live entry shows its first state");
 
@@ -307,10 +391,7 @@ static void check_live_entry(struct screen *s)
 
     l->frame = 7;
     viewport_item_update(mark);
-    drop();
-    screen_init(s, 24, 80);
-    viewport_paint();
-    pump(s);
+    refresh(s, 80, 24);
     if (count_on_screen(s, "LIVE-spin-7") != 1)
         fail("updating the payload redraws the entry");
     if (count_on_screen(s, "LIVE-spin-0") != 0)
@@ -320,10 +401,7 @@ static void check_live_entry(struct screen *s)
     say("after");
     l->done = 1;
     viewport_item_update(mark);
-    drop();
-    screen_init(s, 24, 80);
-    viewport_paint();
-    pump(s);
+    refresh(s, 80, 24);
     if (count_on_screen(s, "LIVE-done-7") != 1)
         fail("an entry can still be changed once later output has landed");
     if (count_on_screen(s, "after") != 1)
@@ -359,19 +437,13 @@ static void check_reflow(struct screen *s)
     width_render(NULL, 80);
     viewport_item_end();
 
-    drop();
-    screen_init(s, 24, 80);
-    viewport_paint();
-    pump(s);
+    refresh(s, 80, 24);
     if (count_on_screen(s, "WIDTH-80") != 1)
         fail("a kept entry shows what it rendered at the first width");
 
     // Narrower: the entry is asked to render again rather than being chopped.
     set_size(48, 24);
-    drop();
-    screen_init(s, 24, 48);
-    viewport_paint();
-    pump(s);
+    refresh(s, 48, 24);
     if (rendered_at != 48)
         fail("a resize re-renders a kept entry at the new width");
     if (count_on_screen(s, "WIDTH-48") != 1)
@@ -384,10 +456,7 @@ static void check_reflow(struct screen *s)
     set_size(80, 24);
     say("RAW-row");
     set_size(48, 24);
-    drop();
-    screen_init(s, 24, 48);
-    viewport_paint();
-    pump(s);
+    refresh(s, 48, 24);
     if (count_on_screen(s, "RAW-row") != 1)
         fail("raw output survives a resize even without a renderer");
 }
@@ -404,10 +473,7 @@ static void check_soft_wrap(struct screen *s)
         "cccccccccccccccccccc");
     chrome("CHROME-prompt", NULL);
 
-    drop();
-    screen_init(s, 24, 20);
-    viewport_paint();
-    pump(s);
+    refresh(s, 20, 24);
 
     if (count_on_screen(s, "aaaaaaaaaaaaaaaaaaaa") != 1)
         fail("the head of a wrapped row is shown");
@@ -448,6 +514,7 @@ int main(void)
     check_soft_wrap(&s);
     check_reflow(&s);
     check_live_entry(&s);
+    check_scroll_is_cheap(&s);
     check_resize_strands_nothing(&s);
 
     fflush(stdout);

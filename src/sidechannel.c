@@ -13,6 +13,7 @@
 #include "session.h"
 #include "sessionfork.h"
 #include "status.h"
+#include "text.h"
 #include "ui.h"
 #include "viewport.h"
 
@@ -24,21 +25,18 @@ struct stream {
     size_t len, cap;
 };
 
-// The question and its answer are one transcript entry: the spinner rides on
-// the question while the turn runs, and the answer is drawn under it when it
-// lands, so the two cannot drift apart in a transcript that keeps moving.
+// A question that has been answered: the two are one transcript entry, so the
+// answer cannot drift away from what was asked.
 struct btw {
     char *question;
     char *answer;
     int   failed;
-    int   done;
-    int   frame;
 };
 
 struct side {
     pid_t         pid;
     struct stream out, err;
-    unsigned      mark;
+    char         *question;
 };
 
 static struct side slots[SIDE_MAX];
@@ -57,8 +55,9 @@ static void slot_free(struct side *c)
 {
     stream_free(&c->out);
     stream_free(&c->err);
+    free(c->question);
+    c->question = NULL;
     c->pid = 0;
-    c->mark = 0;
 }
 
 static const char *const SPIN[] = {"\u280b", "\u2819", "\u2839", "\u2838", "\u283c",
@@ -104,10 +103,7 @@ static void btw_render(void *ud, int cols)
     (void)cols;
 
     char mark[16];
-    if (!b->done)
-        snprintf(mark, sizeof mark, "%s ", SPIN[b->frame % SPIN_N]);
-    else
-        snprintf(mark, sizeof mark, "%s", b->failed ? BTW_FAIL : BTW_DONE);
+    snprintf(mark, sizeof mark, "%s", b->failed ? BTW_FAIL : BTW_DONE);
 
     int budget = ui_columns() - 5;
     struct ui_wrap w = {0};
@@ -118,8 +114,10 @@ static void btw_render(void *ud, int cols)
     w.paint_empty = 1;
     ui_wrap_paint(b->question, &w);
 
-    if (!b->answer)
+    if (!b->answer) {
+        ui_put("\n");
         return;
+    }
 
     // The answer sits under the question inside the same entry, so it stays
     // with the question however far the transcript has moved on.
@@ -134,6 +132,8 @@ static void btw_render(void *ud, int cols)
         bar_rows(painted, UI_BRAND);
         free(painted);
     }
+    // A blank row of its own, so the next thing printed does not run into it.
+    ui_put("\n");
 }
 
 static void btw_free(void *ud)
@@ -144,18 +144,58 @@ static void btw_free(void *ud)
     free(b);
 }
 
-// Advances the spinner on every question still waiting.
+// A question still waiting is chrome, not transcript: it stays on the bottom of
+// the screen where it can be watched, instead of scrolling away with whatever
+// the main turn is printing. Only once it is answered does it become
+// transcript, with the answer under it.
+static int spin_frame;
+
+int sidechannel_rows(void)
+{
+    int n = 0;
+    for (int i = 0; i < SIDE_MAX; i++)
+        if (slots[i].pid && slots[i].question)
+            n++;
+    return n;
+}
+
+void sidechannel_paint(int budget)
+{
+    for (int i = 0; i < SIDE_MAX && budget > 0; i++) {
+        if (!slots[i].pid || !slots[i].question)
+            continue;
+
+        char flat[2048];
+        text_one_line(slots[i].question, flat, sizeof flat);
+
+        int room = ui_columns() - 6;
+        if (room < 8)
+            room = 8;
+        size_t fit = ui_fit_visible(flat, strlen(flat), (size_t)room);
+
+        ui_esc(ui_style(UI_BRAND));
+        ui_put(UI_BAR);
+        ui_put(" ");
+        ui_put(SPIN[spin_frame % SPIN_N]);
+        ui_put(" ");
+        ui_putn(flat, fit);
+        if (flat[fit])
+            ui_put("\u2026");
+        ui_esc(ui_style(UI_RESET));
+        ui_esc(UI_ERASE_EOL);
+        ui_put("\n");
+        budget--;
+    }
+}
+
 void sidechannel_tick(void)
 {
-    for (int i = 0; i < SIDE_MAX; i++) {
-        if (!slots[i].pid || !slots[i].mark)
-            continue;
-        struct btw *b = viewport_item_data(slots[i].mark);
-        if (!b || b->done)
-            continue;
-        b->frame++;
-        viewport_item_update(slots[i].mark);
-    }
+    if (!sidechannel_rows())
+        return;
+    spin_frame++;
+    // The chrome is what carries the spinner, so it is the chrome that has to
+    // be drawn again.
+    status_touch();
 }
 
 static void slot_init(struct side *c)
@@ -282,21 +322,8 @@ int sidechannel_start(const struct session *s, const char *prompt)
         return 0;
     }
 
-    struct btw *b = calloc(1, sizeof *b);
-    if (b) {
-        b->question = strdup(prompt);
-        if (!b->question) {
-            free(b);
-            b = NULL;
-        }
-    }
-    if (b) {
-        c->mark = viewport_mark();
-        viewport_item_begin(btw_render, b, btw_free);
-        btw_render(b, ui_columns());
-        viewport_item_end();
-        ui_flush();
-    }
+    c->question = strdup(prompt);
+    status_touch();
     return 1;
 }
 
@@ -360,31 +387,21 @@ static void emit(struct side *c, int status)
         }
     }
 
-    struct btw *b = c->mark ? viewport_item_data(c->mark) : NULL;
-    if (b) {
-        free(b->answer);
-        b->answer = strdup(answer);
-        b->failed = failed;
-        b->done = 1;
-        viewport_item_update(c->mark);
+    struct btw *b = calloc(1, sizeof *b);
+    if (!b)
+        return;
+    b->question = strdup(c->question ? c->question : "");
+    b->answer = strdup(answer);
+    b->failed = failed;
+    if (!b->question || !b->answer) {
+        btw_free(b);
         return;
     }
 
-    // The question is no longer in the transcript, so there is nothing to fill
-    // in and the answer has to stand on its own.
     status_pause();
-    int inner = ui_columns() - 2;
-    ui_capture_begin(inner > 8 ? inner : 8);
-    if (failed)
-        ui_wrapped(answer, 0, UI_DIM);
-    else
-        md_render(answer, 0);
-    char *painted = ui_capture_end();
-    if (painted) {
-        bar_rows(painted, UI_BRAND);
-        free(painted);
-    }
-    ui_put("\n");
+    viewport_item_begin(btw_render, b, btw_free);
+    btw_render(b, ui_columns());
+    viewport_item_end();
     ui_flush();
     status_resume();
 }

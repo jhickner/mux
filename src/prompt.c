@@ -13,6 +13,7 @@
 #include "files.h"
 #include "paste.h"
 #include "settings.h"
+#include "sidechannel.h"
 #include "status.h"
 #include "tty.h"
 #include "ui.h"
@@ -257,6 +258,7 @@ static int rows_above(const struct prompt *p, const char *head, int cols, int sh
 {
     int rows = head ? painted_rows(head, sticky_budget(cols), STICKY_LINES, STICKY_DONE) + 1
                     : 0;
+    rows += sidechannel_rows();
     if (!show_queued)
         return rows;
     size_t budget = queued_budget(cols);
@@ -302,6 +304,7 @@ static void paint_above(const struct prompt *p, const char *head, int cols,
         ui_esc(UI_ERASE_EOL);
         ui_put("\n");
     }
+    sidechannel_paint(sidechannel_rows());
     if (!show_queued)
         return;
     size_t budget = queued_budget(cols);
@@ -901,8 +904,10 @@ static char *read_loop(struct prompt *p)
                 resizing = 0;
                 repaint(p);
             } else {
-                if (animating && p->animate_tick)
+                if (animating && p->animate_tick) {
                     p->animate_tick(p->animate_ud);
+                    repaint(p);
+                }
                 restart_check(p);
             }
             continue;
@@ -1038,9 +1043,13 @@ void prompt_live_paint(void *ud, int *rows, int *caret_row, int *caret_col)
 }
 
 // Queued lines sit above the spinner, separated from it by a blank row.
+// The chrome above the spinner during a live turn. Questions still waiting on
+// a side turn go first, directly under the sticky prompt.
 void prompt_queue_paint(void *ud)
 {
     struct prompt *p = ud;
+
+    sidechannel_paint(status_rows_left() - 1);
 
     if (p->queued_count == 0)
         return;

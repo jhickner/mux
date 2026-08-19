@@ -30,7 +30,10 @@ void viewport_write(const char *s, size_t n);
 // resize; it just soft-wraps rather than re-flowing.
 typedef void (*viewport_render_fn)(void *ud, int cols);
 
-void viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud)(void *));
+// Returns the mark of the entry it opens. Taking it beforehand would name
+// the wrong entry: opening one flushes whatever unwrapped output was still
+// in hand, and that becomes an entry of its own.
+unsigned viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud)(void *));
 void viewport_item_end(void);
 
 // Hand the terminal to a child and take it back. Suspend leaves the alt screen
@@ -39,6 +42,10 @@ void viewport_suspend(void);
 void viewport_resume(void);
 
 void viewport_paint(void);
+
+// The screen is no longer what the last paint left: something else wrote to
+// it. The next paint sends every row instead of only what changed.
+void viewport_forget(void);
 void viewport_touch(void);
 
 // The chrome under the transcript, as rows. Caret is a row within them and a

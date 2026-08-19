@@ -230,7 +230,7 @@ static void open_close(int cols)
     open_free = NULL;
 }
 
-void viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud)(void *))
+unsigned viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud)(void *))
 {
     // Unwrapped output already in hand belongs to the entry before this one.
     if (viewport_active() && open_len)
@@ -242,6 +242,7 @@ void viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud)(vo
     // With no viewport the output goes straight to the terminal and there is
     // no entry to keep; the payload is still owned here, and freed at the end.
     open_wrapped = viewport_active();
+    return next_id;
 }
 
 void viewport_item_end(void)
@@ -404,39 +405,6 @@ static int wrap_count(const char *s, int W)
     return used;
 }
 
-// Paints `s` across the screen rows starting at `top`, at most `limit` of them,
-// and returns how many it used.
-static int paint_row(const char *s, int top, int limit, int W)
-{
-    size_t n = strlen(s);
-    struct style st = {{0}, 0};
-    int    used = 0;
-    size_t i = 0, cells = 0, start = 0;
-
-    while (used < limit) {
-        cup(top + used, 1);
-        direct_str("\x1b[0m\x1b[K");
-        if (st.len)
-            direct(st.buf, st.len);
-
-        size_t line_start = start;
-        cells = 0;
-        while (i < n) {
-            size_t was = cells;
-            size_t next = step(s, n, i, &cells, &st);
-            if (cells > (size_t)W && was > 0)
-                break;
-            i = next;
-        }
-        direct(s + line_start, i - line_start);
-        used++;
-        start = i;
-        if (i >= n)
-            break;
-    }
-    return used ? used : 1;
-}
-
 /* --- painting ------------------------------------------------------------ */
 
 // The rows an entry draws as at this width, re-rendering it if the width has
@@ -463,6 +431,104 @@ static int item_height(struct item *it, int W)
         used += wrap_count(it->rows[i], W);
     return used;
 }
+
+// A frame is what the screen should look like: one string per screen row, and
+// a hash of each so two frames can be compared without comparing their bytes.
+// An image row is a couple of kilobytes of placeholder cells, so what a paint
+// costs is decided by how much of the frame it can leave alone.
+struct frame {
+    char              **row;
+    unsigned long long *hash;
+    int                 n, cap;
+};
+
+static struct frame shown;      /* what the terminal is displaying */
+static struct frame built;      /* what it should display */
+static int shown_rows, shown_cols;
+
+static unsigned long long row_hash(const char *s)
+{
+    unsigned long long h = 1469598103934665603ULL;
+    for (; *s; s++) {
+        h ^= (unsigned char)*s;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static void frame_reset(struct frame *f)
+{
+    for (int i = 0; i < f->n; i++)
+        free(f->row[i]);
+    f->n = 0;
+}
+
+// Takes ownership of `s`.
+static void frame_push(struct frame *f, char *s)
+{
+    if (!s)
+        return;
+    if (f->n == f->cap) {
+        int cap = f->cap ? f->cap * 2 : 64;
+        char **r = realloc(f->row, (size_t)cap * sizeof *r);
+        unsigned long long *h = realloc(f->hash, (size_t)cap * sizeof *h);
+        if (r)
+            f->row = r;
+        if (h)
+            f->hash = h;
+        if (!r || !h) {
+            free(s);
+            return;
+        }
+        f->cap = cap;
+    }
+    f->hash[f->n] = row_hash(s);
+    f->row[f->n++] = s;
+}
+
+static void frame_swap(struct frame *a, struct frame *b)
+{
+    struct frame t = *a;
+    *a = *b;
+    *b = t;
+}
+
+// Splits one stored row into the screen rows it draws as at width W, each
+// carrying the style the cut before it left behind, and appends them.
+static void row_into_frame(struct frame *f, const char *s, int W)
+{
+    size_t n = strlen(s);
+    struct style st = {{0}, 0};
+    size_t i = 0, start = 0;
+
+    for (;;) {
+        size_t cells = 0;
+        size_t line_start = start;
+        struct style at_start = st;
+        while (i < n) {
+            size_t was = cells;
+            size_t next = step(s, n, i, &cells, &st);
+            if (cells > (size_t)W && was > 0)
+                break;
+            i = next;
+        }
+
+        size_t body = i - line_start;
+        char  *out = malloc(at_start.len + body + 1);
+        if (!out)
+            return;
+        memcpy(out, at_start.buf, at_start.len);
+        memcpy(out + at_start.len, s + line_start, body);
+        out[at_start.len + body] = '\0';
+        frame_push(f, out);
+
+        start = i;
+        if (i >= n)
+            return;
+    }
+}
+
+static char *blank_row(void) { return strdup(""); }
 
 // Unwrapped output that has not reached its newline still shows.
 static int window_pending(struct item *pending)
@@ -519,6 +585,51 @@ int viewport_visible(unsigned mark)
     return first >= nitems ? mark >= next_id : mark >= items[first].id;
 }
 
+// How far the frame moved as a whole. Scrolling shifts every row, so without
+// this a wheel tick would redraw the screen; with it the terminal moves what
+// it already has and only the rows that came into view are sent.
+static int shift_score(int body, int k)
+{
+    int score = 0;
+    for (int i = 0; i < body; i++) {
+        int j = i + k;
+        if (j < 0 || j >= body)
+            continue;
+        if (built.hash[i] == shown.hash[j] && built.row[i][0])
+            score++;
+    }
+    return score;
+}
+
+static int frame_shift(int body, int *score_out)
+{
+    *score_out = 0;
+    if (shown.n < body)
+        return 0;
+
+    // Staying put is the baseline a shift has to beat. Without it a screen of
+    // repeated rows — an image is exactly that — scores just as well shifted
+    // as not, and the frame would be scrolled for nothing.
+    int best = shift_score(body, 0);
+    int best_k = 0;
+    for (int k = -(body - 1); k < body; k++) {
+        if (k == 0)
+            continue;
+        int score = shift_score(body, k);
+        if (score > best) {
+            best = score;
+            best_k = k;
+        }
+    }
+    *score_out = best_k ? best : 0;
+    return best_k;
+}
+
+void viewport_forget(void)
+{
+    frame_reset(&shown);
+}
+
 void viewport_paint(void)
 {
     if (!active || suspended)
@@ -548,48 +659,86 @@ void viewport_paint(void)
     if (skip < 0)
         skip = 0;
 
+    // Every screen row the window could show, then the slice of it that fits.
+    struct frame all = {0};
+    for (int r = first; r < total; r++) {
+        struct item *it = (r == nitems) ? &pending : &items[r];
+        item_rows(it, W);
+        if (it->nrows == 0 && !it->render)
+            frame_push(&all, blank_row());
+        for (int i = 0; i < it->nrows; i++)
+            row_into_frame(&all, it->rows[i], W);
+        if (all.n >= skip + body)
+            break;
+    }
+
+    frame_reset(&built);
+
     // A transcript shorter than the window sits on the bottom of it, against
     // the chrome, rather than hanging from the top of the screen.
-    int fill = have - skip;
-    int pad = body - fill;
-    if (pad < 0)
-        pad = 0;
+    int content = all.n - skip;
+    if (content < 0)
+        content = 0;
+    if (content > body)
+        content = body;
+    for (int i = content; i < body; i++)
+        frame_push(&built, blank_row());
+    for (int i = 0; i < content; i++)
+        frame_push(&built, strdup(all.row[skip + i]));
+
+    frame_reset(&all);
+    free(all.row);
+    free(all.hash);
+
+    for (int i = 0; i < ch; i++)
+        frame_push(&built, strdup(chrome_rows[i]));
+
+    // A resize invalidates everything the terminal is showing.
+    if (shown_rows != H || shown_cols != W) {
+        frame_reset(&shown);
+        shown_rows = H;
+        shown_cols = W;
+    }
 
     direct_str("\x1b[?2026h");
     direct_str("\x1b[?25l");
     direct_str("\x1b[?7l");
 
-    int at = 1;
-    for (; at <= pad; at++) {
-        cup(at, 1);
-        direct_str("\x1b[0m\x1b[K");
-    }
+    // Let the terminal move the rows it already has, and send only what that
+    // leaves uncovered.
+    int score = 0;
+    int k = shown.n == built.n ? frame_shift(body, &score) : 0;
+    if (k != 0 && score >= body / 3) {
+        char esc[32];
+        snprintf(esc, sizeof esc, "\x1b[1;%dr", body);
+        direct_str(esc);
+        snprintf(esc, sizeof esc, "\x1b[%d%c", k > 0 ? k : -k, k > 0 ? 'S' : 'T');
+        direct_str(esc);
+        direct_str("\x1b[r");
 
-    for (int r = first; r < total && at <= body; r++) {
-        struct item *it = (r == nitems) ? &pending : &items[r];
-        item_rows(it, W);
-        for (int i = 0; i < it->nrows && at <= body; i++) {
-            int need = wrap_count(it->rows[i], W);
-            if (skip >= need) {
-                skip -= need;
-                continue;
+        // Follow the move in the record of what is displayed, so the diff
+        // below only names rows the scroll did not put right.
+        for (int i = 0; i < body; i++) {
+            int j = k > 0 ? i : body - 1 - i;
+            int from = j + k;
+            free(shown.row[j]);
+            if (from >= 0 && from < body) {
+                shown.row[j] = strdup(shown.row[from]);
+                shown.hash[j] = shown.hash[from];
+            } else {
+                shown.row[j] = blank_row();
+                shown.hash[j] = row_hash("");
             }
-            // A row only partly above the window would need a mid-row start;
-            // the window is sized so this only trims the oldest entry, and
-            // starting it whole is close enough to keep simple.
-            skip = 0;
-            at += paint_row(it->rows[i], at, body - at + 1, W);
         }
     }
-    for (; at <= body; at++) {
-        cup(at, 1);
-        direct_str("\x1b[0m\x1b[K");
-    }
 
-    for (int i = 0; i < ch; i++) {
-        cup(body + 1 + i, 1);
+    for (int i = 0; i < built.n; i++) {
+        if (i < shown.n && shown.hash[i] == built.hash[i] &&
+            strcmp(shown.row[i], built.row[i]) == 0)
+            continue;
+        cup(i + 1, 1);
         direct_str("\x1b[0m\x1b[K");
-        direct_str(chrome_rows[i]);
+        direct_str(built.row[i]);
     }
 
     direct_str("\x1b[?7h");
@@ -605,6 +754,8 @@ void viewport_paint(void)
 
     direct_str("\x1b[?2026l");
     fflush(stdout);
+
+    frame_swap(&shown, &built);
     dirty = 0;
 }
 
@@ -753,5 +904,7 @@ void viewport_resume(void)
     direct_str("\x1b[?1049h");
     direct_str(MOUSE_ON);
     fflush(stdout);
+    // Whatever had the screen left it in a state this knows nothing about.
+    viewport_forget();
     viewport_paint();
 }

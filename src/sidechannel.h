@@ -18,6 +18,11 @@ void sidechannel_poll(void);
 // Advances the spinner on every question still waiting for its answer.
 void sidechannel_tick(void);
 
+// Questions still waiting are painted as chrome, one row each, pinned under
+// the sticky prompt rather than scrolling away in the transcript.
+int  sidechannel_rows(void);
+void sidechannel_paint(int budget);
+
 int sidechannel_busy(void);
 
 void sidechannel_close_all(void);
