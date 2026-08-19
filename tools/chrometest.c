@@ -1,6 +1,6 @@
 // The chrome is one painter composing one stack, in one order:
 //
-//   gap, sticky prompt, pending side turns, queued lines, blank, spinner, input
+//   gap, pending side turns, sticky prompt, queued lines, blank, spinner, input
 //
 // Every /btw bug so far has been a section drawn twice, drawn by the wrong
 // painter, or left on screen after the thing it described was over. This
@@ -187,10 +187,10 @@ int main(void)
     if (spin < 0)
         fail("the spinner is on screen");
 
-    if (sticky >= 0 && btw >= 0 && sticky > btw)
-        fail("the sticky prompt sits above the pending side turn");
-    if (btw >= 0 && spin >= 0 && btw > spin)
-        fail("the pending side turn sits above the spinner");
+    if (btw >= 0 && sticky >= 0 && btw > sticky)
+        fail("the pending side turn sits above the sticky prompt");
+    if (sticky >= 0 && spin >= 0 && sticky > spin)
+        fail("the sticky prompt sits above the spinner");
     if (btw >= 0 && spin >= 0 && !row_blank(&s, spin - 1))
         fail("a blank row separates what is pinned above from the spinner");
 

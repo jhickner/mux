@@ -49,18 +49,18 @@ void chrome_modal(chrome_modal_fn fn, void *ud)
 // whole rather than clipped, cheapest first, until what is left fits over the
 // input.
 struct above {
-    int sticky;
     int side;
+    int sticky;
     int queued;
 };
 
 static int above_height(const struct above *a, int busy, int cols)
 {
     int rows = 0;
-    if (a->sticky)
-        rows += status_sticky_measure(busy);
     if (a->side)
         rows += sidechannel_rows();
+    if (a->sticky)
+        rows += status_sticky_measure(busy);
     if (a->queued)
         rows += prompt_queued_rows(bound, cols);
     // Whatever is pinned up there is followed by a blank row.
@@ -120,10 +120,12 @@ void chrome_paint(void)
 
     if (gap)
         ui_put("\n");
-    if (a.sticky)
-        status_paint_sticky(busy);
+    // A side turn is a question already asked and still out; the sticky prompt
+    // is the one being answered now. The nearer the input, the more current.
     if (a.side)
         sidechannel_paint(chrome_rows_left());
+    if (a.sticky)
+        status_paint_sticky(busy);
     if (a.queued)
         prompt_paint_queued(bound, chrome_rows_left());
 
