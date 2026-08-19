@@ -844,6 +844,9 @@ static char *read_loop(struct prompt *p)
         if (!tty_read(&ev, wait)) {
             if (resizing) {
                 resizing = 0;
+                // Whatever else drew on the pane while it was resizing, this
+                // frame goes over all of it.
+                viewport_forget();
                 repaint(p);
             } else {
                 if (animating && p->animate_tick) {

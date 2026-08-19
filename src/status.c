@@ -37,6 +37,7 @@ static unsigned sticky_mark;
 
 static unsigned resize_epoch;
 static double   resize_at;
+static int      resize_owed;    /* a settled repaint is still to come */
 
 double status_elapsed(void)
 {
@@ -73,9 +74,20 @@ static int size_changing(void)
     if (epoch != resize_epoch) {
         resize_epoch = epoch;
         resize_at = now_seconds();
+        resize_owed = 1;
         dirty = 1;
     }
-    return resize_at > 0 && (now_seconds() - resize_at) * 1000.0 < TTY_RESIZE_SETTLE_MS;
+    if (resize_owed && (now_seconds() - resize_at) * 1000.0 >= TTY_RESIZE_SETTLE_MS) {
+        resize_owed = 0;
+        // While a pane is being resized mux is not the only thing writing to
+        // it: tmux replays its own copy of the screen. Nothing on it can be
+        // trusted to still be what was last painted, so the frame that ends a
+        // resize is sent whole.
+        viewport_forget();
+        dirty = 1;
+        return 0;
+    }
+    return resize_owed;
 }
 
 int spin_advance(int *frame, double *at)
