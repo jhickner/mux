@@ -28,6 +28,9 @@ static const struct {
     [UI_STICKY]  = { NULL, COLOR_BASE9, 90 },
     [UI_STICKY_DONE] = { NULL, COLOR_BASE11, 90 },
     [UI_BRAND]   = { NULL, COLOR_BASE12, 0 },
+    // A side turn's question, washed like the echo and the sticky prompt: it
+    // is something the user asked, not something the reply said.
+    [UI_SIDE]    = { NULL, COLOR_BASE12, 90 },
     [UI_CHROME]  = { NULL, COLOR_UI_BORDER_FLOAT, 0 },
     [UI_DIM]     = { NULL, COLOR_UI_DIM, 0 },
     [UI_BODY]    = { NULL, COLOR_BASE5, 0 },
@@ -95,13 +98,13 @@ static const struct {
 
 static const struct {
     const char  *key;
-    enum ui_role roles[8];
+    enum ui_role roles[10];
 } GROUPS[] = {
     [UI_GROUP_INPUT]    = {SETTING_COLOR_INPUT,
                            {UI_ACCENT, UI_ECHO, UI_STICKY, UI_RESET}},
     [UI_GROUP_EMPHASIS] = {SETTING_COLOR_EMPHASIS,
                            {UI_BOLD, UI_ITALIC, UI_CODE, UI_HEADING, UI_SPIN,
-                            UI_BRAND, UI_TOOL, UI_RESET}},
+                            UI_BRAND, UI_SIDE, UI_TOOL, UI_RESET}},
 };
 #define GROUP_N (COUNT(GROUPS))
 

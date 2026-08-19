@@ -106,12 +106,17 @@ static void btw_render(void *ud, int cols)
     char mark[16];
     snprintf(mark, sizeof mark, "%s", b->failed ? BTW_FAIL : BTW_DONE);
 
+    // A blank row above: this lands wherever the main turn had got to, which
+    // is as likely as not to be the last line of some tool's output.
+    ui_put("\n");
+
     int budget = ui_columns() - 5;
     struct ui_wrap w = {0};
     w.budget = (size_t)(budget > 4 ? budget : 4);
     w.gutter = UI_BAR " ";
     w.mark = mark;
-    w.role = UI_BRAND;
+    w.role = UI_SIDE;
+    w.erase = 1;
     w.paint_empty = 1;
     ui_wrap_paint(b->question, &w);
 
@@ -175,7 +180,10 @@ void sidechannel_paint(int budget)
             room = 8;
         size_t fit = ui_fit_visible(flat, strlen(flat), (size_t)room);
 
-        ui_esc(ui_style(UI_BRAND));
+        // Erased with the style already set, so the wash covers the whole row
+        // rather than stopping where the text does.
+        ui_esc(ui_style(UI_SIDE));
+        ui_esc(UI_ERASE_EOL);
         ui_put(UI_BAR);
         ui_put(" ");
         ui_put(SPIN[spin_frame % SPIN_N]);
@@ -184,7 +192,6 @@ void sidechannel_paint(int budget)
         if (flat[fit])
             ui_put("\u2026");
         ui_esc(ui_style(UI_RESET));
-        ui_esc(UI_ERASE_EOL);
         ui_put("\n");
         budget--;
     }

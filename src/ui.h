@@ -11,6 +11,7 @@ enum ui_role {
     UI_STICKY,
     UI_STICKY_DONE,
     UI_BRAND,
+    UI_SIDE,
     UI_CHROME,
     UI_DIM,
     UI_BODY,
