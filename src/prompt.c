@@ -790,6 +790,14 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         viewport_scroll(-(tty_rows() / 2));
         return KEY_OK;
 
+    case TK_SCROLL_UP:
+        viewport_scroll(3);
+        return KEY_OK;
+
+    case TK_SCROLL_DOWN:
+        viewport_scroll(-3);
+        return KEY_OK;
+
     default: {
         static const ReplKey MAP[] = {
             [TK_NEWLINE] = REPL_KEY_NEWLINE,   [TK_BACKSPACE] = REPL_KEY_BACKSPACE,

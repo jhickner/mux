@@ -46,6 +46,11 @@ static int suspended;
 static int scrolled;
 static int dirty;
 
+// Button reporting with SGR coordinates: enough for the wheel, and it leaves
+// shift-drag to the terminal so selecting text still works.
+#define MOUSE_ON  "\x1b[?1000h\x1b[?1006h"
+#define MOUSE_OFF "\x1b[?1000l\x1b[?1006l"
+
 static void direct(const char *s, size_t n)
 {
     fwrite(s, 1, n, stdout);
@@ -655,14 +660,13 @@ void viewport_scroll_end(void)
 
 /* --- the screen ---------------------------------------------------------- */
 
-// Mouse reporting stays off until tty.c can decode the events: enabling it
-// without a parser turns every wheel tick into junk in the prompt.
 void viewport_begin(void)
 {
     if (active)
         return;
     active = 1;
     direct_str("\x1b[?1049h");
+    direct_str(MOUSE_ON);
     fflush(stdout);
     viewport_paint();
 }
@@ -673,6 +677,7 @@ void viewport_end(void)
         return;
     active = 0;
     suspended = 0;
+    direct_str(MOUSE_OFF);
     direct_str("\x1b[?25h");
     direct_str("\x1b[?1049l");
     fflush(stdout);
@@ -700,6 +705,7 @@ void viewport_suspend(void)
     if (!active || suspended)
         return;
     suspended = 1;
+    direct_str(MOUSE_OFF);
     direct_str("\x1b[?25h");
     direct_str("\x1b[?1049l");
     fflush(stdout);
@@ -711,6 +717,7 @@ void viewport_resume(void)
         return;
     suspended = 0;
     direct_str("\x1b[?1049h");
+    direct_str(MOUSE_ON);
     fflush(stdout);
     viewport_paint();
 }

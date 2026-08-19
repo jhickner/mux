@@ -29,6 +29,11 @@ typedef enum {
     TK_PAGE_DOWN,
     TK_RESIZE,
     TK_EOF,
+    TK_SCROLL_UP,
+    TK_SCROLL_DOWN,
+    // Read and understood, but nothing the caller acts on — a mouse button, or
+    // the release half of a wheel tick.
+    TK_NONE,
 } tty_key;
 
 typedef struct {
