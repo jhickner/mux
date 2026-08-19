@@ -46,13 +46,16 @@ tests: $(TOOLS)
 $(BUILD)/palette: tools/palette.c src/vendor/colors.h | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ tools/palette.c
 
-$(BUILD)/spintest: tools/spintest.c src/status.o src/prompt.o src/files.o src/paste.o src/settings.o src/tty.o src/ui.o src/bash.o src/vendor/impl.o src/vendor/cJSON.o src/text.o | $(BUILD)
+$(BUILD)/spintest: tools/spintest.c src/status.o src/block.o src/prompt.o src/files.o src/paste.o src/settings.o src/tty.o src/ui.o src/bash.o src/vendor/impl.o src/vendor/cJSON.o src/text.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^) $(LIBS)
 
-$(BUILD)/statustest: tools/statustest.c src/status.o src/tty.o src/ui.o src/settings.o src/vendor/impl.o src/vendor/cJSON.o src/text.o | $(BUILD)
+$(BUILD)/blocktest: tools/blocktest.c src/block.o src/ui.o src/tty.o src/settings.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
-$(BUILD)/reflowtest: tools/reflowtest.c src/ui.o src/settings.o src/tty.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
+$(BUILD)/statustest: tools/statustest.c src/status.o src/block.o src/tty.o src/ui.o src/settings.o src/vendor/impl.o src/vendor/cJSON.o src/text.o | $(BUILD)
+	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
+
+$(BUILD)/reflowtest: tools/reflowtest.c src/ui.o src/block.o src/settings.o src/tty.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
 $(BUILD)/toolstyletest: tools/toolstyletest.c src/toolstyle.o src/vendor/cJSON.o | $(BUILD)
@@ -67,7 +70,7 @@ $(BUILD)/codextest: tools/codextest.c src/vendor/impl.o src/vendor/cJSON.o | $(B
 $(BUILD)/groktest: tools/groktest.c src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
-$(BUILD)/filedifftest: tools/filedifftest.c src/filediff.o src/ui.o src/settings.o src/tty.o src/vendor/impl.o src/vendor/cJSON.o src/text.o | $(BUILD)
+$(BUILD)/filedifftest: tools/filedifftest.c src/filediff.o src/ui.o src/block.o src/settings.o src/tty.o src/vendor/impl.o src/vendor/cJSON.o src/text.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
 $(BUILD)/claudetest: tools/claudetest.c src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
@@ -79,7 +82,7 @@ $(BUILD)/pitest: tools/pitest.c src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 $(BUILD)/agenttabstest: tools/agenttabstest.c src/agenttabs.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
-$(BUILD)/imagetest: tools/imagetest.c src/image.o src/md.o src/ui.o src/settings.o src/tty.o src/vendor/impl.o src/vendor/cJSON.o src/text.o | $(BUILD)
+$(BUILD)/imagetest: tools/imagetest.c src/image.o src/md.o src/ui.o src/block.o src/settings.o src/tty.o src/vendor/impl.o src/vendor/cJSON.o src/text.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
 $(BUILD)/pastetest: tools/pastetest.c src/paste.o | $(BUILD)
@@ -88,13 +91,13 @@ $(BUILD)/pastetest: tools/pastetest.c src/paste.o | $(BUILD)
 $(BUILD)/transcripttest: tools/transcripttest.c src/transcript.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
-$(BUILD)/sessionviewtest: tools/sessionviewtest.c src/sessionview.o src/highlight.o src/toolstyle.o src/ui.o src/settings.o src/tty.o src/text.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
+$(BUILD)/sessionviewtest: tools/sessionviewtest.c src/sessionview.o src/highlight.o src/toolstyle.o src/ui.o src/block.o src/settings.o src/tty.o src/text.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
 $(BUILD)/highlighttest: tools/highlighttest.c src/highlight.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
-CHECKS  := reflowtest toolstyletest sessionlisttest claudetest codextest \
+CHECKS  := blocktest reflowtest toolstyletest sessionlisttest claudetest codextest \
            groktest filedifftest pitest agenttabstest statustest transcripttest \
            sessionviewtest highlighttest
 

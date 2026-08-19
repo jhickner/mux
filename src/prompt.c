@@ -9,6 +9,7 @@
 
 #include "app.h"
 #include "bash.h"
+#include "block.h"
 #include "files.h"
 #include "paste.h"
 #include "settings.h"
@@ -18,8 +19,6 @@
 #include "text.h"
 
 #define REPL_STYLE_NONE ((signed char)-1)
-
-#define QUEUE_ROWS_MAX 64
 
 struct cell {
     uint32_t    cp;
@@ -36,11 +35,8 @@ struct frame {
 struct prompt {
     Repl         repl;
     struct frame frame;
-    int          painted_rows;
     int          painted_cols;
-    int          caret_row;
-    int          caret_col;
-    int          caret_frame_row;
+    int          above_painted;
     char        *history_path;
     prompt_live_fn live_command;
     void          *live_ud;
@@ -59,10 +55,6 @@ struct prompt {
     void        *restart_ud;
     int          live_block;
     int          frame_ok;
-    char        *painted_head;
-    int          painted_queued;
-    int          above_widths[QUEUE_ROWS_MAX];
-    int          above_rows;
 };
 
 static void history_append(struct prompt *p, const char *line)
@@ -201,11 +193,6 @@ static size_t queued_budget(int cols)
     return (size_t)(cols - 2 > 4 ? cols - 2 : 4);
 }
 
-static int rows_for(size_t cells, int cols)
-{
-    return cells ? (int)((cells - 1) / (size_t)cols) + 1 : 1;
-}
-
 static const char *head_text(const struct prompt *p)
 {
     return p->live_block ? NULL : status_sticky_offscreen();
@@ -234,78 +221,25 @@ static struct ui_wrap bar_wrap(size_t budget, enum ui_role role, int cap,
     return w;
 }
 
-static int reflowed_rows(const char *text, size_t budget, int cols, int cap,
-                         const char *mark)
+static int painted_rows(const char *text, size_t budget, int cap, const char *mark)
 {
     struct ui_wrap w = bar_wrap(budget, UI_RESET, cap, mark);
     w.measure = 1;
-    w.reflow_cols = cols;
     return ui_wrap_paint(text, &w);
-}
-
-static int input_offset(const struct prompt *p, int cols)
-{
-    int up = 0;
-    for (int y = 0; y < p->caret_frame_row && y < p->frame.rows; y++)
-        up += rows_for((size_t)row_extent(&p->frame, y), cols);
-    return up + p->caret_col / cols;
-}
-
-static int caret_offset(const struct prompt *p, int cols)
-{
-    if (p->painted_rows == 0 || cols == p->painted_cols || p->painted_cols <= 0)
-        return p->caret_row;
-
-    int up = 0;
-    size_t budget = queued_budget(p->painted_cols);
-    if (p->painted_head)
-        up += reflowed_rows(p->painted_head, sticky_budget(p->painted_cols),
-                            cols, STICKY_LINES, STICKY_DONE) + 1;
-    for (int i = 0; i < p->painted_queued && i < p->queued_count; i++)
-        up += reflowed_rows(p->queued[i], budget, cols, 0, NULL);
-
-    return up + input_offset(p, cols);
-}
-
-static void goto_origin(struct prompt *p)
-{
-    int up = caret_offset(p, ui_columns());
-    if (up > 0) {
-        char esc[32];
-        snprintf(esc, sizeof esc, "\x1b[%dA", up);
-        ui_esc(esc);
-    }
-    ui_esc("\r");
-    p->caret_row = 0;
 }
 
 static void erase_block(struct prompt *p)
 {
-    if (p->painted_rows == 0)
-        return;
-    goto_origin(p);
-    ui_esc(UI_ERASE_BELOW);
-    fflush(stdout);
-    p->painted_rows = 0;
-    free(p->painted_head);
-    p->painted_head = NULL;
-    p->painted_queued = 0;
+    p->above_painted = 0;
+    block_clear();
 }
 
+// Ctrl-D leaves what was painted above the input where it is: those rows stop
+// being chrome and stay in the transcript.
 static void erase_input(struct prompt *p)
 {
-    if (p->painted_rows == 0)
-        return;
-    int up = input_offset(p, ui_columns());
-    if (up > 0)
-        ui_move(up, 'A');
-    ui_esc("\r");
-    ui_esc(UI_ERASE_BELOW);
-    fflush(stdout);
-    p->painted_rows = 0;
-    free(p->painted_head);
-    p->painted_head = NULL;
-    p->painted_queued = 0;
+    block_keep(p->above_painted);
+    p->above_painted = 0;
 }
 
 static int caret_is_synthetic(const Repl *r)
@@ -313,43 +247,36 @@ static int caret_is_synthetic(const Repl *r)
     return r->cursor >= r->len || r->buf[r->cursor] == '\n';
 }
 
-// Narrow terminals floor the wrap budget above what fits, so a painted line can
-// span several screen rows; measure with reflow so the offsets a repaint rewinds
-// by match what the terminal actually holds.
 static int rows_above(const struct prompt *p, const char *head, int cols, int show_queued)
 {
-    int rows = head ? reflowed_rows(head, sticky_budget(cols), cols, STICKY_LINES,
-                                    STICKY_DONE) + 1 : 0;
+    int rows = head ? painted_rows(head, sticky_budget(cols), STICKY_LINES, STICKY_DONE) + 1
+                    : 0;
     if (!show_queued)
         return rows;
     size_t budget = queued_budget(cols);
     for (int i = 0; i < p->queued_count; i++)
-        rows += reflowed_rows(p->queued[i], budget, cols, 0, NULL);
+        rows += painted_rows(p->queued[i], budget, 0, NULL);
     return rows;
 }
 
-// A block taller than the screen cannot be rewound: its top has already scrolled
-// off, so each repaint stacks another copy into the scrollback. Drop the queued
-// lines, then the sticky head, until what we paint fits.
-static int fit_above(const struct prompt *p, const char **head, int *show_queued,
-                     int cols, int input_rows)
+// The block is painted onto absolute rows and never wraps, so it has to fit the
+// screen. Drop the queued lines, then the sticky head, until it does.
+static void fit_above(const struct prompt *p, const char **head, int *show_queued,
+                      int cols, int input_rows)
 {
     int limit = tty_rows() - 1;
 
     *show_queued = !p->live_block;
-    int rows = rows_above(p, *head, cols, *show_queued);
-    if (rows + input_rows <= limit)
-        return rows;
+    if (rows_above(p, *head, cols, *show_queued) + input_rows <= limit)
+        return;
 
     if (*show_queued) {
         *show_queued = 0;
-        rows = rows_above(p, *head, cols, 0);
-        if (rows + input_rows <= limit)
-            return rows;
+        if (rows_above(p, *head, cols, 0) + input_rows <= limit)
+            return;
     }
 
     *head = NULL;
-    return 0;
 }
 
 static void paint_bars(const char *text, size_t budget, enum ui_role role, int cap,
@@ -409,77 +336,54 @@ static void emit_input(struct prompt *p, int rows)
         if (y + 1 < rows)
             ui_put("\n");
     }
-
-    ui_esc(UI_ERASE_BELOW);
 }
 
 static void paint_block(struct prompt *p, int *rows_out, int *caret_row, int *caret_col)
 {
     int cols = ui_columns();
     const char *head = head_text(p);
+    int cached = p->frame_ok && cols == p->painted_cols && p->frame.cells && p->frame.rows > 0;
 
-    if (p->frame_ok && cols == p->painted_cols && p->frame.cells && p->frame.rows > 0) {
-        int input_rows = p->frame.rows;
-        int show_queued = 0;
-        int above = fit_above(p, &head, &show_queued, cols, input_rows);
-        *rows_out = input_rows + above;
-        *caret_row = above + (p->frame.have_cursor ? p->frame.cursor_y : input_rows - 1);
-        *caret_col = p->frame.have_cursor ? p->frame.cursor_x : 0;
-        paint_above(p, head, cols, show_queued);
-        emit_input(p, input_rows);
-        // The head can appear or change without the frame being rebuilt, and a
-        // stale record of it drops its rows from the offset a resize repaints
-        // against, stranding the old block on screen.
-        free(p->painted_head);
-        p->painted_head = head ? strdup(head) : NULL;
-        p->painted_queued = show_queued ? p->queued_count : 0;
-        p->caret_row = *caret_row;
-        p->caret_col = *caret_col;
-        p->caret_frame_row = p->frame.have_cursor ? p->frame.cursor_y : input_rows - 1;
-        return;
+    int input_rows;
+    if (cached) {
+        input_rows = p->frame.rows;
+    } else {
+        input_rows = repl_input_rows(&p->repl, cols) + repl_dropdown_rows(&p->repl);
+        if (input_rows < 1)
+            input_rows = 1;
     }
-
-    int input_rows = repl_input_rows(&p->repl, cols);
-    int rows = input_rows + repl_dropdown_rows(&p->repl);
-    if (rows < 1)
-        rows = 1;
 
     int show_queued = 0;
-    int above = fit_above(p, &head, &show_queued, cols, rows);
-    *rows_out = rows + above;
-    *caret_row = above;
-    *caret_col = 0;
+    fit_above(p, &head, &show_queued, cols, input_rows);
 
-    frame_size(&p->frame, rows, cols);
-    if (!p->frame.cells || p->frame.rows < rows || p->frame.cols < cols) {
-        *rows_out = 1;
-        *caret_row = 0;
+    if (!cached) {
+        frame_size(&p->frame, input_rows, cols);
+        if (!p->frame.cells || p->frame.rows < input_rows || p->frame.cols < cols) {
+            *rows_out = 1;
+            *caret_row = 0;
+            *caret_col = 0;
+            p->painted_cols = cols;
+            p->frame_ok = 0;
+            p->above_painted = 0;
+            return;
+        }
+        repl_render(&p->repl, 0, 0, cols, true, draw_cell, &p->frame);
         p->painted_cols = cols;
-        p->frame_ok = 0;
-        free(p->painted_head);
-        p->painted_head = NULL;
-        p->painted_queued = 0;
-        p->caret_row = p->caret_col = p->caret_frame_row = 0;
-        return;
+        p->frame_ok = 1;
     }
-    repl_render(&p->repl, 0, 0, cols, true, draw_cell, &p->frame);
 
+    // Rows are counted off what was painted, not off what the layout predicted,
+    // so the caret lands on the block row it was drawn into.
+    int base = ui_sink_rows();
     paint_above(p, head, cols, show_queued);
+    p->above_painted = ui_sink_rows() - base;
 
-    *caret_row = above;
-    *caret_row += p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
+    emit_input(p, input_rows);
+
+    *rows_out = p->above_painted + input_rows;
+    *caret_row = p->above_painted +
+                 (p->frame.have_cursor ? p->frame.cursor_y : input_rows - 1);
     *caret_col = p->frame.have_cursor ? p->frame.cursor_x : 0;
-
-    p->painted_cols = cols;
-    p->frame_ok = 1;
-    free(p->painted_head);
-    p->painted_head = head ? strdup(head) : NULL;
-    p->painted_queued = show_queued ? p->queued_count : 0;
-    p->caret_row = *caret_row;
-    p->caret_col = *caret_col;
-    p->caret_frame_row = p->frame.have_cursor ? p->frame.cursor_y : rows - 1;
-
-    emit_input(p, rows);
 }
 
 static void repaint(struct prompt *p)
@@ -488,41 +392,14 @@ static void repaint(struct prompt *p)
 
     p->live_block = 0;
 
-    // Nothing we paint would fit, and rewinding geometry the terminal has
-    // already reflowed only strands copies of the block. Sit the resize out and
-    // start clean once there is room again.
     if (ui_too_narrow()) {
-        p->painted_rows = 0;
-        p->caret_row = p->caret_col = 0;
-        p->frame_ok = 0;
+        erase_block(p);
         return;
     }
 
-    ui_sync_begin();
-
-    ui_scroll_track(0);
-    goto_origin(p);
-    ui_esc(UI_CURSOR_HIDE);
+    block_begin();
     paint_block(p, &rows, &caret_row, &caret_col);
-
-    int up = (rows - 1) - caret_row;
-    if (up > 0) {
-        char esc[32];
-        snprintf(esc, sizeof esc, "\x1b[%dA", up);
-        ui_esc(esc);
-    }
-    ui_esc("\r");
-    if (caret_col > 0) {
-        char esc[32];
-        snprintf(esc, sizeof esc, "\x1b[%dC", caret_col);
-        ui_esc(esc);
-    }
-    ui_esc(UI_CURSOR_SHOW);
-    ui_scroll_track(1);
-    ui_sync_end();
-    fflush(stdout);
-
-    p->painted_rows = rows;
+    block_end(caret_row, caret_col);
 }
 
 void prompt_echo_message(const char *text)
@@ -577,7 +454,6 @@ void prompt_free(struct prompt *p)
     free(p->frame.cells);
     free(p->file_root);
     free(p->history_path);
-    free(p->painted_head);
     for (int i = 0; i < p->queued_count; i++)
         free(p->queued[i]);
     free(p->queued);
@@ -622,7 +498,6 @@ static void paste_clipboard(struct prompt *p, int live)
 
     if (live)
         return;
-    erase_block(p);
     ui_note("clipboard is empty");
     repaint(p);
 }
@@ -671,7 +546,6 @@ static void edit_in_editor(struct prompt *p, int live)
     char path[256];
     if (!editor_temp(path, sizeof path)) {
         if (!live) {
-            erase_block(p);
             ui_note("could not create a temp file for $EDITOR");
             repaint(p);
         }
@@ -682,7 +556,6 @@ static void edit_in_editor(struct prompt *p, int live)
     if (!f) {
         unlink(path);
         if (!live) {
-            erase_block(p);
             ui_note("could not write %s", path);
             repaint(p);
         }
@@ -697,7 +570,6 @@ static void edit_in_editor(struct prompt *p, int live)
     if (!wrote) {
         unlink(path);
         if (!live) {
-            erase_block(p);
             ui_note("could not write %s", path);
             repaint(p);
         }
@@ -708,7 +580,6 @@ static void edit_in_editor(struct prompt *p, int live)
     if ((size_t)snprintf(cmd, sizeof cmd, "%s '%s'", editor, path) >= sizeof cmd) {
         unlink(path);
         if (!live) {
-            erase_block(p);
             ui_note("$EDITOR command is too long");
             repaint(p);
         }
@@ -731,6 +602,7 @@ static void edit_in_editor(struct prompt *p, int live)
     }
     ui_raw(1);
     ui_cursor_plain();
+    block_forget();
 
     int ok = status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
     if (ok) {
@@ -766,14 +638,10 @@ static void cycle_colors(struct prompt *p, int live, int mine)
 
     if (live)
         status_pause();
-    else
-        erase_block(p);
 
     p->frame_ok = 0;
     if (p->replay) {
         status_sticky_erased();
-        p->painted_rows = 0;
-        p->caret_row = 0;
         p->replay(p->replay_ud);
     }
     ui_esc(ui_style(UI_BRAND));
@@ -836,10 +704,9 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
             if (live)
                 return KEY_OK;
             status_sticky_erased();
-            p->painted_rows = 0;
-            p->caret_row = 0;
             ui_esc(UI_CLEAR_SCREEN);
             fflush(stdout);
+            block_cleared();
             return KEY_OK;
         }
         feed(p, REPL_KEY_CHAR, ev->cp, NULL);
@@ -931,7 +798,6 @@ static void idle_ready_hook(void *ud)
     struct prompt *p = ud;
     if (!p || !p->idle_render)
         return;
-    erase_block(p);
     p->idle_render(p->idle_ud);
     repaint(p);
 }
@@ -947,16 +813,11 @@ static void restart_check(struct prompt *p)
     erase_block(p);
     ui_flush();
     p->restart(p->restart_ud);
-    p->painted_rows = 0;
-    p->caret_row = 0;
     repaint(p);
 }
 
 static char *read_loop(struct prompt *p)
 {
-
-    p->painted_rows = 0;
-    p->caret_row = 0;
     repaint(p);
     // Covers a request that landed mid-turn, when nothing was waiting in select.
     restart_check(p);
@@ -1094,12 +955,6 @@ void prompt_live_paint(void *ud, int *rows, int *caret_row, int *caret_col)
     struct prompt *p = ud;
     p->live_block = 1;
     paint_block(p, rows, caret_row, caret_col);
-    p->painted_rows = *rows;
-}
-
-int prompt_live_offset(void *ud)
-{
-    return caret_offset(ud, ui_columns());
 }
 
 // Queued lines sit above the spinner, separated from it by a blank row.
@@ -1107,36 +962,22 @@ void prompt_queue_paint(void *ud)
 {
     struct prompt *p = ud;
 
-    p->above_rows = 0;
     if (p->queued_count == 0)
         return;
 
     int cols = ui_columns();
     size_t budget = queued_budget(cols);
-    int room = status_rows_left();
+    int room = status_rows_left() - 1;
     int used = 0;
-    for (int i = 0; i < p->queued_count && p->above_rows < QUEUE_ROWS_MAX; i++) {
-        int need = reflowed_rows(p->queued[i], budget, cols, 0, NULL);
+    for (int i = 0; i < p->queued_count; i++) {
+        int need = painted_rows(p->queued[i], budget, 0, NULL);
         if (used + need > room)
             break;
         used += need;
         struct ui_wrap w = bar_wrap(budget, UI_DIM, 0, NULL);
-        w.widths = p->above_widths + p->above_rows;
-        w.widths_max = QUEUE_ROWS_MAX - p->above_rows;
-        int rows = ui_wrap_paint(p->queued[i], &w);
-        p->above_rows += rows;
-        if (p->above_rows > QUEUE_ROWS_MAX)
-            p->above_rows = QUEUE_ROWS_MAX;
+        ui_wrap_paint(p->queued[i], &w);
     }
 
     ui_esc(UI_ERASE_EOL);
     ui_put("\n");
-    if (p->above_rows < QUEUE_ROWS_MAX)
-        p->above_widths[p->above_rows++] = 0;
-}
-
-int prompt_queue_rows(void *ud)
-{
-    struct prompt *p = ud;
-    return p->above_rows ? ui_reflow_rows(p->above_widths, p->above_rows, ui_columns()) : 0;
 }

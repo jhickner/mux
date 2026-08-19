@@ -9,15 +9,11 @@ void   status_end(void);
 
 typedef void (*status_paint_fn)(void *ud, int *rows, int *caret_row, int *caret_col);
 
-typedef int  (*status_offset_fn)(void *ud);
-
-void   status_set_below(status_paint_fn paint, status_offset_fn offset, void *ud);
+void   status_set_below(status_paint_fn paint, void *ud);
 
 typedef void (*status_above_fn)(void *ud);
 
-void   status_set_above(status_above_fn paint, status_offset_fn rows, void *ud);
-
-int    status_chrome_rows(void);
+void   status_set_above(status_above_fn paint, void *ud);
 
 // Screen rows the chrome painted so far may still spend. Callers that paint
 // above the spinner must stop once this reaches zero.

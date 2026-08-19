@@ -69,12 +69,96 @@ int tty_input_waiting(void)
 
 unsigned tty_resize_epoch(void) { return (unsigned)winch_count; }
 
+static int cpr_take(int *row, int *col)
+{
+    for (size_t i = 0; i + 1 < pending_len; i++) {
+        if (pending[i] != 0x1b || pending[i + 1] != '[')
+            continue;
+        size_t j = i + 2;
+        int    r = 0, c = 0, digits = 0;
+        while (j < pending_len && pending[j] >= '0' && pending[j] <= '9') {
+            r = r * 10 + (pending[j] - '0');
+            j++;
+            digits++;
+        }
+        if (!digits || j >= pending_len || pending[j] != ';')
+            continue;
+        j++;
+        digits = 0;
+        while (j < pending_len && pending[j] >= '0' && pending[j] <= '9') {
+            c = c * 10 + (pending[j] - '0');
+            j++;
+            digits++;
+        }
+        if (!digits || j >= pending_len || pending[j] != 'R')
+            continue;
+        memmove(pending + i, pending + j + 1, pending_len - (j + 1));
+        pending_len -= j + 1 - i;
+        *row = r > 0 ? r : 1;
+        *col = c > 0 ? c : 1;
+        return 1;
+    }
+    return 0;
+}
+
+// Everything read while waiting for the answer is typeahead, so it stays in the
+// pending buffer with only the report cut out of it.
+#define CPR_WAIT_MS 200
+
+int tty_cursor_pos(int *row, int *col)
+{
+    if (!in_raw || !isatty(STDOUT_FILENO))
+        return 0;
+
+    fputs("\x1b[6n", stdout);
+    fflush(stdout);
+
+    if (pending_pos) {
+        memmove(pending, pending + pending_pos, pending_len - pending_pos);
+        pending_len -= pending_pos;
+        pending_pos = 0;
+    }
+
+    for (int waited = 0; waited < CPR_WAIT_MS; waited += 20) {
+        if (cpr_take(row, col))
+            return 1;
+        if (pending_len == sizeof pending)
+            return 0;
+
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(STDIN_FILENO, &fds);
+        struct timeval tv = {0, 20 * 1000};
+        int r = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+        if (r < 0)
+            continue;
+        if (r == 0)
+            continue;
+        ssize_t n = read(STDIN_FILENO, pending + pending_len, sizeof pending - pending_len);
+        if (n <= 0)
+            return 0;
+        pending_len += (size_t)n;
+    }
+    return cpr_take(row, col);
+}
+
+// No window size to read means output is not a terminal; COLUMNS and LINES are
+// then the only statement of how wide the caller wants it.
+static int env_size(const char *name, int fallback)
+{
+    const char *v = getenv(name);
+    if (!v || !*v)
+        return fallback;
+    int n = atoi(v);
+    return n > 0 ? n : fallback;
+}
+
 int tty_screen_columns(void)
 {
     struct winsize ws;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0)
         return ws.ws_col;
-    return 80;
+    return env_size("COLUMNS", 80);
 }
 
 int tty_columns(void)
@@ -88,7 +172,8 @@ int tty_rows(void)
     struct winsize ws;
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0)
         return ws.ws_row < 3 ? 3 : ws.ws_row;
-    return 24;
+    int n = env_size("LINES", 24);
+    return n < 3 ? 3 : n;
 }
 
 int tty_raw_begin(void)

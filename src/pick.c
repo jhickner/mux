@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "block.h"
 #include "tty.h"
 #include "ui.h"
 
@@ -22,11 +23,14 @@ static void erase(struct view *v)
     printf("\x1b[%dA\r\x1b[J", v->rows);
     fflush(stdout);
     v->rows = 0;
+    block_forget();
 }
 
 static void paint(struct view *v, const char *title, const struct pick_item *items, int count,
                   int sel)
 {
+    block_clear();
+
     if (sel < v->top)
         v->top = sel;
     if (sel >= v->top + v->visible)

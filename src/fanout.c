@@ -8,6 +8,7 @@
 #include <time.h>
 
 #include "app.h"
+#include "block.h"
 #include "filediff.h"
 #include "md.h"
 #include "restart.h"
@@ -685,6 +686,7 @@ int fanout_run(struct session *s, const char *prompt)
         ui_esc(UI_ALT_OFF);
         ui_esc(UI_CURSOR_SHOW);
         ui_flush();
+        block_forget();
     } else {
         status_end();
     }

@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "block.h"
 #include "tty.h"
 #include "ui.h"
 
@@ -17,10 +18,13 @@ static void erase_question(struct confirm_view *view)
     fprintf(stdout, "\x1b[%dA\r\x1b[J", view->rows);
     fflush(stdout);
     view->rows = 0;
+    block_forget();
 }
 
 static void paint_question(struct confirm_view *view, const char *question)
 {
+    block_clear();
+
     if (view->rows)
         fprintf(stdout, "\x1b[%dA\r", view->rows);
     else

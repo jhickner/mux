@@ -59,7 +59,6 @@ void        ui_init(void);
 
 void ui_pad(int cells);
 
-void ui_move(int count, char direction);
 const char *ui_style(enum ui_role role);
 
 const char *ui_cycle(enum ui_group group, int delta);
@@ -75,8 +74,6 @@ void ui_flush(void);
 
 void ui_esc(const char *s);
 
-void ui_scroll_mark(void);
-int  ui_scroll_rows(void);
 void ui_scroll_track(int on);
 
 void ui_sync_begin(void);
@@ -102,6 +99,10 @@ void ui_put_spans(const char *s, size_t n, const unsigned char *roles, enum ui_r
 
 void  ui_capture_begin(int columns);
 char *ui_capture_end(void);
+
+void  ui_sink_begin(void);
+int   ui_sink_rows(void);
+char *ui_sink_end(void);
 
 struct ui_wrap {
     size_t       budget;

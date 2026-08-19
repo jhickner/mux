@@ -8,6 +8,7 @@
 #include <wchar.h>
 
 #include "app.h"
+#include "block.h"
 #include "settings.h"
 #include "tty.h"
 #include "vendor/screen_color.h"
@@ -200,52 +201,73 @@ void ui_cursor_restore(void)
     fflush(stdout);
 }
 
-void ui_raw(int on) { raw_newlines = on; }
+// The block painters render into a buffer so their rows can be blitted onto
+// absolute screen rows; nothing written here reaches the terminal, so it is
+// also where output tracking has to stop.
+static FILE  *sink;
+static char  *sink_buf;
+static size_t sink_len;
 
-#define SCROLL_LINES 512
-static int scroll_widths[SCROLL_LINES];
-static int scroll_count;
-static int scroll_lost;
-static int scroll_cells;
-static int scroll_track = 1;
-
-void ui_scroll_mark(void)
+static void out(const char *s, size_t n)
 {
-    scroll_count = 0;
-    scroll_lost = 0;
-    scroll_cells = 0;
+    fwrite(s, 1, n, sink ? sink : stdout);
 }
 
-int ui_scroll_rows(void)
+void ui_sink_begin(void)
 {
-    if (scroll_lost)
-        return SCROLL_LINES;
-    int cols = ui_columns();
-    int rows = ui_reflow_rows(scroll_widths, scroll_count, cols);
+    if (sink)
+        return;
+    sink_len = 0;
+    free(sink_buf);
+    sink_buf = NULL;
+    sink = open_memstream(&sink_buf, &sink_len);
+}
 
-    if (scroll_cells > 0 && cols > 0)
-        rows += (scroll_cells - 1) / cols;
+int ui_sink_rows(void)
+{
+    if (!sink)
+        return 0;
+    fflush(sink);
+    int rows = 0;
+    for (size_t i = 0; i < sink_len; i++)
+        if (sink_buf[i] == '\n')
+            rows++;
     return rows;
 }
+
+char *ui_sink_end(void)
+{
+    if (!sink)
+        return NULL;
+    fclose(sink);
+    sink = NULL;
+    char *taken = sink_buf;
+    sink_buf = NULL;
+    sink_len = 0;
+    return taken ? taken : strdup("");
+}
+
+void ui_raw(int on) { raw_newlines = on; }
+
+// Painting the block moves the cursor around rows the transcript does not own,
+// so tracking is off for the duration: only what the transcript itself writes
+// moves the anchor the block is placed against.
+static int scroll_track = 1;
 
 void ui_scroll_track(int on) { scroll_track = on ? 1 : 0; }
 
 static void scroll_text(const char *s, size_t n)
 {
-    if (!scroll_track || !n)
+    if (!scroll_track || sink || !n)
         return;
-    scroll_cells += (int)ui_cells_n(s, n);
+    block_wrote(s, n);
 }
 
 static void scroll_linefeed(void)
 {
-    if (!scroll_track)
+    if (!scroll_track || sink)
         return;
-    if (scroll_count < SCROLL_LINES)
-        scroll_widths[scroll_count++] = scroll_cells;
-    else
-        scroll_lost = 1;
-    scroll_cells = 0;
+    block_newline();
 }
 
 static char  *capture;
@@ -255,7 +277,7 @@ static int    capture_on, capture_cols;
 static void emit(const char *s, size_t n)
 {
     if (!capture_on) {
-        fwrite(s, 1, n, stdout);
+        out(s, n);
         return;
     }
     if (capture_len + n + 1 > capture_cap) {
@@ -297,22 +319,33 @@ void ui_putn(const char *s, size_t n)
         emit(s, n);
         return;
     }
+    if (n && scroll_track && !sink)
+        block_before_output();
     if (!raw_newlines) {
-        fwrite(s, 1, n, stdout);
+        size_t start = 0;
+        for (size_t i = 0; i < n; i++) {
+            if (s[i] != '\n')
+                continue;
+            scroll_text(s + start, i - start);
+            scroll_linefeed();
+            start = i + 1;
+        }
+        scroll_text(s + start, n - start);
+        out(s, n);
         return;
     }
     size_t start = 0;
     for (size_t i = 0; i < n; i++) {
         if (s[i] != '\n')
             continue;
-        fwrite(s + start, 1, i - start, stdout);
-        fputs("\r\n", stdout);
+        out(s + start, i - start);
+        out("\r\n", 2);
         scroll_text(s + start, i - start);
         scroll_linefeed();
         start = i + 1;
     }
     if (start < n) {
-        fwrite(s + start, 1, n - start, stdout);
+        out(s + start, n - start);
         scroll_text(s + start, n - start);
     }
 }
@@ -354,21 +387,14 @@ void ui_esc(const char *s)
 
 void ui_pad(int cells)
 {
+    // Through ui_putn, not emit: the indent is transcript width like any other,
+    // and the anchor has to count it.
     for (int i = 0; i < cells; i++)
-        emit(" ", 1);
+        ui_putn(" ", 1);
 }
 
-void ui_move(int count, char direction)
-{
-    if (count <= 0)
-        return;
-    char esc[16];
-    snprintf(esc, sizeof esc, "\x1b[%d%c", count, direction);
-    ui_esc(esc);
-}
-
-void ui_sync_begin(void) { fputs("\x1b[?2026h", stdout); }
-void ui_sync_end(void) { fputs("\x1b[?2026l", stdout); }
+void ui_sync_begin(void) { out("\x1b[?2026h", 8); }
+void ui_sync_end(void) { out("\x1b[?2026l", 8); }
 
 int ui_reflow_rows(const int *row_widths, int count, int cols)
 {
@@ -380,7 +406,7 @@ int ui_reflow_rows(const int *row_widths, int count, int cols)
     return rows;
 }
 
-void ui_flush(void) { fflush(stdout); }
+void ui_flush(void) { fflush(sink ? sink : stdout); }
 
 int ui_columns(void) { return capture_cols > 0 ? capture_cols : tty_columns(); }
 

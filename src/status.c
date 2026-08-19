@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/time.h>
 
+#include "block.h"
 #include "tty.h"
 #include "ui.h"
 #include "text.h"
@@ -24,37 +25,27 @@ static char    word[64] = "working";
 static char    note[128];
 
 static status_paint_fn  below;
-static status_offset_fn below_offset;
 static void            *below_ud;
 static status_above_fn  above;
-static status_offset_fn above_rows_fn;
 static void            *above_ud;
-static int              above_painted;
-static int              caret_row;
-static int              caret_col;
 static int              painted;
 static int              spin_width;
 static int              gap;
-static int              painted_gap;
 static int              dirty;
 
-#define STICKY_ROWS_MAX 16
 static int   sticky_on;
 static char *sticky_text;
-static int   sticky_widths[STICKY_ROWS_MAX];
-static int   sticky_rows;
 static int   sticky_drawn;
 static int   sticky_tracking;
-static int   block_tallest;
+static int   sticky_row;
+static unsigned sticky_scrolls;
 
-static int   chrome_rows = 4;
+static int   spin_row;
 
-// A block taller than the screen cannot be erased: the cursor-up rewind
-// saturates at the top of the screen while the rest has already scrolled into
-// the scrollback, so every repaint stacks another copy there. Each paint hands
-// the optional chrome a row budget and it yields once the budget is spent.
+// The block is painted onto absolute rows, so it must not be taller than the
+// screen. Each paint hands the optional chrome a row budget and it yields once
+// the budget is spent.
 static int   chrome_budget;
-static int   chrome_spent;
 
 static unsigned resize_epoch;
 static double   resize_at;
@@ -88,23 +79,16 @@ void status_set_note(const char *text)
     dirty = 1;
 }
 
-void status_set_below(status_paint_fn paint_fn, status_offset_fn offset_fn, void *ud)
+void status_set_below(status_paint_fn paint_fn, void *ud)
 {
     below = paint_fn;
-    below_offset = offset_fn;
     below_ud = ud;
 }
 
-void status_set_above(status_above_fn paint_fn, status_offset_fn rows_fn, void *ud)
+void status_set_above(status_above_fn paint_fn, void *ud)
 {
     above = paint_fn;
-    above_rows_fn = rows_fn;
     above_ud = ud;
-}
-
-static int above_rows(void)
-{
-    return above_painted && above_rows_fn ? above_rows_fn(above_ud) : 0;
 }
 
 static int size_changing(void)
@@ -114,35 +98,13 @@ static int size_changing(void)
         resize_epoch = epoch;
         resize_at = now_seconds();
         dirty = 1;
-
-        block_tallest = 0;
     }
     return resize_at > 0 && (now_seconds() - resize_at) * 1000.0 < TTY_RESIZE_SETTLE_MS;
 }
 
-static int rows_above_caret(void)
-{
-    int cols = ui_columns();
-    int spin = spin_width ? ui_reflow_rows(&spin_width, 1, cols) : 0;
-    int head = sticky_rows ? ui_reflow_rows(sticky_widths, sticky_rows, cols) : 0;
-
-    if (!below)
-        return painted_gap + head + above_rows() + (spin > 0 ? spin - 1 : 0);
-    return painted_gap + head + above_rows() + spin +
-           (below_offset ? below_offset(below_ud) : caret_row - 1);
-}
-
 static void erase_block(void)
 {
-    ui_esc(UI_CURSOR_HIDE);
-    if (painted)
-        ui_move(rows_above_caret(), 'A');
-    ui_esc("\r\x1b[J");
-    caret_row = 0;
-    spin_width = 0;
-    painted_gap = 0;
-    sticky_rows = 0;
-    above_painted = 0;
+    block_clear();
     painted = 0;
 }
 
@@ -161,16 +123,17 @@ static void humanize(double seconds, char *out, size_t n)
 
 int status_rows_left(void)
 {
-    int left = chrome_budget - chrome_spent;
+    int left = chrome_budget - ui_sink_rows();
     return left > 0 ? left : 0;
 }
 
+// The echo of the prompt was painted one row above the transcript cursor; it is
+// off screen once that many screen scrolls have gone by.
 static int sticky_gone(void)
 {
     if (!sticky_tracking)
         return 1;
-    int gone_at = tty_rows() - 2 - (block_tallest > 0 ? block_tallest - 1 : 0);
-    return ui_scroll_rows() >= (gone_at > 0 ? gone_at : 0);
+    return sticky_row - (int)(block_scrolls() - sticky_scrolls) < 1;
 }
 
 static void paint_sticky(void)
@@ -180,60 +143,30 @@ static void paint_sticky(void)
         return;
 
     int cols = ui_columns();
-    int max = STICKY_LINES;
-    if (max > STICKY_ROWS_MAX - 1)
-        max = STICKY_ROWS_MAX - 1;
 
     struct ui_wrap w = {0};
     w.budget = (size_t)(cols - 3 > 4 ? cols - 3 : 4);
     w.gutter = UI_BAR " ";
     w.role = UI_STICKY;
-    w.max_rows = max;
+    w.max_rows = STICKY_LINES;
     w.erase = 1;
-    w.widths = sticky_widths;
-    w.widths_max = STICKY_ROWS_MAX - 1;
 
-    // A narrow pane floors the wrap budget above what fits, so one painted row
-    // spans several screen rows; measure with reflow and skip the head when it
-    // no longer leaves room for the spinner and the prompt.
     struct ui_wrap m = w;
     m.measure = 1;
     m.erase = 0;
-    m.widths = NULL;
-    m.widths_max = 0;
-    m.reflow_cols = cols;
-    int need = ui_wrap_paint(sticky_text, &m) + 1;
-    if (need > status_rows_left())
+    if (ui_wrap_paint(sticky_text, &m) + 1 > status_rows_left())
         return;
-    chrome_spent += need;
 
-    sticky_rows = ui_wrap_paint(sticky_text, &w);
-    if (sticky_rows > w.widths_max)
-        sticky_rows = w.widths_max;
-
-    sticky_drawn = sticky_rows;
+    sticky_drawn = ui_wrap_paint(sticky_text, &w);
 
     ui_esc(UI_ERASE_EOL);
     ui_put("\n");
-    sticky_widths[sticky_rows++] = 0;
 }
 
 int status_sticky_rows(void)
 {
     return sticky_drawn;
 }
-
-static void block_rows(int below_rows)
-{
-    int cols = ui_columns();
-    chrome_rows = painted_gap + below_rows + above_rows() +
-                  (sticky_rows ? ui_reflow_rows(sticky_widths, sticky_rows, cols) : 0) +
-                  (spin_width ? ui_reflow_rows(&spin_width, 1, cols) : 0);
-    if (chrome_rows > block_tallest)
-        block_tallest = chrome_rows;
-}
-
-int status_chrome_rows(void) { return chrome_rows; }
 
 static void paint_spin(void)
 {
@@ -269,86 +202,47 @@ static void paint_spin(void)
 
 static void paint(void)
 {
-    // See ui_too_narrow(): a pane this narrow cannot hold a painted row, so the
-    // rewind falls short and each repaint leaks another block into the
-    // scrollback. Draw nothing, and forget the block so no rewind is attempted.
     if (ui_too_narrow()) {
-        caret_row = 0;
-        spin_width = 0;
-        painted_gap = 0;
-        sticky_rows = 0;
-        above_painted = 0;
-        painted = 0;
+        erase_block();
         return;
     }
 
-    ui_sync_begin();
-
-    ui_scroll_track(0);
-    erase_block();
+    block_begin();
 
     chrome_budget = tty_rows() - 3;
-    chrome_spent = 0;
 
-    painted_gap = gap;
-    if (painted_gap) {
+    if (gap)
         ui_put("\n");
-        chrome_spent++;
-    }
     paint_sticky();
 
-    if (above) {
+    if (above)
         above(above_ud);
-        above_painted = 1;
-        chrome_spent += above_rows();
-    }
 
+    spin_row = ui_sink_rows();
     paint_spin();
 
-    int below_rows = 0;
+    int row = spin_row, col = -1;
     if (below) {
-        int rows = 1, row = 0, col = 0;
+        int rows = 1, at = 0, at_col = 0;
         ui_put("\n");
-        below(below_ud, &rows, &row, &col);
-        ui_move((rows - 1) - row, 'A');
-        ui_esc("\r");
-        ui_move(col, 'C');
-        caret_row = 1 + row;
-        caret_col = col;
-        below_rows = rows;
-        ui_esc(UI_CURSOR_SHOW);
+        int first = ui_sink_rows();
+        below(below_ud, &rows, &at, &at_col);
+        row = first + at;
+        col = at_col;
     }
-    block_rows(below_rows);
+    block_end(row, col);
     painted = 1;
     dirty = 0;
-    ui_scroll_track(1);
-    ui_sync_end();
-    ui_flush();
 }
 
 static int paint_spin_only(void)
 {
-    int cols = ui_columns();
-    if (!painted || !below || cols < 24)
+    if (!painted || !below || ui_columns() < 24 || !block_have())
         return 0;
 
-    if (!spin_width || ui_reflow_rows(&spin_width, 1, cols) != 1)
-        return 0;
-
-    int down = 1 + (below_offset ? below_offset(below_ud) : caret_row - 1);
-    ui_sync_begin();
-    ui_scroll_track(0);
-    ui_esc(UI_CURSOR_HIDE);
-    ui_move(down, 'A');
-    ui_esc("\r\x1b[K");
+    block_row_begin(spin_row);
     paint_spin();
-    ui_esc("\r");
-    ui_move(down, 'B');
-    ui_move(caret_col, 'C');
-    ui_esc(UI_CURSOR_SHOW);
-    ui_scroll_track(1);
-    ui_sync_end();
-    ui_flush();
+    block_row_end();
     dirty = 0;
     return 1;
 }
@@ -360,12 +254,7 @@ void status_begin(void)
     frame_at = started;
     active = 1;
     visible = 1;
-    caret_row = 0;
-    spin_width = 0;
     gap = 0;
-    painted_gap = 0;
-    sticky_rows = 0;
-    block_tallest = 0;
     painted = 0;
     paint();
 }
@@ -391,10 +280,7 @@ void status_pause(void)
 {
     if (!active || !visible)
         return;
-    ui_sync_begin();
     erase_block();
-    ui_sync_end();
-    ui_flush();
     visible = 0;
 }
 
@@ -435,7 +321,8 @@ void status_sticky_prompt(const char *text)
     dirty = 1;
 
     sticky_tracking = 1;
-    ui_scroll_mark();
+    sticky_row = block_out_row() - 1;
+    sticky_scrolls = block_scrolls();
 }
 
 void status_sticky_erased(void) { sticky_tracking = 0; }
@@ -449,11 +336,8 @@ const char *status_sticky_offscreen(void)
 
 void status_end(void)
 {
-    if (visible) {
-        ui_sync_begin();
+    if (visible)
         erase_block();
-        ui_sync_end();
-    }
     visible = 0;
     active = 0;
     started = 0;

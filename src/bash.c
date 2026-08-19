@@ -17,6 +17,7 @@
 #include <pty.h>
 #endif
 
+#include "block.h"
 #include "tty.h"
 #include "ui.h"
 
@@ -336,6 +337,7 @@ void bash_run(const char *line)
         ui_raw(1);
         ui_cursor_plain();
     }
+    block_forget();
 
     if (pid < 0) {
         ui_error("could not run the shell");

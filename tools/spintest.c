@@ -7,29 +7,20 @@
 #include "prompt.h"
 #include "status.h"
 #include "tty.h"
+#include "restart.h"
 #include "ui.h"
 
-static void below(void *ud, int *rows, int *caret_row, int *caret_col)
-{
-    (void)ud;
-    int extra = getenv("WIDE") ? 1 : 0;
-    fputs("\x1b[K", stdout);
-    fputs("\xe2\x9d\xaf ", stdout);
-    if (extra) {
-        for (int i = 0; i < 200; i++)
-            fputc('x', stdout);
-    }
-    *rows = 1;
-    *caret_row = 0;
-    *caret_col = 2;
-}
+void restart_shield_thread(void) {}
 
 int main(void)
 {
     ui_init();
     ui_raw(1);
     tty_raw_begin();
-    status_set_below(below, NULL, NULL);
+
+    struct prompt *p = prompt_new(NULL, 0);
+    status_set_below(prompt_live_paint, p);
+    status_set_above(prompt_queue_paint, p);
 
     int chunk = getenv("CHUNK") ? atoi(getenv("CHUNK")) : 12;
     int chunks = getenv("CHUNKS") ? atoi(getenv("CHUNKS")) : 0;
@@ -72,13 +63,18 @@ int main(void)
     }
 done:
     status_end();
-    status_set_below(NULL, NULL, NULL);
 
-    struct prompt *p = prompt_new(NULL, 0);
     if (p) {
-        free(prompt_read(p));
+        for (;;) {
+            char *line = prompt_read(p);
+            if (!line)
+                break;
+            free(line);
+        }
         prompt_free(p);
     }
+    status_set_below(NULL, NULL);
+    status_set_above(NULL, NULL);
     tty_raw_end();
     return 0;
 }

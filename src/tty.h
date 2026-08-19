@@ -59,6 +59,9 @@ int tty_input_waiting(void);
 
 unsigned tty_resize_epoch(void);
 
+// Where the terminal says the cursor is, 1-based; 0 when it does not answer.
+int tty_cursor_pos(int *row, int *col);
+
 #define TTY_RESIZE_SETTLE_MS 250
 
 #define TTY_MIN_COLUMNS 20
