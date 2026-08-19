@@ -63,6 +63,10 @@ void viewport_chrome_keep(int keep);
 // can replace it instead of stacking copies.
 void viewport_drop_row(void);
 
+// Whether the transcript already ends in a blank row, so a caller that wants
+// one above what it is about to print can tell whether it is owed one.
+int viewport_ends_blank(void);
+
 void viewport_clear(void);
 
 // The id the next entry will get, and whether the entry with that id is still

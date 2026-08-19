@@ -302,6 +302,60 @@ void viewport_drop_row(void)
     }
 }
 
+// Escapes take no cells, so a row of nothing but styling is still blank.
+static int row_is_blank(const char *s, size_t n)
+{
+    for (size_t i = 0; i < n;) {
+        if (s[i] == 0x1b) {
+            size_t j = i + 1;
+            if (j < n && s[j] == '[') {
+                for (j++; j < n && (s[j] < '@' || s[j] > '~'); j++)
+                    ;
+            } else if (j < n && (s[j] == ']' || s[j] == 'P' || s[j] == '_' ||
+                                 s[j] == '^' || s[j] == 'X')) {
+                for (j++; j < n; j++)
+                    if (s[j] == 0x07 || (s[j] == 0x1b && j + 1 < n && s[j + 1] == '\\'))
+                        break;
+                if (j < n && s[j] == 0x1b)
+                    j++;
+            }
+            i = j < n ? j + 1 : n;
+            continue;
+        }
+        if (s[i] != ' ' && s[i] != '\t' && s[i] != '\r')
+            return 0;
+        i++;
+    }
+    return 1;
+}
+
+static int text_ends_blank(const char *s, size_t n)
+{
+    if (!n)
+        return 1;
+    if (s[n - 1] == '\n')       /* the terminator of the last row, not a row */
+        n--;
+    size_t start = n;
+    while (start && s[start - 1] != '\n')
+        start--;
+    return row_is_blank(s + start, n - start);
+}
+
+int viewport_ends_blank(void)
+{
+    if (!viewport_active())
+        return 0;
+    if (open_len)
+        return text_ends_blank(open_buf, open_len);
+    for (int i = nitems - 1; i >= 0; i--) {
+        if (items[i].nrows == 0)
+            continue;
+        const char *last = items[i].rows[items[i].nrows - 1];
+        return row_is_blank(last, strlen(last));
+    }
+    return 1;
+}
+
 void viewport_clear(void)
 {
     for (int i = 0; i < nitems; i++)
@@ -545,9 +599,10 @@ static int window_pending(struct item *pending)
 // the size of the window rather than the size of the history. Returns the
 // index of the first entry shown, and how many screen rows it and everything
 // after it need.
-static int window_first(int W, int body, struct item *pending, int total, int *have_out)
+static int window_first(int W, int body, int scroll, struct item *pending, int total,
+                        int *have_out)
 {
-    int want = body + scrolled;
+    int want = body + scroll;
     int first = total;
     int have = 0;
     while (first > 0 && have < want) {
@@ -581,7 +636,7 @@ int viewport_visible(unsigned mark)
     struct item pending = {0};
     int total = nitems + window_pending(&pending);
     int have = 0;
-    int first = window_first(W, body_rows(), &pending, total, &have);
+    int first = window_first(W, body_rows(), scrolled, &pending, total, &have);
     return first >= nitems ? mark >= next_id : mark >= items[first].id;
 }
 
@@ -640,22 +695,37 @@ void viewport_paint(void)
         return;
 
     int ch = chrome_n;
-    if (ch > H - 1)
-        ch = H - 1;
+    if (ch > H)
+        ch = H;
     if (ch < 0)
         ch = 0;
-    int body = H - ch;
 
     struct item pending = {0};
     int total = nitems + window_pending(&pending);
 
+    // The chrome is the end of the stream, not a fixture on the screen:
+    // scrolling back pushes it off the bottom the way it pushes anything else.
+    int chrome_shown = ch - scrolled;
+    if (chrome_shown < 0)
+        chrome_shown = 0;
+    int body = H - chrome_shown;
+    int scroll = scrolled > ch ? scrolled - ch : 0;
+
     int have = 0;
-    int first = window_first(W, body, &pending, total, &have);
-    if (scrolled > have - body)
-        scrolled = have - body > 0 ? have - body : 0;
+    int first = window_first(W, body, scroll, &pending, total, &have);
+    if (first == 0 && have < body + scroll) {
+        // Scrolled past the beginning: the oldest row holds at the top.
+        int most = have + ch - H;
+        scrolled = most > 0 ? most : 0;
+        chrome_shown = ch - scrolled;
+        if (chrome_shown < 0)
+            chrome_shown = 0;
+        body = H - chrome_shown;
+        scroll = scrolled > ch ? scrolled - ch : 0;
+    }
 
     // Screen rows of the first entry that fall above the window.
-    int skip = have - body - scrolled;
+    int skip = have - body - scroll;
     if (skip < 0)
         skip = 0;
 
@@ -690,7 +760,9 @@ void viewport_paint(void)
     free(all.row);
     free(all.hash);
 
-    for (int i = 0; i < ch; i++)
+    // Scrolling back takes the chrome off the bottom a row at a time, so what
+    // is left of it is its first rows.
+    for (int i = 0; i < chrome_shown; i++)
         frame_push(&built, strdup(chrome_rows[i]));
 
     // A resize invalidates everything the terminal is showing.
@@ -706,11 +778,14 @@ void viewport_paint(void)
 
     // Let the terminal move the rows it already has, and send only what that
     // leaves uncovered.
+    // The chrome moves with everything else now, so the whole screen is one
+    // thing to shift rather than a body with a fixture under it.
+    int span = built.n;
     int score = 0;
-    int k = shown.n == built.n ? frame_shift(body, &score) : 0;
-    if (k != 0 && score >= body / 3) {
+    int k = shown.n == built.n ? frame_shift(span, &score) : 0;
+    if (k != 0 && score >= span / 3) {
         char esc[32];
-        snprintf(esc, sizeof esc, "\x1b[1;%dr", body);
+        snprintf(esc, sizeof esc, "\x1b[1;%dr", span);
         direct_str(esc);
         snprintf(esc, sizeof esc, "\x1b[%d%c", k > 0 ? k : -k, k > 0 ? 'S' : 'T');
         direct_str(esc);
@@ -718,11 +793,11 @@ void viewport_paint(void)
 
         // Follow the move in the record of what is displayed, so the diff
         // below only names rows the scroll did not put right.
-        for (int i = 0; i < body; i++) {
-            int j = k > 0 ? i : body - 1 - i;
+        for (int i = 0; i < span; i++) {
+            int j = k > 0 ? i : span - 1 - i;
             int from = j + k;
             free(shown.row[j]);
-            if (from >= 0 && from < body) {
+            if (from >= 0 && from < span) {
                 shown.row[j] = strdup(shown.row[from]);
                 shown.hash[j] = shown.hash[from];
             } else {
@@ -744,7 +819,7 @@ void viewport_paint(void)
     direct_str("\x1b[?7h");
     direct_str("\x1b[0m");
 
-    if (chrome_caret_col >= 0 && chrome_caret_row >= 0 && chrome_caret_row < ch) {
+    if (chrome_caret_col >= 0 && chrome_caret_row >= 0 && chrome_caret_row < chrome_shown) {
         int col = chrome_caret_col + 1;
         if (col > W)
             col = W;

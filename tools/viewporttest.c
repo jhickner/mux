@@ -189,6 +189,46 @@ static void check_scroll(struct screen *s)
         fail("new output returns the window to the tail");
 }
 
+// The prompt and the sticky line are not fixtures on the screen. Scrolling
+// back walks them off the bottom a row at a time, the same as anything else.
+static void check_chrome_scrolls_off(struct screen *s)
+{
+    viewport_clear();
+    set_size(80, 24);
+    for (int i = 0; i < 100; i++) {
+        char line[64];
+        snprintf(line, sizeof line, "row %d", i);
+        say(line);
+    }
+    chrome("CHROME-sticky", "CHROME-prompt");
+    refresh(s, 80, 24);
+
+    if (row_with(s, "CHROME-prompt") != 23)
+        fail("at the end of the transcript the prompt is on the bottom row");
+
+    viewport_scroll(1);
+    pump(s);
+    if (count_on_screen(s, "CHROME-prompt") != 0)
+        fail("one row of scroll takes the last chrome row off the bottom");
+    if (row_with(s, "CHROME-sticky") != 23)
+        fail("what is left of the chrome is still against the bottom");
+
+    viewport_scroll(1);
+    pump(s);
+    if (count_on_screen(s, "CHROME-sticky") != 0)
+        fail("scrolling on takes the rest of the chrome with it");
+    if (row_with(s, "row 99") != 23)
+        fail("the transcript has the bottom row to itself");
+
+    // Back at the end, the chrome is where it was.
+    viewport_scroll_end();
+    pump(s);
+    if (row_with(s, "CHROME-prompt") != 23)
+        fail("returning to the end puts the prompt back on the bottom row");
+    if (row_with(s, "CHROME-sticky") != 22)
+        fail("returning to the end puts the whole chrome back");
+}
+
 // A screen full of long rows is what an image looks like from here: every row
 // is kilobytes of placeholder cells. Scrolling has to move what the terminal
 // already has rather than resend it, or a wheel tick costs the whole screen.
@@ -227,9 +267,10 @@ static void check_scroll_is_cheap(struct screen *s)
     if (scrolled_cost >= full / 3)
         fail("scrolling costs a fraction of a full repaint");
 
-    // ...and it still lands on the right rows.
-    if (count_on_screen(s, "CHROME-prompt") != 1)
-        fail("the chrome survives a scroll that moved rows");
+    // ...and it still lands on the right rows: the chrome is the end of the
+    // stream, so a scroll of three takes its one row off the bottom.
+    if (count_on_screen(s, "CHROME-prompt") != 0)
+        fail("a scroll takes the chrome off the bottom with everything else");
 }
 
 // A kept entry can be changed after it is printed: the payload is looked up by
@@ -371,6 +412,39 @@ static void nested_render(void *ud, int cols)
     free(painted);
 }
 
+// What a caller asks before printing a blank row of its own above what it is
+// about to write. Getting it wrong is two blank rows where one was meant.
+static void check_ends_blank(void)
+{
+    viewport_clear();
+    set_size(80, 24);
+
+    if (!viewport_ends_blank())
+        fail("an empty transcript is not owed a blank row");
+
+    viewport_write("text\n", 5);
+    if (viewport_ends_blank())
+        fail("a transcript ending in text is owed a blank row");
+
+    viewport_write("\n", 1);
+    if (!viewport_ends_blank())
+        fail("a transcript ending in a blank row is not owed another");
+
+    // Closed into entries, the answer has to come from the rows kept rather
+    // than from output still in hand.
+    viewport_item_begin(NULL, NULL, NULL);
+    ui_put("in an entry\n");
+    viewport_item_end();
+    if (viewport_ends_blank())
+        fail("an entry ending in text is owed a blank row");
+
+    viewport_item_begin(NULL, NULL, NULL);
+    ui_put("styled\n\x1b[2m\x1b[0m\n");
+    viewport_item_end();
+    if (!viewport_ends_blank())
+        fail("a row of nothing but styling is blank");
+}
+
 static void check_nested_capture(struct screen *s)
 {
     viewport_clear();
@@ -482,8 +556,10 @@ int main(void)
     check_tail(&s);
     check_bottom_up(&s);
     check_scroll(&s);
+    check_chrome_scrolls_off(&s);
     check_soft_wrap(&s);
     check_item_counting(&s);
+    check_ends_blank();
     check_nested_capture(&s);
     check_reflow(&s);
     check_live_entry(&s);
