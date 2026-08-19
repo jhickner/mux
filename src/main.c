@@ -22,6 +22,7 @@
 #include "status.h"
 #include "tty.h"
 #include "ui.h"
+#include "viewport.h"
 #include "vendor/agents/backend.h"
 #include "vendor/repl.h"
 #include "text.h"
@@ -46,6 +47,7 @@ static int backend_known(const char *name)
 
 static void restore_terminal(void)
 {
+    viewport_end();
     ui_cursor_restore();
     tty_raw_end();
 }
@@ -224,6 +226,7 @@ int main(int argc, char **argv)
         atexit(restore_terminal);
         ui_raw(1);
         ui_cursor_plain();
+        viewport_begin();
 
         // Whatever was typed before raw mode landed was echoed by the terminal
         // onto the line we are about to draw on. Wipe it: the bytes themselves
@@ -354,6 +357,9 @@ int main(int argc, char **argv)
     prompt_free(prompt);
     sessionfork_exit_note(session);
     session_free(session);
+    // Leave the conversation on the normal screen, the way it used to be left.
+    viewport_end();
+    viewport_dump();
     ui_raw(0);
     tty_raw_end();
     return 0;

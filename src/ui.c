@@ -8,7 +8,7 @@
 #include <wchar.h>
 
 #include "app.h"
-#include "block.h"
+#include "viewport.h"
 #include "settings.h"
 #include "tty.h"
 #include "vendor/screen_color.h"
@@ -212,7 +212,16 @@ static size_t sink_len;
 
 static void out(const char *s, size_t n)
 {
-    fwrite(s, 1, n, sink ? sink : stdout);
+    if (sink) {
+        fwrite(s, 1, n, sink);
+        return;
+    }
+    // The viewport keeps the transcript itself; only it writes to the screen.
+    if (viewport_active()) {
+        viewport_write(s, n);
+        return;
+    }
+    fwrite(s, 1, n, stdout);
 }
 
 void ui_sink_begin(void)
@@ -250,27 +259,6 @@ char *ui_sink_end(void)
 }
 
 void ui_raw(int on) { raw_newlines = on; }
-
-// Painting the block moves the cursor around rows the transcript does not own,
-// so tracking is off for the duration: only what the transcript itself writes
-// moves the anchor the block is placed against.
-static int scroll_track = 1;
-
-void ui_scroll_track(int on) { scroll_track = on ? 1 : 0; }
-
-static void scroll_text(const char *s, size_t n)
-{
-    if (!scroll_track || sink || !n)
-        return;
-    block_wrote(s, n);
-}
-
-static void scroll_linefeed(void)
-{
-    if (!scroll_track || sink)
-        return;
-    block_newline();
-}
 
 static char  *capture;
 static size_t capture_len, capture_cap;
@@ -321,18 +309,13 @@ void ui_putn(const char *s, size_t n)
         emit(s, n);
         return;
     }
-    if (n && scroll_track && !sink)
-        block_before_output();
+    // The viewport splits rows itself, and a row it paints needs no carriage
+    // return: every one is placed absolutely.
+    if (!sink && viewport_active()) {
+        viewport_write(s, n);
+        return;
+    }
     if (!raw_newlines) {
-        size_t start = 0;
-        for (size_t i = 0; i < n; i++) {
-            if (s[i] != '\n')
-                continue;
-            scroll_text(s + start, i - start);
-            scroll_linefeed();
-            start = i + 1;
-        }
-        scroll_text(s + start, n - start);
         out(s, n);
         return;
     }
@@ -342,14 +325,10 @@ void ui_putn(const char *s, size_t n)
             continue;
         out(s + start, i - start);
         out("\r\n", 2);
-        scroll_text(s + start, i - start);
-        scroll_linefeed();
         start = i + 1;
     }
-    if (start < n) {
+    if (start < n)
         out(s + start, n - start);
-        scroll_text(s + start, n - start);
-    }
 }
 
 void ui_put(const char *s)
@@ -484,6 +463,13 @@ size_t ui_cells_n(const char *s, size_t n)
 
 size_t ui_cells(const char *s) { return s ? ui_cells_n(s, strlen(s)) : 0; }
 
+// The string-terminated sequences: OSC, DCS, APC, PM and SOS all run to BEL or
+// to ST, and none of them puts a cell on screen.
+static int opens_string(unsigned char c)
+{
+    return c == ']' || c == 'P' || c == '_' || c == '^' || c == 'X';
+}
+
 static size_t step_visible(const char *s, size_t n, size_t i, size_t *cells)
 {
     if (s[i] == '\x1b') {
@@ -491,7 +477,7 @@ static size_t step_visible(const char *s, size_t n, size_t i, size_t *cells)
         if (j < n && s[j] == '[') {
             for (j++; j < n && (s[j] < '@' || s[j] > '~'); j++)
                 ;
-        } else if (j < n && s[j] == ']') {
+        } else if (j < n && opens_string((unsigned char)s[j])) {
             for (j++; j < n && s[j] != '\a' && s[j] != '\x1b'; j++)
                 ;
             if (j < n && s[j] == '\x1b')
@@ -508,11 +494,88 @@ static size_t step_visible(const char *s, size_t n, size_t i, size_t *cells)
 
 size_t ui_cells_visible(const char *s, size_t n)
 {
-    if (!s)
+    struct ui_cellstream st = {0};
+    return ui_cells_stream(&st, s, n);
+}
+
+// Where the stream is between calls. TEXT also covers a codepoint whose bytes
+// have not all arrived; they wait in `pending` until it is whole.
+enum { CS_TEXT, CS_ESC, CS_CSI, CS_STR, CS_STR_ESC };
+
+static size_t utf8_len(unsigned char c)
+{
+    if (c < 0x80)
+        return 1;
+    if ((c & 0xE0) == 0xC0)
+        return 2;
+    if ((c & 0xF0) == 0xE0)
+        return 3;
+    if ((c & 0xF8) == 0xF0)
+        return 4;
+    return 1;
+}
+
+size_t ui_cells_stream(struct ui_cellstream *st, const char *s, size_t n)
+{
+    if (!st || !s)
         return 0;
-    size_t cells = 0, i = 0;
-    while (i < n)
-        i = step_visible(s, n, i, &cells);
+
+    size_t cells = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+
+        switch (st->state) {
+        case CS_ESC:
+            if (c == '[')
+                st->state = CS_CSI;
+            else if (opens_string(c))
+                st->state = CS_STR;
+            else
+                st->state = CS_TEXT;
+            continue;
+
+        case CS_CSI:
+            if (c >= '@' && c <= '~')
+                st->state = CS_TEXT;
+            continue;
+
+        case CS_STR:
+            if (c == 0x07)
+                st->state = CS_TEXT;
+            else if (c == 0x1b)
+                st->state = CS_STR_ESC;
+            continue;
+
+        case CS_STR_ESC:
+            // ESC \ ends it; any other ESC-something restarts the scan.
+            st->state = c == '\\' ? CS_TEXT : CS_STR;
+            continue;
+
+        default:
+            break;
+        }
+
+        if (c == 0x1b) {
+            st->pending_n = 0;
+            st->state = CS_ESC;
+            continue;
+        }
+
+        // Hold the bytes of a codepoint until it is complete: a width can only
+        // be asked of the whole thing.
+        if (st->pending_n == 0 && c < 0x80) {
+            cells += (size_t)cell_width(c);
+            continue;
+        }
+        if (st->pending_n < sizeof st->pending)
+            st->pending[st->pending_n++] = c;
+        size_t want = utf8_len(st->pending[0]);
+        if (st->pending_n >= want) {
+            size_t at = 0;
+            cells += (size_t)cell_width(decode((const char *)st->pending, st->pending_n, &at));
+            st->pending_n = 0;
+        }
+    }
     return cells;
 }
 

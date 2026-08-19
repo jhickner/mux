@@ -76,8 +76,6 @@ void ui_flush(void);
 
 void ui_esc(const char *s);
 
-void ui_scroll_track(int on);
-
 void ui_sync_begin(void);
 void ui_sync_end(void);
 
@@ -94,6 +92,17 @@ size_t ui_wrap_row(const char *s, size_t n, size_t budget, size_t *skip, size_t 
 size_t ui_fit_bytes(const char *s, size_t budget);
 
 size_t ui_cells_visible(const char *s, size_t n);
+
+// ui_cells_visible over a stream. Producers are free to split an escape or a
+// codepoint between writes, so the state that says "still inside one" has to
+// outlive the call; zero it to start a fresh stream.
+struct ui_cellstream {
+    unsigned char state;
+    unsigned char pending[4];
+    unsigned char pending_n;
+};
+
+size_t ui_cells_stream(struct ui_cellstream *st, const char *s, size_t n);
 
 size_t ui_fit_visible(const char *s, size_t n, size_t budget);
 

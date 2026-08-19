@@ -7,6 +7,7 @@
 
 #include "status.h"
 #include "ui.h"
+#include "viewport.h"
 
 static int failures;
 
@@ -185,7 +186,15 @@ static void check_sticky(void)
 
 int main(void)
 {
+    setenv("COLUMNS", "80", 1);
+    setenv("LINES", "24", 1);
+
     ui_init();
+
+    // status.c decides the floating prompt against the viewport's rows, so the
+    // viewport has to be the thing holding them. Its first paint is swallowed
+    // so the test's own output stays readable.
+    free(capture(viewport_begin));
 
     if (status_elapsed() != 0)
         fail("elapsed is 0 before begin");

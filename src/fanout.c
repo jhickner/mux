@@ -19,6 +19,7 @@
 #include "text.h"
 #include "tty.h"
 #include "ui.h"
+#include "viewport.h"
 #include "vendor/agents/backend.h"
 
 #define FAN_MAX     8
@@ -638,6 +639,7 @@ int fanout_run(struct session *s, const char *prompt)
 
     int widget = board_width(&board, ui_columns()) >= FAN_COL_MIN;
     if (widget) {
+        viewport_suspend();
         ui_esc(UI_ALT_ON);
         ui_esc(UI_CURSOR_HIDE);
         ui_flush();
@@ -686,6 +688,7 @@ int fanout_run(struct session *s, const char *prompt)
         ui_esc(UI_ALT_OFF);
         ui_esc(UI_CURSOR_SHOW);
         ui_flush();
+        viewport_resume();
         block_forget();
     } else {
         status_end();

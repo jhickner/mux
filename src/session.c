@@ -462,7 +462,6 @@ struct session *session_new(const char *backend, const char *cwd, const char *mo
 
 void session_replay(struct session *s)
 {
-    ui_esc(UI_CLEAR_SCREEN);
     block_cleared();
     hud_print(s);
     if (!s)

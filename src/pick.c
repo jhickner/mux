@@ -11,40 +11,23 @@
 #define VISIBLE_MAX 10
 
 struct view {
-    int rows;
     int top;
     int visible;
 };
 
-static void erase(struct view *v)
-{
-    if (v->rows == 0)
-        return;
-    printf("\x1b[%dA\r\x1b[J", v->rows);
-    fflush(stdout);
-    v->rows = 0;
-    block_forget();
-}
-
 static void paint(struct view *v, const char *title, const struct pick_item *items, int count,
                   int sel)
 {
-    block_clear();
-
     if (sel < v->top)
         v->top = sel;
     if (sel >= v->top + v->visible)
         v->top = sel - v->visible + 1;
 
-    if (v->rows > 0)
-        printf("\x1b[%dA\r", v->rows);
-    fputs(UI_CURSOR_HIDE, stdout);
-    ui_scroll_track(0);
+    block_begin();
 
     int columns = ui_columns();
     int rows = 0;
 
-    fputs(UI_ERASE_EOL, stdout);
     ui_esc(ui_style(UI_CHROME));
     ui_put(UI_BAR);
     ui_esc(ui_style(UI_RESET));
@@ -58,14 +41,13 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
             ui_put("…");
     }
     ui_esc(ui_style(UI_RESET));
-    ui_put("\r\n");
+    ui_put("\n");
     rows++;
 
     int end = v->top + v->visible;
     if (end > count)
         end = count;
     for (int i = v->top; i < end; i++) {
-        fputs(UI_ERASE_EOL, stdout);
         int selected = (i == sel);
         ui_esc(ui_style(selected ? UI_ACCENT : UI_RESET));
         ui_put(selected ? "  \xe2\x86\x92 " : "    ");
@@ -94,23 +76,20 @@ static void paint(struct view *v, const char *title, const struct pick_item *ite
                 ui_esc(ui_style(UI_RESET));
             }
         }
-        ui_put("\r\n");
+        ui_put("\n");
         rows++;
     }
 
     if (count > v->visible) {
-        fputs(UI_ERASE_EOL, stdout);
         ui_esc(ui_style(UI_DIM));
-        ui_printf("    %d–%d of %d", v->top + 1, end, count);
+        ui_printf("    %d\u2013%d of %d", v->top + 1, end, count);
         ui_esc(ui_style(UI_RESET));
-        ui_put("\r\n");
+        ui_put("\n");
         rows++;
     }
 
-    fputs("\x1b[J\x1b[?25h", stdout);
-    ui_scroll_track(1);
-    fflush(stdout);
-    v->rows = rows;
+    (void)rows;
+    block_end(0, -1);
 }
 
 int pick_run(const char *title, const struct pick_item *items, int count, int initial)
@@ -145,15 +124,15 @@ int pick_run(const char *title, const struct pick_item *items, int count, int in
             sel = count - 1;
             break;
         case TK_ENTER:
-            erase(&v);
+            block_clear();
             return sel;
         case TK_ESCAPE:
         case TK_EOF:
-            erase(&v);
+            block_clear();
             return -1;
         case TK_CHAR:
             if (ev.cp == 3 || ev.cp == 4) {
-                erase(&v);
+                block_clear();
                 return -1;
             }
 

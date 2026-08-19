@@ -9,6 +9,7 @@
 #include "block.h"
 #include "tty.h"
 #include "ui.h"
+#include "viewport.h"
 #include "text.h"
 
 static const char *const FRAMES[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
@@ -38,7 +39,6 @@ static char *sticky_text;
 static int   sticky_drawn;
 static int   sticky_tracking;
 static int   sticky_row;
-static unsigned sticky_scrolls;
 
 static int   spin_row;
 
@@ -127,13 +127,14 @@ int status_rows_left(void)
     return left > 0 ? left : 0;
 }
 
-// The echo of the prompt was painted one row above the transcript cursor; it is
-// off screen once that many screen scrolls have gone by.
+// The echo of the prompt is a transcript row, and the viewport knows which
+// rows are on screen. Comparing the two is exact — there is no running count
+// to drift and nothing to re-establish after a resize.
 static int sticky_gone(void)
 {
     if (!sticky_tracking)
         return 1;
-    return sticky_row - (int)(block_scrolls() - sticky_scrolls) < 1;
+    return sticky_row < viewport_first_visible();
 }
 
 static void paint_sticky(void)
@@ -320,9 +321,12 @@ void status_sticky_prompt(const char *text)
     sticky_text = text && *text ? strdup(text) : NULL;
     dirty = 1;
 
+    // The echo has just been written, so its last row is the newest one; the
+    // whole echo is gone once that row has scrolled past the top.
     sticky_tracking = 1;
-    sticky_row = block_out_row() - 1;
-    sticky_scrolls = block_scrolls();
+    sticky_row = viewport_rows() - 1;
+    if (sticky_row < 0)
+        sticky_row = 0;
 }
 
 void status_sticky_erased(void) { sticky_tracking = 0; }

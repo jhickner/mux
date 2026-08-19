@@ -648,32 +648,42 @@ static char *take_line(const char **text)
     return line;
 }
 
+// Unescaped whole and written once: an escape handed over a byte at a time
+// cannot be recognised as one, and the width tracking behind ui_putn would
+// count its bytes as cells the row does not have.
 static void render_ansi_line(const char *line, int indent)
 {
-    ui_pad(indent);
+    size_t n = strlen(line);
+    char  *out = malloc(n + 1);
+    if (!out)
+        return;
+
+    size_t at = 0;
     for (const char *p = line; *p; ) {
         if (p[0] != '\\') {
-            ui_putn(p, 1);
-            p++;
+            out[at++] = *p++;
             continue;
         }
         if (p[1] == 'e') {
-            ui_putn("\x1b", 1);
+            out[at++] = '\x1b';
             p += 2;
         } else if (p[1] == 'x' && (p[2] == '1') && (p[3] == 'b' || p[3] == 'B')) {
-            ui_putn("\x1b", 1);
+            out[at++] = '\x1b';
             p += 4;
         } else if (p[1] == '0' && p[2] == '3' && p[3] == '3') {
-            ui_putn("\x1b", 1);
+            out[at++] = '\x1b';
             p += 4;
         } else if (p[1] == '\\') {
-            ui_putn("\\", 1);
+            out[at++] = '\\';
             p += 2;
         } else {
-            ui_putn(p, 1);
-            p++;
+            out[at++] = *p++;
         }
     }
+
+    ui_pad(indent);
+    ui_putn(out, at);
+    free(out);
 
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");

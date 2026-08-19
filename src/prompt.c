@@ -16,6 +16,7 @@
 #include "status.h"
 #include "tty.h"
 #include "ui.h"
+#include "viewport.h"
 #include "text.h"
 
 #define REPL_STYLE_NONE ((signed char)-1)
@@ -590,6 +591,7 @@ static void edit_in_editor(struct prompt *p, int live)
         status_pause();
     else
         erase_block(p);
+    viewport_suspend();
     ui_raw(0);
     tty_raw_end();
 
@@ -603,6 +605,7 @@ static void edit_in_editor(struct prompt *p, int live)
     ui_raw(1);
     ui_cursor_plain();
     block_forget();
+    viewport_resume();
 
     int ok = status != -1 && WIFEXITED(status) && WEXITSTATUS(status) == 0;
     if (ok) {
@@ -704,8 +707,6 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
             if (live)
                 return KEY_OK;
             status_sticky_erased();
-            ui_esc(UI_CLEAR_SCREEN);
-            fflush(stdout);
             block_cleared();
             return KEY_OK;
         }
@@ -737,6 +738,14 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         const char *line = repl_line(&p->repl);
         return line && *line ? KEY_SUBMIT : KEY_OK;
     }
+
+    case TK_PAGE_UP:
+        viewport_scroll(tty_rows() / 2);
+        return KEY_OK;
+
+    case TK_PAGE_DOWN:
+        viewport_scroll(-(tty_rows() / 2));
+        return KEY_OK;
 
     default: {
         static const ReplKey MAP[] = {
