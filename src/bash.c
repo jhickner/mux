@@ -18,8 +18,10 @@
 #endif
 
 #include "block.h"
+#include "text.h"
 #include "tty.h"
 #include "ui.h"
+#include "viewport.h"
 
 #define RAW_CAP  (1u << 20)
 #define CTX_CAP  16384
@@ -71,9 +73,19 @@ int bash_is_command(const char *line)
     return bash_body(line) != NULL;
 }
 
+// Tabs become the spaces they stood for. A tab is one byte but up to eight
+// columns, so anything measuring the text afterwards — a wrap, a width — would
+// think the line far shorter than the screen showed it.
+#define TAB_STOP 8
+
 static char *plain_text(const char *raw, size_t len)
 {
-    char *out = malloc(len + 1);
+    size_t tabs = 0;
+    for (size_t i = 0; i < len; i++)
+        if (raw[i] == '\t')
+            tabs++;
+
+    char *out = malloc(len + tabs * (TAB_STOP - 1) + 1);
     if (!out)
         return NULL;
     size_t o = 0, line_start = 0;
@@ -123,7 +135,14 @@ static char *plain_text(const char *raw, size_t len)
                 o--;
             continue;
         }
-        if (c == '\t' || c >= 0x20)
+        if (c == '\t') {
+            size_t at = o - line_start;
+            size_t to = (at / TAB_STOP + 1) * TAB_STOP;
+            while (at++ < to)
+                out[o++] = ' ';
+            continue;
+        }
+        if (c >= 0x20)
             out[o++] = (char)c;
     }
 
@@ -214,6 +233,87 @@ static void context_add(const char *cmd, const char *out, int status)
         bash_context_clear();
 }
 
+// What a shell command left behind. The command runs on the terminal's own
+// screen, which mux gives back for the duration, so nothing of it survives the
+// return to the transcript unless the transcript is told. The command itself
+// is not repeated here: the echo of what was typed is already above it.
+struct ran {
+    char *out;
+};
+
+static void ran_free(void *ud)
+{
+    struct ran *r = ud;
+    free(r->out);
+    free(r);
+}
+
+static void ran_render(void *ud, int cols)
+{
+    const struct ran *r = ud;
+    (void)cols;
+
+    // The output starts on the row under the command that was echoed. What
+    // stands the next thing off it is the blank row printed after the run.
+    if (r->out)
+        ui_wrapped(r->out, 4, UI_DIM);
+}
+
+// The entry opens empty and is amended as the command writes, so its output
+// arrives where it will stay rather than being blitted onto the screen and
+// then printed again.
+static unsigned keep_ran(void)
+{
+    struct ran *r = calloc(1, sizeof *r);
+    if (!r)
+        return 0;
+
+    unsigned mark = viewport_item_begin(ran_render, r, ran_free);
+    ran_render(r, ui_columns());
+    viewport_item_end();
+    return mark;
+}
+
+static void ran_set(unsigned mark, const char *out)
+{
+    struct ran *r = viewport_item_data(mark);
+    if (!r)
+        return;
+    char *copy = out && *out ? strdup(out) : NULL;
+    free(r->out);
+    r->out = copy;
+    viewport_item_update(mark);
+}
+
+// A command that asks for the alternate screen wants the terminal to itself.
+// Nothing short of handing it over will do, so the transcript stops here and
+// mux gets out of the way until the command is done.
+static int wants_screen(const char *p, size_t n)
+{
+    static const char *const ASK[] = {"\x1b[?1049h", "\x1b[?1047h", "\x1b[?47h"};
+    for (size_t i = 0; i < sizeof ASK / sizeof *ASK; i++) {
+        size_t len = strlen(ASK[i]);
+        if (n < len)
+            continue;
+        for (size_t k = 0; k + len <= n; k++)
+            if (memcmp(p + k, ASK[i], len) == 0)
+                return 1;
+    }
+    return 0;
+}
+
+// Stand down: the terminal's own screen, in the mode the command expects.
+static void hand_over(int was_raw)
+{
+    viewport_suspend();
+    if (was_raw) {
+        ui_raw(0);
+        ui_cursor_restore();
+        ui_esc("\x1b[?2004l");
+    }
+    ui_flush();
+}
+
 static void write_all(int fd, const char *p, size_t n)
 {
     while (n) {
@@ -252,12 +352,6 @@ void bash_run(const char *line)
     ws.ws_row = (unsigned short)tty_rows();
 
     int was_raw = tty_is_raw();
-    if (was_raw) {
-        ui_raw(0);
-        ui_cursor_restore();
-        ui_esc("\x1b[?2004l");
-    }
-    ui_flush();
 
     struct sigaction ignore = {0}, old_int, old_quit;
     sigemptyset(&ignore.sa_mask);
@@ -279,6 +373,11 @@ void bash_run(const char *line)
         _exit(127);
     }
 
+    // The command writes into an entry of its own. Only one that asks for the
+    // whole screen gets it, and then mux stands down for as long as it runs.
+    unsigned mark = viewport_active() ? keep_ran() : 0;
+    int      handed = !mark;
+
     struct buf raw = {0};
     if (pid > 0) {
         char   chunk[8192];
@@ -288,6 +387,7 @@ void bash_run(const char *line)
 
         unsigned epoch = tty_resize_epoch();
         int      stdin_open = 1;
+        double   shown = 0;
         for (;;) {
             fd_set fds;
             FD_ZERO(&fds);
@@ -312,8 +412,22 @@ void bash_run(const char *line)
                         continue;
                     break;
                 }
-                write_all(STDOUT_FILENO, chunk, (size_t)got);
                 buf_add(&raw, chunk, (size_t)got, RAW_CAP);
+
+                if (!handed && wants_screen(chunk, (size_t)got)) {
+                    hand_over(was_raw);
+                    handed = 1;
+                    write_all(STDOUT_FILENO, raw.data, raw.len);
+                } else if (handed) {
+                    write_all(STDOUT_FILENO, chunk, (size_t)got);
+                } else if (now_seconds() - shown >= 0.09) {
+                    shown = now_seconds();
+                    char *live = plain_text(raw.data ? raw.data : "", raw.len);
+                    if (live) {
+                        ran_set(mark, live);
+                        free(live);
+                    }
+                }
             }
             if (stdin_open && FD_ISSET(STDIN_FILENO, &fds)) {
                 ssize_t got = read(STDIN_FILENO, chunk, sizeof chunk);
@@ -332,12 +446,15 @@ void bash_run(const char *line)
     sigaction(SIGINT, &old_int, NULL);
     sigaction(SIGQUIT, &old_quit, NULL);
 
-    if (was_raw) {
-        ui_esc("\x1b[?2004h");
-        ui_raw(1);
-        ui_cursor_plain();
+    if (handed && mark) {
+        if (was_raw) {
+            ui_esc("\x1b[?2004h");
+            ui_raw(1);
+            ui_cursor_plain();
+        }
+        block_forget();
+        viewport_resume();
     }
-    block_forget();
 
     if (pid < 0) {
         ui_error("could not run the shell");
@@ -353,6 +470,12 @@ void bash_run(const char *line)
                 }
             }
             text = elide(text);
+            // The same text the model is given: what the command said, cut to
+            // a size worth keeping. A command that took the screen is not
+            // written down — a whole editing session replayed as text is not
+            // a record of anything.
+            if (!handed)
+                ran_set(mark, text);
             context_add(cmd, text, status);
             free(text);
         }

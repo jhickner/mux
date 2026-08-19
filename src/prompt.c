@@ -363,7 +363,10 @@ static void echo_paint(const struct echo_item *e)
 {
     struct ui_wrap w = bar_wrap(queued_budget(ui_columns()), e->role, e->cap, NULL);
     ui_wrap_paint(e->text, &w);
-    ui_put("\n");
+    // A blank row under it, to stand the reply off — except for a shell
+    // command, whose output starts on the very next row.
+    if (e->role != UI_BASH)
+        ui_put("\n");
 }
 
 static void echo_render(void *ud, int cols)
