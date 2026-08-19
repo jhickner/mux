@@ -21,6 +21,8 @@
 
 #define REPL_STYLE_NONE ((signed char)-1)
 
+#define ANIMATE_FRAME_MS 90
+
 struct cell {
     uint32_t    cp;
     signed char style;
@@ -51,6 +53,9 @@ struct prompt {
     void        *idle_ud;
     void       (*replay)(void *ud);
     void        *replay_ud;
+    int        (*animate_busy)(void *ud);
+    void       (*animate_tick)(void *ud);
+    void        *animate_ud;
     int        (*restart_pending)(void *ud);
     int        (*restart)(void *ud);
     void        *restart_ud;
@@ -886,11 +891,18 @@ static char *read_loop(struct prompt *p)
     for (;;) {
         tty_event ev;
 
-        if (!tty_read(&ev, resizing ? TTY_RESIZE_SETTLE_MS : -1)) {
+        // Waiting for a keystroke costs nothing, but something animating in
+        // the transcript needs waking on a frame instead.
+        int animating = !resizing && p->animate_busy && p->animate_busy(p->animate_ud);
+        int wait = resizing ? TTY_RESIZE_SETTLE_MS : (animating ? ANIMATE_FRAME_MS : -1);
+
+        if (!tty_read(&ev, wait)) {
             if (resizing) {
                 resizing = 0;
                 repaint(p);
             } else {
+                if (animating && p->animate_tick)
+                    p->animate_tick(p->animate_ud);
                 restart_check(p);
             }
             continue;
@@ -974,6 +986,14 @@ static int recall_queued(struct prompt *p)
     repl_insert_text(&p->repl, line);
     free(line);
     return 1;
+}
+
+void prompt_set_animate(struct prompt *p, int (*busy)(void *ud), void (*tick)(void *ud),
+                        void *ud)
+{
+    p->animate_busy = busy;
+    p->animate_tick = tick;
+    p->animate_ud = ud;
 }
 
 void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud)

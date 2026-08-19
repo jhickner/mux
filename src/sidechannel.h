@@ -15,6 +15,9 @@ int sidechannel_fds(int *out, int max);
 // Drains finished side turns and prints their replies. Cheap when idle.
 void sidechannel_poll(void);
 
+// Advances the spinner on every question still waiting for its answer.
+void sidechannel_tick(void);
+
 int sidechannel_busy(void);
 
 void sidechannel_close_all(void);

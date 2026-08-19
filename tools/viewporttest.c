@@ -268,6 +268,74 @@ static void check_scroll(struct screen *s)
         fail("new output returns the window to the tail");
 }
 
+// A kept entry can be changed after it is printed: the payload is looked up by
+// mark, so a caller that holds the mark cannot be left pointing at an entry
+// that is gone. This is what a live spinner on a /btw question rides on.
+struct live {
+    int  frame;
+    int  done;
+};
+
+static void live_render(void *ud, int cols)
+{
+    (void)cols;
+    const struct live *l = ud;
+    ui_printf("LIVE-%s-%d", l->done ? "done" : "spin", l->frame);
+    ui_put("\n");
+}
+
+static void check_live_entry(struct screen *s)
+{
+    viewport_clear();
+    set_size(80, 24);
+
+    struct live *l = calloc(1, sizeof *l);
+    unsigned mark = viewport_mark();
+    viewport_item_begin(live_render, l, free);
+    live_render(l, 80);
+    viewport_item_end();
+
+    drop();
+    screen_init(s, 24, 80);
+    viewport_paint();
+    pump(s);
+    if (count_on_screen(s, "LIVE-spin-0") != 1)
+        fail("a live entry shows its first state");
+
+    if (viewport_item_data(mark) != l)
+        fail("the payload is reachable by mark");
+
+    l->frame = 7;
+    viewport_item_update(mark);
+    drop();
+    screen_init(s, 24, 80);
+    viewport_paint();
+    pump(s);
+    if (count_on_screen(s, "LIVE-spin-7") != 1)
+        fail("updating the payload redraws the entry");
+    if (count_on_screen(s, "LIVE-spin-0") != 0)
+        fail("the previous state of the entry is gone");
+
+    // Output after it does not disturb it, and it stays put.
+    say("after");
+    l->done = 1;
+    viewport_item_update(mark);
+    drop();
+    screen_init(s, 24, 80);
+    viewport_paint();
+    pump(s);
+    if (count_on_screen(s, "LIVE-done-7") != 1)
+        fail("an entry can still be changed once later output has landed");
+    if (count_on_screen(s, "after") != 1)
+        fail("the later output is still there");
+
+    // Once the entry is gone the mark answers NULL rather than a stale pointer.
+    viewport_clear();
+    if (viewport_item_data(mark) != NULL)
+        fail("a mark for a dropped entry reports nothing");
+    viewport_item_update(mark);
+}
+
 // A kept entry is drawn again at the new width, so it lays out for the width
 // the screen has rather than keeping rows measured for a width the screen no
 // longer has. Raw output has no renderer and keeps the rows it arrived with.
@@ -379,6 +447,7 @@ int main(void)
     check_scroll(&s);
     check_soft_wrap(&s);
     check_reflow(&s);
+    check_live_entry(&s);
     check_resize_strands_nothing(&s);
 
     fflush(stdout);

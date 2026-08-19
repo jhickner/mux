@@ -76,6 +76,40 @@ int viewport_scrolled(void) { return scrolled; }
 
 unsigned viewport_mark(void) { return next_id; }
 
+// Entries are appended and only ever dropped from the front, so the ids run in
+// order and can be searched rather than scanned.
+static struct item *item_by_mark(unsigned mark)
+{
+    int lo = 0, hi = nitems - 1;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (items[mid].id == mark)
+            return &items[mid];
+        if (items[mid].id < mark)
+            lo = mid + 1;
+        else
+            hi = mid - 1;
+    }
+    return NULL;
+}
+
+void *viewport_item_data(unsigned mark)
+{
+    struct item *it = item_by_mark(mark);
+    return it ? it->ud : NULL;
+}
+
+void viewport_item_update(unsigned mark)
+{
+    struct item *it = item_by_mark(mark);
+    if (!it || !it->render)
+        return;
+    // Nothing is a valid width, so the next paint has to render it again.
+    it->cols = -1;
+    dirty = 1;
+    viewport_paint();
+}
+
 /* --- the entry store ----------------------------------------------------- */
 
 static void rows_free(struct item *it)

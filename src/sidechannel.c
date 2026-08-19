@@ -1,6 +1,7 @@
 #include "sidechannel.h"
 
 #include <errno.h>
+#include <stdio.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -13,6 +14,7 @@
 #include "sessionfork.h"
 #include "status.h"
 #include "ui.h"
+#include "viewport.h"
 
 #define SIDE_MAX 4
 
@@ -22,9 +24,21 @@ struct stream {
     size_t len, cap;
 };
 
+// The question and its answer are one transcript entry: the spinner rides on
+// the question while the turn runs, and the answer is drawn under it when it
+// lands, so the two cannot drift apart in a transcript that keeps moving.
+struct btw {
+    char *question;
+    char *answer;
+    int   failed;
+    int   done;
+    int   frame;
+};
+
 struct side {
     pid_t         pid;
     struct stream out, err;
+    unsigned      mark;
 };
 
 static struct side slots[SIDE_MAX];
@@ -44,6 +58,104 @@ static void slot_free(struct side *c)
     stream_free(&c->out);
     stream_free(&c->err);
     c->pid = 0;
+    c->mark = 0;
+}
+
+static const char *const SPIN[] = {"\u280b", "\u2819", "\u2839", "\u2838", "\u283c",
+                                   "\u2834", "\u2826", "\u2827", "\u2807", "\u280f"};
+#define SPIN_N ((int)(sizeof SPIN / sizeof *SPIN))
+
+#define BTW_DONE "\u2713 "
+#define BTW_FAIL "\u00d7 "
+
+// Every row carries the brand bar, which is what tells a side answer apart
+// from the main turn it landed in the middle of.
+static void bar_rows(const char *painted, enum ui_role role)
+{
+    size_t len = strlen(painted);
+    while (len && painted[len - 1] == '\n')
+        len--;
+
+    const char *p = painted;
+    const char *end = painted + len;
+    while (p <= end) {
+        const char *nl = memchr(p, '\n', (size_t)(end - p));
+        size_t n = nl ? (size_t)(nl - p) : (size_t)(end - p);
+
+        ui_esc(ui_style(role));
+        ui_put(UI_BAR);
+        ui_esc(ui_style(UI_RESET));
+        if (n) {
+            ui_put(" ");
+            ui_putn(p, n);
+            ui_esc(ui_style(UI_RESET));
+        }
+        ui_put("\n");
+
+        if (!nl)
+            break;
+        p = nl + 1;
+    }
+}
+
+static void btw_render(void *ud, int cols)
+{
+    const struct btw *b = ud;
+    (void)cols;
+
+    char mark[16];
+    if (!b->done)
+        snprintf(mark, sizeof mark, "%s ", SPIN[b->frame % SPIN_N]);
+    else
+        snprintf(mark, sizeof mark, "%s", b->failed ? BTW_FAIL : BTW_DONE);
+
+    int budget = ui_columns() - 5;
+    struct ui_wrap w = {0};
+    w.budget = (size_t)(budget > 4 ? budget : 4);
+    w.gutter = UI_BAR " ";
+    w.mark = mark;
+    w.role = UI_BRAND;
+    w.paint_empty = 1;
+    ui_wrap_paint(b->question, &w);
+
+    if (!b->answer)
+        return;
+
+    // The answer sits under the question inside the same entry, so it stays
+    // with the question however far the transcript has moved on.
+    int inner = ui_columns() - 2;
+    ui_capture_begin(inner > 8 ? inner : 8);
+    if (b->failed)
+        ui_wrapped(b->answer, 0, UI_DIM);
+    else
+        md_render(b->answer, 0);
+    char *painted = ui_capture_end();
+    if (painted) {
+        bar_rows(painted, UI_BRAND);
+        free(painted);
+    }
+}
+
+static void btw_free(void *ud)
+{
+    struct btw *b = ud;
+    free(b->question);
+    free(b->answer);
+    free(b);
+}
+
+// Advances the spinner on every question still waiting.
+void sidechannel_tick(void)
+{
+    for (int i = 0; i < SIDE_MAX; i++) {
+        if (!slots[i].pid || !slots[i].mark)
+            continue;
+        struct btw *b = viewport_item_data(slots[i].mark);
+        if (!b || b->done)
+            continue;
+        b->frame++;
+        viewport_item_update(slots[i].mark);
+    }
 }
 
 static void slot_init(struct side *c)
@@ -169,6 +281,22 @@ int sidechannel_start(const struct session *s, const char *prompt)
         ui_put("\n");
         return 0;
     }
+
+    struct btw *b = calloc(1, sizeof *b);
+    if (b) {
+        b->question = strdup(prompt);
+        if (!b->question) {
+            free(b);
+            b = NULL;
+        }
+    }
+    if (b) {
+        c->mark = viewport_mark();
+        viewport_item_begin(btw_render, b, btw_free);
+        btw_render(b, ui_columns());
+        viewport_item_end();
+        ui_flush();
+    }
     return 1;
 }
 
@@ -194,36 +322,6 @@ int sidechannel_busy(void)
     return 0;
 }
 
-// A side reply lands wherever the main turn happens to be, so it is drawn as a
-// callout: every row carries the brand bar, which is what tells the two apart.
-static void callout(const char *painted)
-{
-    size_t len = strlen(painted);
-    while (len && painted[len - 1] == '\n')
-        len--;
-
-    const char *p = painted;
-    const char *end = painted + len;
-    while (p <= end) {
-        const char *nl = memchr(p, '\n', (size_t)(end - p));
-        size_t n = nl ? (size_t)(nl - p) : (size_t)(end - p);
-
-        ui_esc(ui_style(UI_BRAND));
-        ui_put(UI_BAR);
-        ui_esc(ui_style(UI_RESET));
-        if (n) {
-            ui_put(" ");
-            ui_putn(p, n);
-            ui_esc(ui_style(UI_RESET));
-        }
-        ui_put("\n");
-
-        if (!nl)
-            break;
-        p = nl + 1;
-    }
-}
-
 static char *trimmed(struct stream *s)
 {
     if (!s->buf)
@@ -239,35 +337,55 @@ static char *trimmed(struct stream *s)
 
 static void emit(struct side *c, int status)
 {
-    status_pause();
-
     char *reply = trimmed(&c->out);
     char *why = trimmed(&c->err);
 
-    int cols = ui_columns() - 2;
-    ui_capture_begin(cols > 8 ? cols : 8);
-    if (reply) {
-        md_render(reply, 0);
-    } else if (why) {
-        // Only the child's own diagnosis explains an empty side turn, so it is
-        // worth more here than a generic failure line.
-        ui_error("the side turn failed");
-        ui_wrapped(why, 0, UI_DIM);
-    } else if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
-        ui_error("could not run %s for the side turn", sessionfork_program());
-    } else {
-        ui_error("the side turn produced nothing (exit %d)",
-                 WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+    char note[256];
+    const char *answer = reply;
+    int failed = 0;
+    if (!answer) {
+        failed = 1;
+        if (why) {
+            // Only the child's own diagnosis explains an empty side turn, so
+            // it is worth more here than a generic failure line.
+            answer = why;
+        } else if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
+            snprintf(note, sizeof note, "could not run %s for the side turn",
+                     sessionfork_program());
+            answer = note;
+        } else {
+            snprintf(note, sizeof note, "the side turn produced nothing (exit %d)",
+                     WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+            answer = note;
+        }
     }
-    char *painted = ui_capture_end();
 
+    struct btw *b = c->mark ? viewport_item_data(c->mark) : NULL;
+    if (b) {
+        free(b->answer);
+        b->answer = strdup(answer);
+        b->failed = failed;
+        b->done = 1;
+        viewport_item_update(c->mark);
+        return;
+    }
+
+    // The question is no longer in the transcript, so there is nothing to fill
+    // in and the answer has to stand on its own.
+    status_pause();
+    int inner = ui_columns() - 2;
+    ui_capture_begin(inner > 8 ? inner : 8);
+    if (failed)
+        ui_wrapped(answer, 0, UI_DIM);
+    else
+        md_render(answer, 0);
+    char *painted = ui_capture_end();
     if (painted) {
-        callout(painted);
+        bar_rows(painted, UI_BRAND);
         free(painted);
     }
     ui_put("\n");
     ui_flush();
-
     status_resume();
 }
 

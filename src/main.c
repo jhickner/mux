@@ -96,7 +96,17 @@ static void offer_project_trust(struct session *s)
 static int idle_render(void *ud)
 {
     sidechannel_poll();
+    sidechannel_tick();
     return session_idle_pump(ud);
+}
+
+static int side_busy(void *ud)  { (void)ud; return sidechannel_busy(); }
+
+static void side_tick(void *ud)
+{
+    (void)ud;
+    sidechannel_poll();
+    sidechannel_tick();
 }
 static int idle_busy(void *ud)   { return session_idle_busy(ud); }
 static void replay(void *ud)      { session_replay(ud); }
@@ -304,6 +314,7 @@ int main(int argc, char **argv)
     prompt_set_idle(prompt, idle_fds, idle_render, idle_busy, session);
     prompt_set_restart(prompt, restart_pending, idle_restart, session);
     prompt_set_replay(prompt, replay, session);
+    prompt_set_animate(prompt, side_busy, side_tick, session);
 
     ui_put("\n");
 

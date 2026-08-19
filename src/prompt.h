@@ -33,6 +33,12 @@ void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud);
 void prompt_set_restart(struct prompt *p, int (*pending)(void *ud), int (*run)(void *ud),
                         void *ud);
 
+// A thing that animates while the prompt is idle. `busy` says whether anything
+// is running; while it is, the read waits in frames instead of indefinitely so
+// `tick` can advance it.
+void prompt_set_animate(struct prompt *p, int (*busy)(void *ud), void (*tick)(void *ud),
+                        void *ud);
+
 void prompt_set_idle(struct prompt *p, int (*fds)(void *ud, int *out, int max),
                      int (*render)(void *ud), int (*busy)(void *ud), void *ud);
 

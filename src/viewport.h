@@ -64,6 +64,15 @@ void viewport_clear(void);
 unsigned viewport_mark(void);
 int      viewport_visible(unsigned mark);
 
+// The payload of a kept entry, or NULL once it has been dropped — evicted with
+// the oldest entries, or cleared. A caller that wants to keep changing what it
+// printed holds the mark rather than the pointer, so nothing it holds can
+// outlive the entry.
+void *viewport_item_data(unsigned mark);
+
+// The entry's payload changed: draw it again.
+void  viewport_item_update(unsigned mark);
+
 // Write the transcript to the normal screen, so leaving mux leaves the
 // conversation in the terminal's own scrollback.
 void viewport_dump(void);
