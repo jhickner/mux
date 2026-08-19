@@ -340,6 +340,64 @@ static void check_item_counting(struct screen *s)
         fail("each entry is on screen once");
 }
 
+// An entry whose renderer captures on its own account. The viewport already
+// re-renders inside a capture, so this nests one — a side turn's answer does
+// exactly this, rendering its markdown at an inner width before putting a bar
+// down every row it came back with.
+static void nested_render(void *ud, int cols)
+{
+    (void)ud;
+    ui_put("HEAD\n");
+
+    ui_capture_begin(cols - 2);
+    ui_printf("INNER-%d", ui_columns());
+    ui_put("\n");
+    ui_printf("INNER-%d", ui_columns());
+    ui_put("\n");
+    char *painted = ui_capture_end();
+
+    // Every row of it gets a prefix, which is the part that goes missing when
+    // the inner capture takes the outer one down with it.
+    for (char *p = painted; p && *p;) {
+        char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        ui_put("| ");
+        ui_putn(p, len);
+        ui_put("\n");
+        if (!nl)
+            break;
+        p = nl + 1;
+    }
+    free(painted);
+}
+
+static void check_nested_capture(struct screen *s)
+{
+    viewport_clear();
+    set_size(80, 24);
+
+    viewport_item_begin(nested_render, NULL, NULL);
+    nested_render(NULL, 80);
+    viewport_item_end();
+
+    refresh(s, 80, 24);
+    if (count_on_screen(s, "HEAD") != 1)
+        fail("an entry with a nested capture keeps what it wrote first");
+    if (count_on_screen(s, "| INNER-78") != 2)
+        fail("every row of the inner render is prefixed");
+
+    // The width change is what forces the re-render, and the re-render is what
+    // runs the renderer inside a capture of the viewport's own.
+    set_size(60, 24);
+    refresh(s, 60, 24);
+    if (count_on_screen(s, "HEAD") != 1)
+        fail("a re-rendered entry still has what it wrote first");
+    if (count_on_screen(s, "| INNER-58") != 2)
+        fail("a re-rendered entry still prefixes every row");
+    if (count_on_screen(s, "INNER-78") != 0)
+        fail("nothing is left over from the width it was rendered at before");
+}
+
 static void check_reflow(struct screen *s)
 {
     viewport_clear();
@@ -426,6 +484,7 @@ int main(void)
     check_scroll(&s);
     check_soft_wrap(&s);
     check_item_counting(&s);
+    check_nested_capture(&s);
     check_reflow(&s);
     check_live_entry(&s);
     check_scroll_is_cheap(&s);

@@ -263,52 +263,86 @@ char *ui_sink_end(void)
 
 void ui_raw(int on) { raw_newlines = on; }
 
-static char  *capture;
-static size_t capture_len, capture_cap;
-static int    capture_on, capture_cols;
+// Captures nest. The viewport re-renders an entry inside one, and an entry's
+// renderer may capture on its own account — a side turn's answer renders its
+// markdown at an inner width before putting a bar down each row. With a single
+// buffer the inner begin wiped what the outer had collected and the inner end
+// switched capturing off altogether, so everything after it escaped into the
+// transcript instead of into the entry being rendered.
+#define CAPTURE_MAX 8
+
+struct capture {
+    char  *buf;
+    size_t len, cap;
+    int    cols;
+};
+
+static struct capture captures[CAPTURE_MAX];
+static int            capture_depth;
+
+static struct capture *capture_top(void)
+{
+    if (capture_depth == 0 || capture_depth > CAPTURE_MAX)
+        return NULL;
+    return &captures[capture_depth - 1];
+}
 
 static void emit(const char *s, size_t n)
 {
-    if (!capture_on) {
+    if (capture_depth == 0) {
         out(s, n);
         return;
     }
-    if (capture_len + n + 1 > capture_cap) {
-        size_t cap = capture_cap ? capture_cap : 1024;
-        while (cap < capture_len + n + 1)
+    struct capture *c = capture_top();
+    if (!c)
+        return;                         /* nested past the limit: dropped */
+    if (c->len + n + 1 > c->cap) {
+        size_t cap = c->cap ? c->cap : 1024;
+        while (cap < c->len + n + 1)
             cap *= 2;
-        char *grown = realloc(capture, cap);
+        char *grown = realloc(c->buf, cap);
         if (!grown)
             return;
-        capture = grown;
-        capture_cap = cap;
+        c->buf = grown;
+        c->cap = cap;
     }
-    memcpy(capture + capture_len, s, n);
-    capture_len += n;
-    capture[capture_len] = '\0';
+    memcpy(c->buf + c->len, s, n);
+    c->len += n;
+    c->buf[c->len] = '\0';
 }
 
 void ui_capture_begin(int columns)
 {
-    capture_len = 0;
-    capture_cols = columns;
-    capture_on = 1;
-    if (capture)
-        capture[0] = '\0';
+    // The depth is counted even past the limit, so a begin and its end always
+    // pair up and an overflow cannot pop somebody else's buffer.
+    if (capture_depth < CAPTURE_MAX) {
+        struct capture *c = &captures[capture_depth];
+        c->len = 0;
+        c->cols = columns;
+        if (c->buf)
+            c->buf[0] = '\0';
+    }
+    capture_depth++;
 }
 
 char *ui_capture_end(void)
 {
-    capture_on = 0;
-    capture_cols = 0;
-    char *taken = capture_len ? strdup(capture) : NULL;
-    capture_len = 0;
+    if (capture_depth == 0)
+        return NULL;
+    capture_depth--;
+    if (capture_depth >= CAPTURE_MAX)
+        return NULL;                    /* nested past the limit: nothing kept */
+
+    struct capture *c = &captures[capture_depth];
+    char *taken = c->len ? strdup(c->buf) : NULL;
+    c->len = 0;
+    c->cols = 0;
     return taken;
 }
 
 void ui_putn(const char *s, size_t n)
 {
-    if (capture_on) {
+    if (capture_depth) {
         emit(s, n);
         return;
     }
@@ -392,11 +426,23 @@ int ui_reflow_rows(const int *row_widths, int count, int cols)
 
 void ui_flush(void) { fflush(sink ? sink : stdout); }
 
-int ui_columns(void) { return capture_cols > 0 ? capture_cols : tty_columns(); }
+// The width being rendered for: the innermost capture's, if one is open.
+static int capture_width(void)
+{
+    struct capture *c = capture_top();
+    return c ? c->cols : 0;
+}
+
+int ui_columns(void)
+{
+    int cols = capture_width();
+    return cols > 0 ? cols : tty_columns();
+}
 
 int ui_screen_columns(void)
 {
-    return capture_cols > 0 ? capture_cols : tty_screen_columns();
+    int cols = capture_width();
+    return cols > 0 ? cols : tty_screen_columns();
 }
 
 // The layout has a floor, so a narrower pane gets lines wider than the screen.
