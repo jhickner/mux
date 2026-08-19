@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "chrome.h"
 #include "md.h"
 #include "session.h"
 #include "sessionfork.h"
@@ -193,9 +194,10 @@ void sidechannel_tick(void)
     if (!sidechannel_rows())
         return;
     spin_frame++;
-    // The chrome is what carries the spinner, so it is the chrome that has to
-    // be drawn again.
-    status_touch();
+    // The chrome carries the spinner, so the chrome is what has to be drawn
+    // again — asked for directly, because status.c only runs a paint loop
+    // while a main turn is going and /btw outlives that.
+    chrome_paint();
 }
 
 static void slot_init(struct side *c)
@@ -323,7 +325,7 @@ int sidechannel_start(const struct session *s, const char *prompt)
     }
 
     c->question = strdup(prompt);
-    status_touch();
+    chrome_paint();
     return 1;
 }
 
@@ -398,12 +400,10 @@ static void emit(struct side *c, int status)
         return;
     }
 
-    status_pause();
     viewport_item_begin(btw_render, b, btw_free);
     btw_render(b, ui_columns());
     viewport_item_end();
     ui_flush();
-    status_resume();
 }
 
 // Returns nonzero while the stream is still open.
@@ -460,6 +460,8 @@ void sidechannel_poll(void)
             ;
         emit(c, status);
         slot_free(c);
+        // The question is no longer pending, so the row it had must go.
+        chrome_paint();
     }
 }
 

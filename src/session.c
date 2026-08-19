@@ -437,6 +437,7 @@ static int abort_check(void)
     int interrupt = session_poll_input();
 
     sidechannel_poll();
+    sidechannel_tick();
     image_poll();
     status_tick();
     return interrupt;

@@ -136,7 +136,7 @@ int status_sticky_measure(int busy)
     if (!sticky_showing())
         return 0;
     struct ui_wrap w = sticky_wrap(busy, 1);
-    return ui_wrap_paint(sticky_text, &w) + 1;
+    return ui_wrap_paint(sticky_text, &w);
 }
 
 void status_paint_sticky(int busy)
@@ -147,9 +147,6 @@ void status_paint_sticky(int busy)
 
     struct ui_wrap w = sticky_wrap(busy, 0);
     sticky_drawn = ui_wrap_paint(sticky_text, &w);
-
-    ui_esc(UI_ERASE_EOL);
-    ui_put("\n");
 }
 
 int status_sticky_rows(void)

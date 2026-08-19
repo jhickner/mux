@@ -63,7 +63,8 @@ static int above_height(const struct above *a, int busy, int cols)
         rows += sidechannel_rows();
     if (a->queued)
         rows += prompt_queued_rows(bound, cols);
-    return rows;
+    // Whatever is pinned up there is followed by a blank row.
+    return rows ? rows + 1 : 0;
 }
 
 static void fit_above(struct above *a, int busy, int cols, int room)
@@ -125,6 +126,13 @@ void chrome_paint(void)
         sidechannel_paint(chrome_rows_left());
     if (a.queued)
         prompt_paint_queued(bound, chrome_rows_left());
+
+    // A blank row under everything pinned above, so the sticky prompt and the
+    // side turns read as their own block rather than running into the spinner.
+    if (ui_sink_rows() - gap > 0) {
+        ui_esc(UI_ERASE_EOL);
+        ui_put("\n");
+    }
 
     // Counted off what was painted rather than off what the fit predicted, so
     // the caret lands on the row it was actually drawn into.
