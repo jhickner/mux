@@ -20,10 +20,14 @@ void prompt_rehome(const char *root);
 char *prompt_read(struct prompt *p);
 
 int  prompt_live_key(void *ud, tty_event *ev);
-void prompt_live_paint(void *ud, int *rows, int *caret_row, int *caret_col);
+// The sections chrome.c composes.
+int  prompt_input_rows(struct prompt *p, int cols);
+void prompt_paint_input(struct prompt *p, int rows, int *caret_row, int *caret_col);
+int  prompt_queued_rows(struct prompt *p, int cols);
+void prompt_paint_queued(struct prompt *p, int room);
+int  prompt_busy(struct prompt *p);
 
 
-void prompt_queue_paint(void *ud);
 
 void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud);
 

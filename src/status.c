@@ -7,6 +7,7 @@
 #include <sys/time.h>
 
 #include "block.h"
+#include "chrome.h"
 #include "tty.h"
 #include "ui.h"
 #include "viewport.h"
@@ -25,10 +26,6 @@ static double  frame_at;
 static char    word[64] = "working";
 static char    note[128];
 
-static status_paint_fn  below;
-static void            *below_ud;
-static status_above_fn  above;
-static void            *above_ud;
 static int              painted;
 static int              spin_width;
 static int              gap;
@@ -39,13 +36,6 @@ static char *sticky_text;
 static int   sticky_drawn;
 static int   sticky_tracking;
 static unsigned sticky_mark;
-
-static int   spin_row;
-
-// The block is painted onto absolute rows, so it must not be taller than the
-// screen. Each paint hands the optional chrome a row budget and it yields once
-// the budget is spent.
-static int   chrome_budget;
 
 static unsigned resize_epoch;
 static double   resize_at;
@@ -79,18 +69,6 @@ void status_set_note(const char *text)
     dirty = 1;
 }
 
-void status_set_below(status_paint_fn paint_fn, void *ud)
-{
-    below = paint_fn;
-    below_ud = ud;
-}
-
-void status_set_above(status_above_fn paint_fn, void *ud)
-{
-    above = paint_fn;
-    above_ud = ud;
-}
-
 static int size_changing(void)
 {
     unsigned epoch = tty_resize_epoch();
@@ -104,7 +82,7 @@ static int size_changing(void)
 
 static void erase_block(void)
 {
-    block_clear();
+    chrome_clear();
     painted = 0;
 }
 
@@ -121,12 +99,6 @@ static void humanize(double seconds, char *out, size_t n)
         snprintf(out, n, "%ldh %ldm", total / 3600, (total % 3600) / 60);
 }
 
-int status_rows_left(void)
-{
-    int left = chrome_budget - ui_sink_rows();
-    return left > 0 ? left : 0;
-}
-
 // The echo of the prompt is a transcript entry, and the viewport knows which
 // entries are on screen. Asking it is exact — there is no running count to
 // drift and nothing to re-establish after a resize.
@@ -137,27 +109,43 @@ static int sticky_gone(void)
     return !viewport_visible(sticky_mark);
 }
 
-static void paint_sticky(void)
+#define STICKY_DONE "\xe2\x9c\x93 "
+#define STICKY_BUSY "\xe2\x8b\xaf "
+
+static struct ui_wrap sticky_wrap(int busy, int measure)
+{
+    int cols = ui_columns();
+    struct ui_wrap w = {0};
+    w.budget = (size_t)(cols - 5 > 4 ? cols - 5 : 4);
+    w.gutter = UI_BAR " ";
+    w.mark = busy ? STICKY_BUSY : STICKY_DONE;
+    w.role = busy ? UI_STICKY : UI_STICKY_DONE;
+    w.max_rows = STICKY_LINES;
+    w.erase = !measure;
+    w.measure = measure;
+    return w;
+}
+
+static int sticky_showing(void)
+{
+    return sticky_on && sticky_text && *sticky_text && sticky_gone();
+}
+
+int status_sticky_measure(int busy)
+{
+    if (!sticky_showing())
+        return 0;
+    struct ui_wrap w = sticky_wrap(busy, 1);
+    return ui_wrap_paint(sticky_text, &w) + 1;
+}
+
+void status_paint_sticky(int busy)
 {
     sticky_drawn = 0;
-    if (!sticky_on || !sticky_text || !*sticky_text || !sticky_gone())
+    if (!sticky_showing())
         return;
 
-    int cols = ui_columns();
-
-    struct ui_wrap w = {0};
-    w.budget = (size_t)(cols - 3 > 4 ? cols - 3 : 4);
-    w.gutter = UI_BAR " ";
-    w.role = UI_STICKY;
-    w.max_rows = STICKY_LINES;
-    w.erase = 1;
-
-    struct ui_wrap m = w;
-    m.measure = 1;
-    m.erase = 0;
-    if (ui_wrap_paint(sticky_text, &m) + 1 > status_rows_left())
-        return;
-
+    struct ui_wrap w = sticky_wrap(busy, 0);
     sticky_drawn = ui_wrap_paint(sticky_text, &w);
 
     ui_esc(UI_ERASE_EOL);
@@ -169,7 +157,7 @@ int status_sticky_rows(void)
     return sticky_drawn;
 }
 
-static void paint_spin(void)
+void status_paint_spin(void)
 {
     char clock[32], left[64];
     humanize(status_elapsed(), clock, sizeof clock);
@@ -201,49 +189,21 @@ static void paint_spin(void)
     ui_esc(ui_style(UI_RESET));
 }
 
+int status_spinning(void) { return active && visible; }
+
+int status_gap_row(void) { return gap ? 1 : 0; }
+
 static void paint(void)
 {
-    if (ui_too_narrow()) {
-        erase_block();
-        return;
-    }
-
-    block_begin();
-
-    chrome_budget = tty_rows() - 3;
-
-    if (gap)
-        ui_put("\n");
-    paint_sticky();
-
-    if (above)
-        above(above_ud);
-
-    spin_row = ui_sink_rows();
-    paint_spin();
-
-    int row = spin_row, col = -1;
-    if (below) {
-        int rows = 1, at = 0, at_col = 0;
-        ui_put("\n");
-        int first = ui_sink_rows();
-        below(below_ud, &rows, &at, &at_col);
-        row = first + at;
-        col = at_col;
-    }
-    block_end(row, col);
+    chrome_paint();
     painted = 1;
     dirty = 0;
 }
 
 static int paint_spin_only(void)
 {
-    if (!painted || !below || ui_columns() < 24 || !block_have())
+    if (!painted || !chrome_paint_spin())
         return 0;
-
-    block_row_begin(spin_row);
-    paint_spin();
-    block_row_end();
     dirty = 0;
     return 1;
 }

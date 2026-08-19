@@ -7,17 +7,16 @@
 void   status_begin(void);
 void   status_end(void);
 
-typedef void (*status_paint_fn)(void *ud, int *rows, int *caret_row, int *caret_col);
+// The sections chrome.c composes. Each draws itself and nothing else; where
+// they sit in the stack is not their business.
+void   status_paint_spin(void);
+void   status_paint_sticky(int busy);
+int    status_sticky_measure(int busy);
 
-void   status_set_below(status_paint_fn paint, void *ud);
+// A turn is running and its spinner belongs in the stack.
+int    status_spinning(void);
 
-typedef void (*status_above_fn)(void *ud);
-
-void   status_set_above(status_above_fn paint, void *ud);
-
-// Screen rows the chrome painted so far may still spend. Callers that paint
-// above the spinner must stop once this reaches zero.
-int    status_rows_left(void);
+int    status_gap_row(void);
 
 void   status_set_word(const char *text);
 

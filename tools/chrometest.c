@@ -12,6 +12,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "chrome.h"
 #include "prompt.h"
 #include "restart.h"
 #include "sidechannel.h"
@@ -80,8 +81,7 @@ int main(void)
         fprintf(stderr, "chrometest: no prompt\n");
         return 1;
     }
-    status_set_below(prompt_live_paint, p);
-    status_set_above(prompt_queue_paint, p);
+    chrome_bind(p);
 
     // A live turn: status.c drives both painters into one block.
     pending_rows = 1;
@@ -99,8 +99,7 @@ int main(void)
         fail("nothing is painted when no side turn is pending");
     status_end();
 
-    status_set_below(NULL, NULL);
-    status_set_above(NULL, NULL);
+    chrome_bind(NULL);
     prompt_free(p);
     viewport_end();
 

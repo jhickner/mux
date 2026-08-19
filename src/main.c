@@ -8,6 +8,7 @@
 #include "agenttabs.h"
 #include "app.h"
 #include "bash.h"
+#include "chrome.h"
 #include "cmd.h"
 #include "confirm.h"
 #include "gitinfo.h"
@@ -308,8 +309,7 @@ int main(int argc, char **argv)
     }
 
     session_set_typeahead(prompt_live_key, prompt);
-    status_set_below(prompt_live_paint, prompt);
-    status_set_above(prompt_queue_paint, prompt);
+    chrome_bind(prompt);
     prompt_set_live_command(prompt, live_command, session);
     prompt_set_idle(prompt, idle_fds, idle_render, idle_busy, session);
     prompt_set_restart(prompt, restart_pending, idle_restart, session);
@@ -363,8 +363,7 @@ int main(int argc, char **argv)
 
     sidechannel_close_all();
     session_set_typeahead(NULL, NULL);
-    status_set_below(NULL, NULL);
-    status_set_above(NULL, NULL);
+    chrome_bind(NULL);
     prompt_free(prompt);
     sessionfork_exit_note(session);
     session_free(session);

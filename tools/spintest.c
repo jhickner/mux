@@ -4,13 +4,26 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "chrome.h"
 #include "prompt.h"
+#include "sidechannel.h"
 #include "status.h"
 #include "tty.h"
 #include "restart.h"
 #include "ui.h"
 
 void restart_shield_thread(void) {}
+
+// sidechannel is stubbed rather than linked: it would drag the session, the
+// agent drivers and the markdown renderer in behind it.
+int  sidechannel_rows(void) { return 0; }
+void sidechannel_paint(int budget) { (void)budget; }
+void sidechannel_tick(void) {}
+void sidechannel_poll(void) {}
+int  sidechannel_busy(void) { return 0; }
+void sidechannel_close_all(void) {}
+int  sidechannel_fds(int *out, int max) { (void)out; (void)max; return 0; }
+
 
 int main(void)
 {
@@ -19,8 +32,7 @@ int main(void)
     tty_raw_begin();
 
     struct prompt *p = prompt_new(NULL, 0);
-    status_set_below(prompt_live_paint, p);
-    status_set_above(prompt_queue_paint, p);
+    chrome_bind(p);
 
     int chunk = getenv("CHUNK") ? atoi(getenv("CHUNK")) : 12;
     int chunks = getenv("CHUNKS") ? atoi(getenv("CHUNKS")) : 0;
@@ -73,8 +85,7 @@ done:
         }
         prompt_free(p);
     }
-    status_set_below(NULL, NULL);
-    status_set_above(NULL, NULL);
+    chrome_bind(NULL);
     tty_raw_end();
     return 0;
 }

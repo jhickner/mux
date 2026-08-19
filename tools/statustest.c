@@ -5,9 +5,24 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "chrome.h"
+#include "prompt.h"
+#include "sidechannel.h"
 #include "status.h"
 #include "ui.h"
 #include "viewport.h"
+
+void restart_shield_thread(void) {}
+
+// sidechannel is stubbed rather than linked: it would drag the session, the
+// agent drivers and the markdown renderer in behind it.
+int  sidechannel_rows(void) { return 0; }
+void sidechannel_paint(int budget) { (void)budget; }
+void sidechannel_tick(void) {}
+void sidechannel_poll(void) {}
+int  sidechannel_busy(void) { return 0; }
+void sidechannel_close_all(void) {}
+int  sidechannel_fds(int *out, int max) { (void)out; (void)max; return 0; }
 
 static int failures;
 
@@ -205,6 +220,11 @@ int main(void)
     // viewport has to be the thing holding them. Its first paint is swallowed
     // so the test's own output stays readable.
     free(capture(viewport_begin));
+
+    // The sticky prompt is a section of the one painter, so it only reaches the
+    // screen through a bound prompt.
+    struct prompt *prompt = prompt_new(NULL, 0);
+    chrome_bind(prompt);
 
     if (status_elapsed() != 0)
         fail("elapsed is 0 before begin");
