@@ -93,6 +93,16 @@ static int looks_like_spinner(const char *out)
     return 0;
 }
 
+// status.c marks the newest entry when the prompt is echoed, so the test has
+// to have echoed one for there to be anything to mark.
+static void echo_then_mark(const char *text)
+{
+    // Deliberately not the prompt text: the capture is the whole painted
+    // screen, so an echo carrying it could not be told from the sticky copy.
+    viewport_write("<echo>\n", 7);
+    status_sticky_prompt(text);
+}
+
 static void fill_screen(void)
 {
     ui_raw(1);
@@ -113,7 +123,7 @@ static void check_sticky(void)
     if (!status_sticky_enabled())
         fail("floating prompt reports itself on");
 
-    status_sticky_prompt("summarize notes.txt");
+    echo_then_mark("summarize notes.txt");
     char *fresh = capture(turn_with_prompt);
     if (!fresh)
         fail("capture with the echo still on screen");
@@ -144,7 +154,7 @@ static void check_sticky(void)
         fail("floating prompt retained while off");
     status_sticky_set(1);
 
-    status_sticky_prompt("one\ntwo\nthree");
+    echo_then_mark("one\ntwo\nthree");
     free(capture(fill_screen));
     char *fits = capture(turn_with_prompt);
     if (!fits)
@@ -155,7 +165,7 @@ static void check_sticky(void)
         fail("a three-line prompt is clipped");
     free(fits);
 
-    status_sticky_prompt("one\ntwo\nthree\nfour");
+    echo_then_mark("one\ntwo\nthree\nfour");
     free(capture(fill_screen));
     char *over = capture(turn_with_prompt);
     if (!over)
@@ -171,7 +181,7 @@ static void check_sticky(void)
     char long_prompt[8192];
     memset(long_prompt, 'x', sizeof long_prompt - 1);
     long_prompt[sizeof long_prompt - 1] = '\0';
-    status_sticky_prompt(long_prompt);
+    echo_then_mark(long_prompt);
     free(capture(fill_screen));
     char *clipped = capture(turn_with_prompt);
     if (!clipped)

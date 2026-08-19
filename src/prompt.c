@@ -403,15 +403,58 @@ static void repaint(struct prompt *p)
     block_end(caret_row, caret_col);
 }
 
+struct echo_item {
+    char        *text;
+    enum ui_role role;
+    int          cap;
+};
+
+static void echo_paint(const struct echo_item *e)
+{
+    struct ui_wrap w = bar_wrap(queued_budget(ui_columns()), e->role, e->cap, NULL);
+    ui_wrap_paint(e->text, &w);
+    ui_put("\n");
+}
+
+static void echo_render(void *ud, int cols)
+{
+    (void)cols;
+    echo_paint(ud);
+}
+
+static void echo_free(void *ud)
+{
+    struct echo_item *e = ud;
+    free(e->text);
+    free(e);
+}
+
 void prompt_echo_message(const char *text)
 {
-    int cols = ui_columns();
-    enum ui_role role = bash_is_command(text) ? UI_BASH : UI_ECHO;
-
     int cap = settings_get_int(SETTING_ECHO_ROWS, ECHO_ROWS_DEFAULT);
-    struct ui_wrap w = bar_wrap(queued_budget(cols), role, cap > 0 ? cap : 0, NULL);
-    ui_wrap_paint(text, &w);
-    ui_put("\n");
+
+    struct echo_item *e = malloc(sizeof *e);
+    if (e) {
+        e->text = strdup(text ? text : "");
+        e->role = bash_is_command(text) ? UI_BASH : UI_ECHO;
+        e->cap = cap > 0 ? cap : 0;
+        if (!e->text) {
+            free(e);
+            e = NULL;
+        }
+    }
+    // Kept, so the bar and its wrap are laid out again for the new width
+    // rather than the rows being chopped where the old width happened to end.
+    if (e) {
+        viewport_item_begin(echo_render, e, echo_free);
+        echo_paint(e);
+        viewport_item_end();
+    } else {
+        struct echo_item fallback = {(char *)(text ? text : ""),
+                                     bash_is_command(text) ? UI_BASH : UI_ECHO,
+                                     cap > 0 ? cap : 0};
+        echo_paint(&fallback);
+    }
     ui_flush();
 }
 

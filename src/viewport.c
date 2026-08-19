@@ -7,17 +7,35 @@
 #include "tty.h"
 #include "ui.h"
 
-// Rows kept before the oldest are dropped. Generous enough that a long session
-// keeps everything worth scrolling back to.
-#define ROWS_KEEP 20000
+// Entries kept before the oldest is dropped. Generous enough that a long
+// session keeps everything worth scrolling back to.
+#define ITEMS_KEEP 8000
 
-static char **rows;
-static int    nrows, rows_cap;
+// One thing that was printed. `render` draws it again at a given width; when
+// it is NULL the entry is raw output that can only be soft-wrapped, and `cols`
+// is 0 to say the cached rows belong to no particular width.
+struct item {
+    viewport_render_fn render;
+    void  *ud;
+    void (*free_ud)(void *);
+    char **rows;
+    int    nrows;
+    int    cols;
+    unsigned id;
+};
 
-// The row still being written: output arrives mid-row and only becomes a row
-// of its own at a newline.
-static char  *open_row;
+static struct item *items;
+static int    nitems, items_cap;
+static unsigned next_id = 1;
+
+// The entry still being written: output arrives mid-entry and only closes when
+// a wrapped item ends, or at the newline of unwrapped output.
+static char  *open_buf;
 static size_t open_len, open_cap;
+static viewport_render_fn open_render;
+static void  *open_ud;
+static void (*open_free)(void *);
+static int    open_wrapped;
 
 static char **chrome_rows;
 static int    chrome_n, chrome_cap;
@@ -49,41 +67,92 @@ int viewport_active(void) { return active && !suspended; }
 
 void viewport_touch(void) { dirty = 1; }
 
-int viewport_rows(void) { return nrows + (open_len > 0 ? 1 : 0); }
-
 int viewport_scrolled(void) { return scrolled; }
 
-/* --- the row store ------------------------------------------------------- */
+unsigned viewport_mark(void) { return next_id; }
 
-static void rows_push(char *s)
+/* --- the entry store ----------------------------------------------------- */
+
+static void rows_free(struct item *it)
 {
-    if (nrows == rows_cap) {
-        int cap = rows_cap ? rows_cap * 2 : 256;
-        char **grown = realloc(rows, (size_t)cap * sizeof *grown);
-        if (!grown) {
-            free(s);
-            return;
-        }
-        rows = grown;
-        rows_cap = cap;
-    }
-    rows[nrows++] = s;
-
-    if (nrows > ROWS_KEEP) {
-        int drop = nrows - ROWS_KEEP;
-        for (int i = 0; i < drop; i++)
-            free(rows[i]);
-        memmove(rows, rows + drop, (size_t)(nrows - drop) * sizeof *rows);
-        nrows -= drop;
-    }
+    for (int i = 0; i < it->nrows; i++)
+        free(it->rows[i]);
+    free(it->rows);
+    it->rows = NULL;
+    it->nrows = 0;
 }
 
-static void open_close(void)
+static void item_free(struct item *it)
 {
-    char *s = open_len ? strndup(open_row, open_len) : strdup("");
-    open_len = 0;
-    if (s)
-        rows_push(s);
+    rows_free(it);
+    if (it->free_ud && it->ud)
+        it->free_ud(it->ud);
+    memset(it, 0, sizeof *it);
+}
+
+// Splits painted output into the rows it draws as.
+static void rows_set(struct item *it, const char *body, int cols)
+{
+    rows_free(it);
+    it->cols = cols;
+    if (!body)
+        return;
+
+    int cap = 8, n = 0;
+    char **out = malloc((size_t)cap * sizeof *out);
+    if (!out)
+        return;
+
+    const char *p = body;
+    for (;;) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        while (len && p[len - 1] == '\r')
+            len--;
+        if (n == cap) {
+            cap *= 2;
+            char **grown = realloc(out, (size_t)cap * sizeof *grown);
+            if (!grown)
+                break;
+            out = grown;
+        }
+        out[n] = strndup(p, len);
+        if (!out[n])
+            break;
+        n++;
+        if (!nl)
+            break;
+        p = nl + 1;
+        if (!*p)
+            break;
+    }
+    it->rows = out;
+    it->nrows = n;
+}
+
+static struct item *items_push(void)
+{
+    if (nitems == items_cap) {
+        int cap = items_cap ? items_cap * 2 : 256;
+        struct item *grown = realloc(items, (size_t)cap * sizeof *grown);
+        if (!grown)
+            return NULL;
+        items = grown;
+        items_cap = cap;
+    }
+    struct item *it = &items[nitems++];
+    memset(it, 0, sizeof *it);
+    it->id = next_id++;
+
+    if (nitems > ITEMS_KEEP) {
+        int drop = nitems - ITEMS_KEEP;
+        for (int i = 0; i < drop; i++)
+            item_free(&items[i]);
+        memmove(items, items + drop, (size_t)(nitems - drop) * sizeof *items);
+        nitems -= drop;
+        it = &items[nitems - 1];
+    }
+    return it;
 }
 
 static void open_append(const char *s, size_t n)
@@ -92,24 +161,79 @@ static void open_append(const char *s, size_t n)
         size_t cap = open_cap ? open_cap : 256;
         while (cap < open_len + n + 1)
             cap *= 2;
-        char *grown = realloc(open_row, cap);
+        char *grown = realloc(open_buf, cap);
         if (!grown)
             return;
-        open_row = grown;
+        open_buf = grown;
         open_cap = cap;
     }
-    memcpy(open_row + open_len, s, n);
+    memcpy(open_buf + open_len, s, n);
     open_len += n;
-    open_row[open_len] = '\0';
+    open_buf[open_len] = '\0';
+}
+
+// Closes what is open into an entry of its own.
+static void open_close(int cols)
+{
+    struct item *it = items_push();
+    if (!it) {
+        open_len = 0;
+        return;
+    }
+    it->render = open_render;
+    it->ud = open_ud;
+    it->free_ud = open_free;
+    rows_set(it, open_buf ? open_buf : "", cols);
+
+    open_len = 0;
+    open_render = NULL;
+    open_ud = NULL;
+    open_free = NULL;
+}
+
+void viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud)(void *))
+{
+    // Unwrapped output already in hand belongs to the entry before this one.
+    if (viewport_active() && open_len)
+        open_close(0);
+    open_render = render;
+    open_ud = ud;
+    open_free = free_ud;
+
+    // With no viewport the output goes straight to the terminal and there is
+    // no entry to keep; the payload is still owned here, and freed at the end.
+    open_wrapped = viewport_active();
+}
+
+void viewport_item_end(void)
+{
+    if (!open_wrapped) {
+        if (open_free && open_ud)
+            open_free(open_ud);
+        open_render = NULL;
+        open_ud = NULL;
+        open_free = NULL;
+        return;
+    }
+    open_wrapped = 0;
+    open_close(tty_screen_columns());
+    scrolled = 0;
+    dirty = 1;
 }
 
 void viewport_write(const char *s, size_t n)
 {
+    // Inside a wrapped entry everything is one entry, newlines and all.
+    if (open_wrapped) {
+        open_append(s, n);
+        return;
+    }
+
     size_t start = 0;
     for (size_t i = 0; i < n; i++) {
         if (s[i] == '\n') {
             open_append(s + start, i - start);
-            open_close();
+            open_close(0);
             start = i + 1;
         } else if (s[i] == '\r') {
             // A carriage return rewrites the row from its start.
@@ -132,17 +256,17 @@ void viewport_drop_row(void)
         dirty = 1;
         return;
     }
-    if (nrows > 0) {
-        free(rows[--nrows]);
+    if (nitems > 0) {
+        item_free(&items[--nitems]);
         dirty = 1;
     }
 }
 
 void viewport_clear(void)
 {
-    for (int i = 0; i < nrows; i++)
-        free(rows[i]);
-    nrows = 0;
+    for (int i = 0; i < nitems; i++)
+        item_free(&items[i]);
+    nitems = 0;
     open_len = 0;
     scrolled = 0;
     dirty = 1;
@@ -276,6 +400,86 @@ static int paint_row(const char *s, int top, int limit, int W)
 
 /* --- painting ------------------------------------------------------------ */
 
+// The rows an entry draws as at this width, re-rendering it if the width has
+// changed since last time. Raw entries have no renderer and keep their rows.
+static void item_rows(struct item *it, int W)
+{
+    if (!it->render || it->cols == W)
+        return;
+    ui_capture_begin(W);
+    it->render(it->ud, W);
+    char *painted = ui_capture_end();
+    rows_set(it, painted ? painted : "", W);
+    free(painted);
+}
+
+// Screen rows an entry needs at this width.
+static int item_height(struct item *it, int W)
+{
+    item_rows(it, W);
+    if (it->nrows == 0)
+        return it->render ? 0 : 1;
+    int used = 0;
+    for (int i = 0; i < it->nrows; i++)
+        used += wrap_count(it->rows[i], W);
+    return used;
+}
+
+// Unwrapped output that has not reached its newline still shows.
+static int window_pending(struct item *pending)
+{
+    if (open_len && !open_wrapped) {
+        pending->rows = &open_buf;
+        pending->nrows = 1;
+        return 1;
+    }
+    return 0;
+}
+
+// Walk back from the newest entry until the window is covered, so the cost is
+// the size of the window rather than the size of the history. Returns the
+// index of the first entry shown, and how many screen rows it and everything
+// after it need.
+static int window_first(int W, int body, struct item *pending, int total, int *have_out)
+{
+    int want = body + scrolled;
+    int first = total;
+    int have = 0;
+    while (first > 0 && have < want) {
+        struct item *it = (first - 1 == nitems) ? pending : &items[first - 1];
+        have += item_height(it, W);
+        first--;
+    }
+    *have_out = have;
+    return first;
+}
+
+static int body_rows(void)
+{
+    int H = tty_rows();
+    int ch = chrome_n;
+    if (ch > H - 1)
+        ch = H - 1;
+    if (ch < 0)
+        ch = 0;
+    return H - ch;
+}
+
+// Asked, not remembered: the window is recomputed here rather than read off
+// the last paint, so the answer is right even before the next frame lands.
+int viewport_visible(unsigned mark)
+{
+    int W = tty_screen_columns();
+    if (W < 1 || tty_rows() < 1)
+        return 1;
+
+    struct item pending = {0};
+    int total = nitems + window_pending(&pending);
+    int have = 0;
+    int first = window_first(W, body_rows(), &pending, total, &have);
+    return first >= nitems ? mark >= next_id : mark >= items[first].id;
+}
+
 void viewport_paint(void)
 {
     if (!active || suspended)
@@ -292,28 +496,15 @@ void viewport_paint(void)
         ch = 0;
     int body = H - ch;
 
-    // The open row shows as a row of its own until its newline arrives.
-    int total = nrows;
-    char *tail = NULL;
-    if (open_len) {
-        tail = open_row;
-        total++;
-    }
+    struct item pending = {0};
+    int total = nitems + window_pending(&pending);
 
-    // Walk back from the newest row until the window is covered, so the cost
-    // is the size of the window rather than the size of the history.
-    int want = body + scrolled;
-    int first = total;
     int have = 0;
-    while (first > 0 && have < want) {
-        const char *s = (first - 1 == nrows && tail) ? tail : rows[first - 1];
-        have += wrap_count(s, W);
-        first--;
-    }
+    int first = window_first(W, body, &pending, total, &have);
     if (scrolled > have - body)
         scrolled = have - body > 0 ? have - body : 0;
 
-    // Rows of the first stored row that fall above the window.
+    // Screen rows of the first entry that fall above the window.
     int skip = have - body - scrolled;
     if (skip < 0)
         skip = 0;
@@ -336,17 +527,20 @@ void viewport_paint(void)
     }
 
     for (int r = first; r < total && at <= body; r++) {
-        const char *s = (r == nrows && tail) ? tail : rows[r];
-        int need = wrap_count(s, W);
-        if (skip >= need) {
-            skip -= need;
-            continue;
+        struct item *it = (r == nitems) ? &pending : &items[r];
+        item_rows(it, W);
+        for (int i = 0; i < it->nrows && at <= body; i++) {
+            int need = wrap_count(it->rows[i], W);
+            if (skip >= need) {
+                skip -= need;
+                continue;
+            }
+            // A row only partly above the window would need a mid-row start;
+            // the window is sized so this only trims the oldest entry, and
+            // starting it whole is close enough to keep simple.
+            skip = 0;
+            at += paint_row(it->rows[i], at, body - at + 1, W);
         }
-        // Painting from the top of a row that is partly above the window would
-        // need a mid-row start; the window is sized so this only trims the
-        // oldest row, and starting it whole is close enough to keep simple.
-        skip = 0;
-        at += paint_row(s, at, body - at + 1, W);
     }
     for (; at <= body; at++) {
         cup(at, 1);
@@ -373,15 +567,6 @@ void viewport_paint(void)
     direct_str("\x1b[?2026l");
     fflush(stdout);
     dirty = 0;
-}
-
-int viewport_first_visible(void)
-{
-    int H = tty_rows();
-    int ch = chrome_n > H - 1 ? H - 1 : chrome_n;
-    int body = H - (ch > 0 ? ch : 0);
-    int first = viewport_rows() - body - scrolled;
-    return first > 0 ? first : 0;
 }
 
 /* --- chrome -------------------------------------------------------------- */
@@ -427,7 +612,10 @@ void viewport_chrome_keep(int keep)
     if (keep > chrome_n)
         keep = chrome_n;
     for (int i = 0; i < keep; i++) {
-        rows_push(chrome_rows[i]);
+        struct item *it = items_push();
+        if (it)
+            rows_set(it, chrome_rows[i], 0);
+        free(chrome_rows[i]);
         chrome_rows[i] = NULL;
     }
     for (int i = keep; i < chrome_n; i++)
@@ -492,12 +680,16 @@ void viewport_end(void)
 
 void viewport_dump(void)
 {
-    for (int i = 0; i < nrows; i++) {
-        direct_str(rows[i]);
-        direct_str("\x1b[0m\r\n");
+    int W = tty_screen_columns();
+    for (int i = 0; i < nitems; i++) {
+        item_rows(&items[i], W);
+        for (int r = 0; r < items[i].nrows; r++) {
+            direct_str(items[i].rows[r]);
+            direct_str("\x1b[0m\r\n");
+        }
     }
     if (open_len) {
-        direct(open_row, open_len);
+        direct(open_buf, open_len);
         direct_str("\x1b[0m\r\n");
     }
     fflush(stdout);

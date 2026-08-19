@@ -165,7 +165,7 @@ static void on_event(void *ud, const backend_event *ev)
 
         if (s->view.after_activity)
             ui_put("\n");
-        md_render(ev->text, 0);
+        md_render_kept(ev->text, 0);
         ui_put("\n");
         stream_append(s, ev->text);
         view_cluster_forget(&s->view);
@@ -471,7 +471,7 @@ void session_replay(struct session *s)
         if (t->user && *t->user)
             prompt_echo_message(t->user);
         if (t->assistant && *t->assistant) {
-            md_render(t->assistant, 0);
+            md_render_kept(t->assistant, 0);
             ui_put("\n");
         }
         if (t->interrupted) {
@@ -987,7 +987,7 @@ int session_turn(struct session *s, const char *text)
     } else if (*reply && !shown) {
         if (s->view.after_activity)
             ui_put("\n");
-        md_render(reply, 0);
+        md_render_kept(reply, 0);
         ui_put("\n");
     }
     if (meta.interrupted) {

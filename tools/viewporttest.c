@@ -268,6 +268,62 @@ static void check_scroll(struct screen *s)
         fail("new output returns the window to the tail");
 }
 
+// A kept entry is drawn again at the new width, so it lays out for the width
+// the screen has rather than keeping rows measured for a width the screen no
+// longer has. Raw output has no renderer and keeps the rows it arrived with.
+static int rendered_at;
+
+static void width_render(void *ud, int cols)
+{
+    (void)ud;
+    rendered_at = cols;
+    ui_printf("WIDTH-%d", cols);
+    ui_put("\n");
+}
+
+static void check_reflow(struct screen *s)
+{
+    viewport_clear();
+    set_size(80, 24);
+
+    rendered_at = 0;
+    viewport_item_begin(width_render, NULL, NULL);
+    width_render(NULL, 80);
+    viewport_item_end();
+
+    drop();
+    screen_init(s, 24, 80);
+    viewport_paint();
+    pump(s);
+    if (count_on_screen(s, "WIDTH-80") != 1)
+        fail("a kept entry shows what it rendered at the first width");
+
+    // Narrower: the entry is asked to render again rather than being chopped.
+    set_size(48, 24);
+    drop();
+    screen_init(s, 24, 48);
+    viewport_paint();
+    pump(s);
+    if (rendered_at != 48)
+        fail("a resize re-renders a kept entry at the new width");
+    if (count_on_screen(s, "WIDTH-48") != 1)
+        fail("the re-rendered entry is what is shown");
+    if (count_on_screen(s, "WIDTH-80") != 0)
+        fail("the entry laid out for the old width is gone");
+
+    // Raw output has no renderer, so it keeps the rows it was written with.
+    viewport_clear();
+    set_size(80, 24);
+    say("RAW-row");
+    set_size(48, 24);
+    drop();
+    screen_init(s, 24, 48);
+    viewport_paint();
+    pump(s);
+    if (count_on_screen(s, "RAW-row") != 1)
+        fail("raw output survives a resize even without a renderer");
+}
+
 // A row wider than the screen is painted across several screen rows rather
 // than clipped, so narrowing the pane does not hide text.
 static void check_soft_wrap(struct screen *s)
@@ -322,6 +378,7 @@ int main(void)
     check_bottom_up(&s);
     check_scroll(&s);
     check_soft_wrap(&s);
+    check_reflow(&s);
     check_resize_strands_nothing(&s);
 
     fflush(stdout);

@@ -38,7 +38,7 @@ static int   sticky_on;
 static char *sticky_text;
 static int   sticky_drawn;
 static int   sticky_tracking;
-static int   sticky_row;
+static unsigned sticky_mark;
 
 static int   spin_row;
 
@@ -127,14 +127,14 @@ int status_rows_left(void)
     return left > 0 ? left : 0;
 }
 
-// The echo of the prompt is a transcript row, and the viewport knows which
-// rows are on screen. Comparing the two is exact — there is no running count
-// to drift and nothing to re-establish after a resize.
+// The echo of the prompt is a transcript entry, and the viewport knows which
+// entries are on screen. Asking it is exact — there is no running count to
+// drift and nothing to re-establish after a resize.
 static int sticky_gone(void)
 {
     if (!sticky_tracking)
         return 1;
-    return sticky_row < viewport_first_visible();
+    return !viewport_visible(sticky_mark);
 }
 
 static void paint_sticky(void)
@@ -321,12 +321,10 @@ void status_sticky_prompt(const char *text)
     sticky_text = text && *text ? strdup(text) : NULL;
     dirty = 1;
 
-    // The echo has just been written, so its last row is the newest one; the
-    // whole echo is gone once that row has scrolled past the top.
+    // The echo has just been written, so it is the newest entry; it is gone
+    // once that entry has scrolled past the top.
     sticky_tracking = 1;
-    sticky_row = viewport_rows() - 1;
-    if (sticky_row < 0)
-        sticky_row = 0;
+    sticky_mark = viewport_mark() - 1;
 }
 
 void status_sticky_erased(void) { sticky_tracking = 0; }

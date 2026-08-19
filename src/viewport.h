@@ -21,6 +21,18 @@ void viewport_end(void);
 // are re-emitted with it; they take no cells.
 void viewport_write(const char *s, size_t n);
 
+// Everything printed between begin and end is one entry, and `render` can draw
+// it again at any width. A resize re-renders it rather than re-wrapping rows
+// that were laid out for a width the screen no longer has, so gutters, indents
+// and tables come back right instead of being chopped.
+//
+// Output that is not wrapped this way is still kept, and still survives a
+// resize; it just soft-wraps rather than re-flowing.
+typedef void (*viewport_render_fn)(void *ud, int cols);
+
+void viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud)(void *));
+void viewport_item_end(void);
+
 // Hand the terminal to a child and take it back. Suspend leaves the alt screen
 // so the child gets a normal one; resume repaints from scratch.
 void viewport_suspend(void);
@@ -46,11 +58,11 @@ void viewport_drop_row(void);
 
 void viewport_clear(void);
 
-// Rows ever written, and the index of the first one on screen. A caller that
-// wants to know whether something it wrote is still visible compares the row
-// index it kept against the first visible one, which is exact.
-int  viewport_rows(void);
-int  viewport_first_visible(void);
+// The id the next entry will get, and whether the entry with that id is still
+// on screen. A caller keeps the mark it took before printing and asks later;
+// the answer is exact, with no running count to drift.
+unsigned viewport_mark(void);
+int      viewport_visible(unsigned mark);
 
 // Write the transcript to the normal screen, so leaving mux leaves the
 // conversation in the terminal's own scrollback.

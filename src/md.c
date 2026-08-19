@@ -7,6 +7,7 @@
 
 #include "image.h"
 #include "ui.h"
+#include "viewport.h"
 
 #define LINK_MAX 64
 
@@ -729,6 +730,45 @@ static void render_code_line(const char *line, int indent)
     put_safe(line);
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");
+}
+
+struct kept {
+    char *text;
+    int   indent;
+};
+
+static void kept_render(void *ud, int cols)
+{
+    // ui_columns() reports the width being rendered for, so the renderer needs
+    // no argument beyond what it already reads.
+    (void)cols;
+    const struct kept *k = ud;
+    md_render(k->text, k->indent);
+}
+
+static void kept_free(void *ud)
+{
+    struct kept *k = ud;
+    free(k->text);
+    free(k);
+}
+
+void md_render_kept(const char *text, int indent)
+{
+    struct kept *k = malloc(sizeof *k);
+    if (k) {
+        k->text = strdup(text ? text : "");
+        k->indent = indent;
+        if (!k->text) {
+            free(k);
+            k = NULL;
+        }
+    }
+    if (k)
+        viewport_item_begin(kept_render, k, kept_free);
+    md_render(text, indent);
+    if (k)
+        viewport_item_end();
 }
 
 void md_render(const char *text, int indent)
