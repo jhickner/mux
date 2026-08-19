@@ -23,7 +23,6 @@
 
 #define REPL_STYLE_NONE ((signed char)-1)
 
-#define ANIMATE_FRAME_MS 90
 
 struct cell {
     uint32_t    cp;
@@ -828,7 +827,7 @@ static char *read_loop(struct prompt *p)
         // Waiting for a keystroke costs nothing, but something animating in
         // the transcript needs waking on a frame instead.
         int animating = !resizing && p->animate_busy && p->animate_busy(p->animate_ud);
-        int wait = resizing ? TTY_RESIZE_SETTLE_MS : (animating ? ANIMATE_FRAME_MS : -1);
+        int wait = resizing ? TTY_RESIZE_SETTLE_MS : (animating ? SPIN_FRAME_MS : -1);
 
         if (!tty_read(&ev, wait)) {
             if (resizing) {

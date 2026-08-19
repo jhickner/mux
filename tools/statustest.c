@@ -12,6 +12,7 @@
 #include "ui.h"
 #include "viewport.h"
 
+#include "restart.h"
 void restart_shield_thread(void) {}
 
 // sidechannel is stubbed rather than linked: it would drag the session, the
@@ -209,6 +210,41 @@ static void check_sticky(void)
     status_sticky_set(0);
 }
 
+// A spinner is asked to advance by whatever loop happens to be running: the
+// prompt's idle timeout at one frame apiece, the agent's abort check at the
+// rate its driver polls. It may only move on the clock, or two spinners on
+// screen together run at visibly different speeds.
+static void check_spin_rate(void)
+{
+    int    frame = 0;
+    double at = 0;
+
+    if (!spin_advance(&frame, &at))
+        fail("the first tick starts the spinner");
+    if (frame != 1)
+        fail("the first tick shows the second frame");
+
+    int settled = frame;
+    for (int i = 0; i < 100000; i++)
+        spin_advance(&frame, &at);
+    if (frame != settled)
+        fail("a spinner advances on the clock, not on the number of asks");
+
+    // A frame later it moves again, once.
+    at -= (double)SPIN_FRAME_MS / 1000.0;
+    if (!spin_advance(&frame, &at))
+        fail("a spinner advances once a frame has passed");
+    if (frame != settled + 1)
+        fail("a frame that has passed is worth exactly one step");
+
+    // Independent spinners keep their own clocks.
+    int    other = 0;
+    double other_at = 0;
+    spin_advance(&other, &other_at);
+    if (other != 1)
+        fail("a second spinner advances on its own clock");
+}
+
 int main(void)
 {
     setenv("COLUMNS", "80", 1);
@@ -268,6 +304,7 @@ int main(void)
     free(after);
 
     check_sticky();
+    check_spin_rate();
 
     if (failures)
         return 1;

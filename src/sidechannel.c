@@ -149,7 +149,8 @@ static void btw_free(void *ud)
 // the screen where it can be watched, instead of scrolling away with whatever
 // the main turn is printing. Only once it is answered does it become
 // transcript, with the answer under it.
-static int spin_frame;
+static int    spin_frame;
+static double spun_at;
 
 int sidechannel_rows(void)
 {
@@ -189,11 +190,19 @@ void sidechannel_paint(int budget)
     }
 }
 
+// Advanced on the clock, not on the call. This is asked both from the prompt's
+// idle timeout and from the agent's abort check, and the abort check runs at
+// whatever rate the driver polls at — far faster than a frame. Counting calls
+// made the spinner race whenever a main turn was running beside it, and
+// repainted the chrome at the pump's rate for good measure.
 void sidechannel_tick(void)
 {
     if (!sidechannel_rows())
         return;
-    spin_frame++;
+
+    if (!spin_advance(&spin_frame, &spun_at))
+        return;
+
     // The chrome carries the spinner, so the chrome is what has to be drawn
     // again — asked for directly, because status.c only runs a paint loop
     // while a main turn is going and /btw outlives that.

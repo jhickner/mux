@@ -16,8 +16,6 @@
 static const char *const FRAMES[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"};
 #define FRAME_COUNT (COUNT(FRAMES))
 
-#define FRAME_MS 90
-
 static double  started;
 static int     active;
 static int     visible;
@@ -78,6 +76,16 @@ static int size_changing(void)
         dirty = 1;
     }
     return resize_at > 0 && (now_seconds() - resize_at) * 1000.0 < TTY_RESIZE_SETTLE_MS;
+}
+
+int spin_advance(int *frame, double *at)
+{
+    double t = now_seconds();
+    if (*at > 0 && (t - *at) * 1000.0 < SPIN_FRAME_MS)
+        return 0;
+    *at = t;
+    (*frame)++;
+    return 1;
 }
 
 static void erase_block(void)
@@ -158,7 +166,7 @@ void status_paint_spin(void)
 {
     char clock[32], left[64];
     humanize(status_elapsed(), clock, sizeof clock);
-    snprintf(left, sizeof left, "%s %s", FRAMES[frame], clock);
+    snprintf(left, sizeof left, "%s %s", FRAMES[frame % FRAME_COUNT], clock);
 
     ui_esc(ui_style(UI_SPIN));
     ui_put(left);
@@ -221,13 +229,7 @@ void status_tick(void)
 {
     if (!active || !visible || size_changing())
         return;
-    double t = now_seconds();
-    int advanced = 0;
-    if ((t - frame_at) * 1000.0 >= FRAME_MS) {
-        frame = (frame + 1) % FRAME_COUNT;
-        frame_at = t;
-        advanced = 1;
-    }
+    int advanced = spin_advance(&frame, &frame_at);
     if (dirty)
         paint();
     else if (advanced && !paint_spin_only())
