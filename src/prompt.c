@@ -258,7 +258,8 @@ static int rows_above(const struct prompt *p, const char *head, int cols, int sh
 {
     int rows = head ? painted_rows(head, sticky_budget(cols), STICKY_LINES, STICKY_DONE) + 1
                     : 0;
-    rows += sidechannel_rows();
+    if (!p->live_block)
+        rows += sidechannel_rows();
     if (!show_queued)
         return rows;
     size_t budget = queued_budget(cols);
@@ -304,7 +305,11 @@ static void paint_above(const struct prompt *p, const char *head, int cols,
         ui_esc(UI_ERASE_EOL);
         ui_put("\n");
     }
-    sidechannel_paint(sidechannel_rows());
+    // During a live turn this block is the lower half of the status chrome and
+    // prompt_queue_paint() has already put these above the spinner — the same
+    // split head_text() and show_queued make.
+    if (!p->live_block)
+        sidechannel_paint(sidechannel_rows());
     if (!show_queued)
         return;
     size_t budget = queued_budget(cols);
