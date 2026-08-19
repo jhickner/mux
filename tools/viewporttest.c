@@ -120,14 +120,14 @@ static void check_bottom_up(struct screen *s)
 
     // 24 rows, 1 of chrome: the chrome is row 24 and the three rows sit on
     // 21, 22, 23 rather than 1, 2, 3.
-    if (!strstr(s->cell[23], "CHROME-prompt"))
+    if (!strstr(row_text(s, 23), "CHROME-prompt"))
         fail("the chrome is on the last row");
-    if (!strstr(s->cell[22], "third"))
+    if (!strstr(row_text(s, 22), "third"))
         fail("the newest row is directly above the chrome");
-    if (!strstr(s->cell[20], "first"))
+    if (!strstr(row_text(s, 20), "first"))
         fail("the oldest row is pushed down to meet it");
     for (int r = 0; r < 20; r++)
-        if (strstr(s->cell[r], "first") || strstr(s->cell[r], "third"))
+        if (strstr(row_text(s, r), "first") || strstr(row_text(s, r), "third"))
             fail("nothing is painted at the top of an unfilled screen");
 }
 

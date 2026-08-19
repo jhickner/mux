@@ -23,6 +23,12 @@ int  prompt_live_key(void *ud, tty_event *ev);
 // The sections chrome.c composes.
 int  prompt_input_rows(struct prompt *p, int cols);
 void prompt_paint_input(struct prompt *p, int rows, int *caret_row, int *caret_col);
+// A queued line is a reminder of what is waiting, not the thing itself, so a
+// long one is cut short rather than allowed to push everything else off the
+// chrome. Consecutive ones are separated by a blank row, so several read as a
+// list rather than as one run-on block.
+#define QUEUED_LINES 2
+
 int  prompt_queued_rows(struct prompt *p, int cols);
 void prompt_paint_queued(struct prompt *p, int room);
 int  prompt_busy(struct prompt *p);

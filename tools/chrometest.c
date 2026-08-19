@@ -17,6 +17,7 @@
 
 #include "chrome.h"
 #include "prompt.h"
+#include "tty.h"
 #include "restart.h"
 #include "screenmodel.h"
 #include "sidechannel.h"
@@ -81,6 +82,50 @@ static void repaint(struct screen *s)
 }
 
 static int row_of(const struct screen *s, const char *needle) { return row_with(s, needle); }
+
+// Queued the way the prompt queues one: typed at the live prompt and submitted
+// while a turn is running.
+static void queue_line(struct prompt *p, const char *text)
+{
+    for (const char *c = text; *c; c++) {
+        tty_event ev = {.key = TK_CHAR, .cp = (uint32_t)(unsigned char)*c, .text = NULL};
+        prompt_live_key(p, &ev);
+    }
+    tty_event enter = {.key = TK_ENTER, .cp = 0, .text = NULL};
+    prompt_live_key(p, &enter);
+}
+
+// A queued line is a reminder of what is waiting. A long one is cut short, and
+// consecutive ones are told apart by a blank row.
+static void check_queued(struct prompt *p, struct screen *s)
+{
+    char lots[512];
+    memset(lots, 'q', sizeof lots - 1);
+    lots[sizeof lots - 1] = '\0';
+    memcpy(lots, "QFIRST", 6);
+
+    queue_line(p, lots);
+    queue_line(p, "QSECOND");
+    repaint(s);
+
+    int first = row_of(s, "QFIRST");
+    int second = row_of(s, "QSECOND");
+    if (first < 0)
+        fail("a queued line is on screen");
+    if (second < 0)
+        fail("a second queued line is on screen");
+    if (first >= 0 && second >= 0) {
+        if (first >= second)
+            fail("queued lines are painted in the order they were typed");
+        // The first spends its cap, then one blank row, then the second.
+        if (second - first != QUEUED_LINES + 1)
+            fail("a long queued line is cut short and followed by a blank row");
+        if (!row_blank(s, second - 1))
+            fail("the row between two queued lines is blank");
+    }
+    if (row_of(s, "\xe2\x80\xa6") < 0)
+        fail("a queued line that was cut short says so");
+}
 
 int main(void)
 {
@@ -164,6 +209,10 @@ int main(void)
     repaint(&s);
     if (paint_calls != 2)
         fail("each pending side turn gets a row of its own");
+
+    // Queued lines: nothing pending, so the section under test stands alone.
+    pending = 0;
+    check_queued(p, &s);
 
     status_end();
 

@@ -205,6 +205,12 @@ static struct ui_wrap bar_wrap(size_t budget, enum ui_role role, int cap,
                                const char *mark)
 {
     struct ui_wrap w = {0};
+    // The ellipsis a clipped block ends with is written past the budget, so a
+    // capped block keeps a cell back for it. Without that it lands one column
+    // beyond the row and is clipped away with the wrapping turned off, and a
+    // block that was cut short gives no sign of it.
+    if (cap > 0 && budget > 1)
+        budget--;
     w.budget = budget;
     w.gutter = UI_BAR " ";
     w.mark = mark;
@@ -241,12 +247,12 @@ int prompt_busy(struct prompt *p)
 
 int prompt_queued_rows(struct prompt *p, int cols)
 {
-    if (!p)
+    if (!p || p->queued_count == 0)
         return 0;
     size_t budget = queued_budget(cols);
-    int rows = 0;
+    int rows = p->queued_count - 1;      /* the blank between each pair */
     for (int i = 0; i < p->queued_count; i++)
-        rows += painted_rows(p->queued[i], budget, 0, NULL);
+        rows += painted_rows(p->queued[i], budget, QUEUED_LINES, NULL);
     return rows;
 }
 
@@ -257,11 +263,15 @@ void prompt_paint_queued(struct prompt *p, int room)
     size_t budget = queued_budget(ui_columns());
     int used = 0;
     for (int i = 0; i < p->queued_count; i++) {
-        int need = painted_rows(p->queued[i], budget, 0, NULL);
+        int need = painted_rows(p->queued[i], budget, QUEUED_LINES, NULL);
+        if (i)
+            need++;                      /* the blank above this one */
         if (used + need > room)
             break;
         used += need;
-        paint_bars(p->queued[i], budget, UI_DIM, 0, NULL);
+        if (i)
+            ui_put("\n");
+        paint_bars(p->queued[i], budget, UI_DIM, QUEUED_LINES, NULL);
     }
 }
 
