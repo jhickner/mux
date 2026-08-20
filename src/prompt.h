@@ -37,6 +37,9 @@ int  prompt_busy(struct prompt *p);
 
 void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud);
 
+// Enter on an empty line.
+void prompt_set_blank(struct prompt *p, void (*fn)(void *ud), void *ud);
+
 typedef int (*prompt_live_fn)(void *ud, const char *line);
 void prompt_set_live_command(struct prompt *p, prompt_live_fn fn, void *ud);
 
@@ -49,6 +52,10 @@ int  prompt_echoes(struct prompt *p, const char *line);
 
 void prompt_set_restart(struct prompt *p, int (*pending)(void *ud), int (*run)(void *ud),
                         void *ud);
+
+// Take a pending restart if nothing is typed or queued. Called where a turn
+// ends; the prompt loop cannot be relied on to be re-entered before the next.
+void prompt_restart_check(struct prompt *p);
 
 // A thing that animates while the prompt is idle. `busy` says whether anything
 // is running; while it is, the read waits in frames instead of indefinitely so

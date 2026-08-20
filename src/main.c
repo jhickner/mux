@@ -111,6 +111,7 @@ static void side_tick(void *ud)
 }
 static int idle_busy(void *ud)   { return session_idle_busy(ud); }
 static void replay(void *ud)      { session_replay(ud); }
+static void blank_line(void *ud)  { hud_print(ud); }
 
 static int restart_pending(void *ud)
 {
@@ -322,6 +323,7 @@ int main(int argc, char **argv)
     prompt_set_idle(prompt, idle_fds, idle_render, idle_busy, session);
     prompt_set_restart(prompt, restart_pending, idle_restart, session);
     prompt_set_replay(prompt, replay, session);
+    prompt_set_blank(prompt, blank_line, session);
     prompt_set_animate(prompt, side_busy, side_tick, session);
 
     ui_put("\n");
@@ -354,6 +356,7 @@ int main(int argc, char **argv)
                 free(text);
             }
             free(line);
+            prompt_restart_check(prompt);
             continue;
         }
 
@@ -368,6 +371,7 @@ int main(int argc, char **argv)
             cmd_run_deferred(session);
         }
         free(line);
+        prompt_restart_check(prompt);
     }
 
     sidechannel_close_all();

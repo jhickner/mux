@@ -37,6 +37,12 @@ void restart_arm(int safe)
     sigemptyset(&sa.sa_mask);
     // No SA_RESTART: select() should break so a waiting prompt restarts now.
     sigaction(RESTART_SIGNAL, &sa, NULL);
+
+    // An inherited mask would hold it pending for the life of the process.
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, RESTART_SIGNAL);
+    pthread_sigmask(SIG_UNBLOCK, &set, NULL);
 }
 
 // Workers call this so the restart signal only reaches the main thread.

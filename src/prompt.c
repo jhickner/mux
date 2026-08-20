@@ -56,6 +56,8 @@ struct prompt {
     void        *idle_ud;
     void       (*replay)(void *ud);
     void        *replay_ud;
+    void       (*blank)(void *ud);
+    void        *blank_ud;
     int        (*animate_busy)(void *ud);
     void       (*animate_tick)(void *ud);
     void        *animate_ud;
@@ -725,6 +727,13 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         return KEY_OK;
 
     case TK_ENTER: {
+        // The repl consumes enter on an empty line, so it never submits one.
+        if (!live && p->blank && p->repl.len == 0 && !p->repl.dropdown_open &&
+            !p->repl.searching) {
+            chrome_clear();
+            p->blank(p->blank_ud);
+            return KEY_OK;
+        }
         if (feed(p, REPL_KEY_ENTER, 0, NULL) != REPL_SUBMIT)
             return KEY_OK;
         const char *line = repl_line(&p->repl);
@@ -811,8 +820,8 @@ static void idle_ready_hook(void *ud)
     repaint(p);
 }
 
-// A restart would throw away a half-typed line, so the request is sticky and
-// waits for an idle moment.
+// A restart would throw away a half-typed line or a queued one, so the request
+// is sticky and waits for a moment with neither.
 static void restart_check(struct prompt *p)
 {
     if (!p->restart || p->repl.len || p->queued_count)
@@ -823,6 +832,12 @@ static void restart_check(struct prompt *p)
     ui_flush();
     p->restart(p->restart_ud);
     repaint(p);
+}
+
+void prompt_restart_check(struct prompt *p)
+{
+    if (p)
+        restart_check(p);
 }
 
 static char *read_loop(struct prompt *p)
@@ -944,6 +959,12 @@ void prompt_set_replay(struct prompt *p, void (*fn)(void *ud), void *ud)
 {
     p->replay = fn;
     p->replay_ud = ud;
+}
+
+void prompt_set_blank(struct prompt *p, void (*fn)(void *ud), void *ud)
+{
+    p->blank = fn;
+    p->blank_ud = ud;
 }
 
 void prompt_set_echo_filter(struct prompt *p, int (*fn)(void *ud, const char *line),
