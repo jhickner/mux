@@ -773,10 +773,16 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
 
     case TK_ENTER: {
         // The repl consumes enter on an empty line, so it never submits one.
-        if (!live && p->blank && p->repl.len == 0 && !p->repl.dropdown_open &&
+        // It works mid-turn too, which is when the status is most worth asking
+        // for; the spinner steps aside the way a live command's echo does.
+        if (p->blank && p->repl.len == 0 && !p->repl.dropdown_open &&
             !p->repl.searching) {
+            if (live)
+                status_pause();
             chrome_clear();
             p->blank(p->blank_ud);
+            if (live)
+                status_resume();
             return KEY_OK;
         }
         if (feed(p, REPL_KEY_ENTER, 0, NULL) != REPL_SUBMIT)
