@@ -18,10 +18,8 @@
 #include "viewport.h"
 
 #define TERM_H
-// Placeholder cells are ordinary text and belong in the transcript row, so the
-// viewport repaints them with everything else. The graphics commands around
-// them are controls addressed to the terminal and go straight out: re-sending
-// a megabyte of pixels on every frame is not what a repaint should cost.
+// Placeholder cells are text and go in the transcript row; the graphics
+// commands around them go straight to the terminal, not into every repaint.
 static int term_to_row;
 static void term_write_n(const char *s, int n)
 {
@@ -257,16 +255,12 @@ static void write_placeholders(uint32_t id, int indent, int cols, int rows)
     ui_flush();
 }
 
-// The cell box an image is drawn into. Separate from the terminal so it can be
-// checked directly: an image comes out the wrong shape when this is wrong, and
-// that is not something to notice by eye.
+// The cell box an image is drawn into. Split out so it can be tested.
 void image_fit(int img_w, int img_h, int cw, int ch, int cols_box, int rows_box,
                int *cols, int *rows)
 {
     if (img_w > 0 && img_h > 0 && cw > 0 && ch > 0) {
-        // Fitting is for an image too big to show whole, not a reason to blow
-        // a small one up: the box is capped at what the image occupies at its
-        // own size, so it is scaled down or left alone.
+        // Capped at the image's own size: scaled down or left alone, never up.
         int natural_cols = (img_w + cw - 1) / cw;
         int natural_rows = (img_h + ch - 1) / ch;
         if (natural_cols > 0 && natural_cols < cols_box)
@@ -274,12 +268,9 @@ void image_fit(int img_w, int img_h, int cw, int ch, int cols_box, int rows_box,
         if (natural_rows > 0 && natural_rows < rows_box)
             rows_box = natural_rows;
 
-        // The placement is scaled to fill whatever cell box it is given, so
-        // the box's shape is the image's shape. Whichever side the box runs
-        // out of first is spent in full, and the other is rounded to the
-        // nearest cell rather than up — a cell is a coarse unit, and rounding
-        // one way costs a whole cell of distortion where rounding to the
-        // nearest costs at most half.
+        // The placement fills the box, so the box must have the image's
+        // shape. The tighter side is spent in full and the other rounded to
+        // the nearest cell: rounding up costs a whole cell of distortion.
         long box_w = (long)cols_box * cw, box_h = (long)rows_box * ch;
         int  c, r;
         if ((long)img_w * box_h > (long)img_h * box_w) {
@@ -310,8 +301,7 @@ void image_fit(int img_w, int img_h, int cw, int ch, int cols_box, int rows_box,
         return;
     }
 
-    // Nothing is known about the image yet, so neither is its shape. A square
-    // of the box is a guess that at least does not claim one.
+    // Shape unknown: a square claims nothing.
     int side = cols_box < rows_box * 2 ? cols_box : rows_box * 2;
     if (side > 48)
         side = 48;
@@ -349,8 +339,7 @@ static void placed_render(void *ud, int cols)
     place(p->id, p->indent, p->img_w, p->img_h);
 }
 
-// Kept, so a narrower pane re-fits the image to it rather than leaving a block
-// of placeholder cells sized for a width the screen no longer has.
+// Kept, so a narrower pane re-fits the image instead of keeping its old box.
 static unsigned place_kept(uint32_t id, int indent, int img_w, int img_h)
 {
     unsigned mark = 0;
@@ -430,8 +419,7 @@ static int start_convert(const char *path, time_t mtime, int indent)
     snprintf(pending[slot].tmp, sizeof pending[slot].tmp, "%s", tmp);
     snprintf(pending[slot].src, sizeof pending[slot].src, "%s", path);
     pending[slot].mtime = mtime;
-    // The real dimensions only arrive with the converted PNG, so the box keeps
-    // the default fit until finish_pending() can re-fit it.
+    // The dimensions arrive with the converted PNG; finish_pending re-fits.
     pending[slot].mark = place_kept(id, indent, 0, 0);
     cache_store(path, mtime, id, 0, 0);
     return 1;
@@ -475,9 +463,7 @@ static void finish_pending(struct pending *p, int status)
         if (data) {
             kg_transmit_png(p->id, data, len);
 
-            // Only now is the shape known. The placeholders were drawn to a
-            // default box, which fits nothing in particular; re-fit them to
-            // what the image turned out to be.
+            // The shape is known now: re-fit the default box to it.
             int w = 0, h = 0;
             if (png_dims(data, len, &w, &h)) {
                 cache_store(p->src, p->mtime, p->id, w, h);

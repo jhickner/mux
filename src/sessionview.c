@@ -17,9 +17,7 @@
 
 /* --- kept entries --------------------------------------------------------- */
 
-// What a turn prints is kept as entries that can draw themselves again, so a
-// pane that changes width re-renders them at the width it has now instead of
-// breaking rows that were laid out for a width the screen no longer has.
+// What a turn prints, kept as entries that redraw themselves at a new width.
 
 enum keep_kind { KEEP_ACTIVITY, KEEP_CALL, KEEP_OUTPUT, KEEP_DIFF, KEEP_CLUSTER };
 
@@ -65,13 +63,10 @@ static void keep_render(void *ud, int cols)
     }
 }
 
-// Opens the entry, draws it once, closes it. Returns the mark, for a caller
-// that will want to change what it drew.
+// Opens the entry, draws it once, closes it. Returns its mark.
 static unsigned keep(struct keep *k)
 {
-    // Whoever printed last may have left a blank row of its own — a side turn
-    // ends with one. Two is padding drawn twice. Settled here, once, so the
-    // entry draws the same however often it is drawn again.
+    // Settled once, not per redraw: two blanks where the last entry left one.
     if (k->gap && viewport_ends_blank())
         k->gap = 0;
 
@@ -341,8 +336,7 @@ static int cluster_budget(void)
     return budget < 8 ? 8 : budget;
 }
 
-// The whole row is kept, however long it is. What will not fit is cut off
-// when it is drawn, because the width it has to fit is only known then.
+// The whole row is kept; it is cut to the width when drawn.
 void view_cluster_start(struct turnview *v, const char *name, const char *arg, int gap)
 {
     char tag[64];
@@ -422,8 +416,7 @@ static void cluster_paint(const char *line, const unsigned char *spans)
     ui_put("\n");
 }
 
-// The cluster is one entry that keeps being amended: another call of the same
-// tool changes what it says rather than printing a row of its own.
+// One entry, amended: another call of the same tool changes what it says.
 void view_cluster_paint(struct turnview *v)
 {
     if (!v->line)

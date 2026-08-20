@@ -73,9 +73,8 @@ int bash_is_command(const char *line)
     return bash_body(line) != NULL;
 }
 
-// Tabs become the spaces they stood for. A tab is one byte but up to eight
-// columns, so anything measuring the text afterwards — a wrap, a width — would
-// think the line far shorter than the screen showed it.
+// A tab is one byte but up to eight columns, so anything measuring the text
+// afterwards would read the line as shorter than it draws.
 #define TAB_STOP 8
 
 static char *plain_text(const char *raw, size_t len)
@@ -233,10 +232,7 @@ static void context_add(const char *cmd, const char *out, int status)
         bash_context_clear();
 }
 
-// What a shell command left behind. The command runs on the terminal's own
-// screen, which mux gives back for the duration, so nothing of it survives the
-// return to the transcript unless the transcript is told. The command itself
-// is not repeated here: the echo of what was typed is already above it.
+// A command's output. Not the command itself: its echo is the row above.
 struct ran {
     char *out;
 };
@@ -253,15 +249,11 @@ static void ran_render(void *ud, int cols)
     const struct ran *r = ud;
     (void)cols;
 
-    // The output starts on the row under the command that was echoed. What
-    // stands the next thing off it is the blank row printed after the run.
     if (r->out)
         ui_wrapped(r->out, 4, UI_DIM);
 }
 
-// The entry opens empty and is amended as the command writes, so its output
-// arrives where it will stay rather than being blitted onto the screen and
-// then printed again.
+// Opens empty and is amended as the command writes.
 static unsigned keep_ran(void)
 {
     struct ran *r = calloc(1, sizeof *r);
@@ -285,9 +277,7 @@ static void ran_set(unsigned mark, const char *out)
     viewport_item_update(mark);
 }
 
-// A command that asks for the alternate screen wants the terminal to itself.
-// Nothing short of handing it over will do, so the transcript stops here and
-// mux gets out of the way until the command is done.
+// A command asking for the alternate screen wants the terminal to itself.
 static int wants_screen(const char *p, size_t n)
 {
     static const char *const ASK[] = {"\x1b[?1049h", "\x1b[?1047h", "\x1b[?47h"};
@@ -302,7 +292,7 @@ static int wants_screen(const char *p, size_t n)
     return 0;
 }
 
-// Stand down: the terminal's own screen, in the mode the command expects.
+// Give up the screen, in the mode the command expects.
 static void hand_over(int was_raw)
 {
     viewport_suspend();
@@ -373,8 +363,6 @@ void bash_run(const char *line)
         _exit(127);
     }
 
-    // The command writes into an entry of its own. Only one that asks for the
-    // whole screen gets it, and then mux stands down for as long as it runs.
     unsigned mark = viewport_active() ? keep_ran() : 0;
     int      handed = !mark;
 
@@ -470,10 +458,8 @@ void bash_run(const char *line)
                 }
             }
             text = elide(text);
-            // The same text the model is given: what the command said, cut to
-            // a size worth keeping. A command that took the screen is not
-            // written down — a whole editing session replayed as text is not
-            // a record of anything.
+            // A command that took the screen is not written down: a whole
+            // editing session flattened to text is not a record of anything.
             if (!handed)
                 ran_set(mark, text);
             context_add(cmd, text, status);

@@ -94,9 +94,8 @@ size_t ui_fit_bytes(const char *s, size_t budget);
 
 size_t ui_cells_visible(const char *s, size_t n);
 
-// ui_cells_visible over a stream. Producers are free to split an escape or a
-// codepoint between writes, so the state that says "still inside one" has to
-// outlive the call; zero it to start a fresh stream.
+// ui_cells_visible over a stream: an escape or codepoint may be split between
+// writes, so the state outlives the call. Zero it to start a fresh stream.
 struct ui_cellstream {
     unsigned char state;
     unsigned char pending[4];

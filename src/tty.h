@@ -31,8 +31,7 @@ typedef enum {
     TK_EOF,
     TK_SCROLL_UP,
     TK_SCROLL_DOWN,
-    // Read and understood, but nothing the caller acts on — a mouse button, or
-    // the release half of a wheel tick.
+    // Understood but not actionable: a mouse button, a wheel release.
     TK_NONE,
 } tty_key;
 
@@ -68,8 +67,6 @@ unsigned tty_resize_epoch(void);
 int tty_cursor_pos(int *row, int *col);
 
 // How long a resize is left alone before the frame that ends it is painted.
-// Short enough that a zoom does not feel held back, long enough that dragging
-// a border does not repaint on every cell it crosses.
 #define TTY_RESIZE_SETTLE_MS 100
 
 #define TTY_MIN_COLUMNS 20

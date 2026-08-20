@@ -654,10 +654,8 @@ static int fork_target(const char *name, enum fork_where *where)
     return 0;
 }
 
-// What a command can do while a turn is in flight. NOW covers the ones that
-// only touch mux's own display or spawn something of their own; LATER covers
-// the ones that reload or talk to the agent CLI, which would trample the turn,
-// so they are acknowledged straight away and applied once it ends.
+// What a command may do mid-turn. NOW: touches only mux's display. LATER:
+// reloads or talks to the agent CLI, so it is applied once the turn ends.
 enum live_class { LIVE_NO, LIVE_NOW, LIVE_LATER };
 
 static enum live_class live_class(const char *name)
@@ -681,8 +679,7 @@ static enum live_class live_class(const char *name)
 static char *deferred[DEFERRED_MAX];
 static int   deferred_count;
 
-// /btw shows the question itself: on a pinned row while it waits, then above
-// the answer. The ordinary echo would be a third copy of the same line.
+// /btw shows the question itself, twice over; the echo would be a third copy.
 int cmd_self_echoes(const char *line)
 {
     char name[32];

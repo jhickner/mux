@@ -42,8 +42,7 @@ static void styled_free(struct styled *s)
     s->nurls = 0;
 }
 
-// OSC 8 URIs cannot carry controls, and a scheme is what makes a terminal
-// treat the target as a link at all.
+// OSC 8 URIs carry no controls, and need a scheme to be treated as links.
 static int url_ok(const char *p, size_t n)
 {
     size_t i = 0;
@@ -248,10 +247,8 @@ static void emit_slice(const struct styled *s, size_t from, size_t len, enum ui_
         ui_esc(ui_style(UI_RESET));
 }
 
-// `spent` is what the caller has already put on the first row and is not
-// padding for — a bullet, a number, a quote bar. Leaving it out of the budget
-// is a row a cell or two over the width, which the screen then breaks in a
-// place nothing else knows about.
+// `spent` is what the caller already put on the first row and is not padding
+// for: a bullet, a number, a quote bar. Out of the budget it overflows the row.
 static void emit_styled(const struct styled *s, int spent, int first_indent, int indent)
 {
     if (!s->text)
@@ -654,9 +651,8 @@ static char *take_line(const char **text)
     return line;
 }
 
-// Unescaped whole and written once: an escape handed over a byte at a time
-// cannot be recognised as one, and the width tracking behind ui_putn would
-// count its bytes as cells the row does not have.
+// Written once: an escape handed over a byte at a time is not recognised as
+// one, and its bytes are counted as cells.
 static void render_ansi_line(const char *line, int indent)
 {
     size_t n = strlen(line);
@@ -744,8 +740,6 @@ struct kept {
 
 static void kept_render(void *ud, int cols)
 {
-    // ui_columns() reports the width being rendered for, so the renderer needs
-    // no argument beyond what it already reads.
     (void)cols;
     const struct kept *k = ud;
     md_render(k->text, k->indent);

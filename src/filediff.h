@@ -4,13 +4,10 @@
 
 void filediff_snapshot(const char *path);
 
-// What changed since the snapshot, as patch text, and the snapshot is spent.
-// The caller keeps it and hands it back to filediff_render_patch whenever the
-// diff has to be drawn again. NULL when nothing changed.
+// What changed since the snapshot, as patch text; spends the snapshot. NULL
+// when nothing changed. Hand it back to render_patch to draw it again.
 char *filediff_take_patch(void);
 
-// Whether a patch has any changed line to show, for a caller deciding between
-// the diff and something else.
 int filediff_patch_draws(const char *patch);
 
 int filediff_render_patch(const char *patch);

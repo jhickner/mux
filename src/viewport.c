@@ -7,13 +7,9 @@
 #include "tty.h"
 #include "ui.h"
 
-// Entries kept before the oldest is dropped. Generous enough that a long
-// session keeps everything worth scrolling back to.
 #define ITEMS_KEEP 8000
 
-// One thing that was printed. `render` draws it again at a given width; when
-// it is NULL the entry is raw output that can only be soft-wrapped, and `cols`
-// is 0 to say the cached rows belong to no particular width.
+// A printed thing. No render means raw output, soft-wrapped only, with cols 0.
 struct item {
     viewport_render_fn render;
     void  *ud;
@@ -28,8 +24,6 @@ static struct item *items;
 static int    nitems, items_cap;
 static unsigned next_id = 1;
 
-// The entry still being written: output arrives mid-entry and only closes when
-// a wrapped item ends, or at the newline of unwrapped output.
 static char  *open_buf;
 static size_t open_len, open_cap;
 static viewport_render_fn open_render;
@@ -46,8 +40,7 @@ static int suspended;
 static int scrolled;
 static int dirty;
 
-// Button reporting with SGR coordinates: enough for the wheel, and it leaves
-// shift-drag to the terminal so selecting text still works.
+// Button reporting only, so shift-drag still selects text.
 #define MOUSE_ON  "\x1b[?1000h\x1b[?1006h"
 #define MOUSE_OFF "\x1b[?1000l\x1b[?1006l"
 
@@ -65,9 +58,6 @@ static void cup(int row, int col)
     direct_str(esc);
 }
 
-// While suspended the screen belongs to something else — a child process, or
-// a full-screen widget of our own — so output goes straight to the terminal
-// instead of into the transcript.
 int viewport_active(void) { return active && !suspended; }
 
 void viewport_touch(void) { dirty = 1; }
@@ -76,8 +66,7 @@ int viewport_scrolled(void) { return scrolled; }
 
 unsigned viewport_mark(void) { return next_id; }
 
-// Entries are appended and only ever dropped from the front, so the ids run in
-// order and can be searched rather than scanned.
+// Ids run in order: appended at the end, dropped from the front.
 static struct item *item_by_mark(unsigned mark)
 {
     int lo = 0, hi = nitems - 1;
@@ -104,8 +93,7 @@ void viewport_item_update(unsigned mark)
     struct item *it = item_by_mark(mark);
     if (!it || !it->render)
         return;
-    // Nothing is a valid width, so the next paint has to render it again.
-    it->cols = -1;
+    it->cols = -1;             /* no width matches: forces a re-render */
     dirty = 1;
     viewport_paint();
 }
@@ -129,7 +117,6 @@ static void item_free(struct item *it)
     memset(it, 0, sizeof *it);
 }
 
-// Splits painted output into the rows it draws as.
 static void rows_set(struct item *it, const char *body, int cols)
 {
     rows_free(it);
@@ -211,7 +198,6 @@ static void open_append(const char *s, size_t n)
     open_buf[open_len] = '\0';
 }
 
-// Closes what is open into an entry of its own.
 static void open_close(int cols)
 {
     struct item *it = items_push();
@@ -232,15 +218,13 @@ static void open_close(int cols)
 
 unsigned viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud)(void *))
 {
-    // Unwrapped output already in hand belongs to the entry before this one.
     if (viewport_active() && open_len)
         open_close(0);
     open_render = render;
     open_ud = ud;
     open_free = free_ud;
 
-    // With no viewport the output goes straight to the terminal and there is
-    // no entry to keep; the payload is still owned here, and freed at the end.
+    // With no viewport there is no entry to own the payload; item_end frees it.
     open_wrapped = viewport_active();
     return next_id;
 }
@@ -263,7 +247,6 @@ void viewport_item_end(void)
 
 void viewport_write(const char *s, size_t n)
 {
-    // Inside a wrapped entry everything is one entry, newlines and all.
     if (open_wrapped) {
         open_append(s, n);
         return;
@@ -276,7 +259,6 @@ void viewport_write(const char *s, size_t n)
             open_close(0);
             start = i + 1;
         } else if (s[i] == '\r') {
-            // A carriage return rewrites the row from its start.
             open_append(s + start, i - start);
             open_len = 0;
             start = i + 1;
@@ -284,12 +266,11 @@ void viewport_write(const char *s, size_t n)
     }
     open_append(s + start, n - start);
 
-    // New output means following the tail again.
     scrolled = 0;
     dirty = 1;
 }
 
-// Escapes take no cells, so a row of nothing but styling is still blank.
+// Escapes take no cells, so a row of only styling is blank.
 static int row_is_blank(const char *s, size_t n)
 {
     for (size_t i = 0; i < n;) {
@@ -355,10 +336,8 @@ void viewport_clear(void)
 
 /* --- style carried across a soft wrap ------------------------------------ */
 
-// A row wider than the screen is painted over several screen rows, and the
-// continuation has to start in the style the cut left behind. mux emits one
-// complete SGR per role and a reset between them, so everything since the last
-// reset is the state.
+// A soft-wrapped continuation resumes the style the cut left behind. mux emits
+// one complete SGR per role, so everything since the last reset is the state.
 struct style {
     char buf[512];
     size_t len;
@@ -375,7 +354,6 @@ static void style_add(struct style *st, const char *s, size_t n)
 
 static int sgr_is_reset(const char *s, size_t n)
 {
-    // ESC [ ... m, with no parameters or a single zero.
     size_t i = 2;
     if (i >= n)
         return 1;
@@ -387,8 +365,7 @@ static int sgr_is_reset(const char *s, size_t n)
     return 1;
 }
 
-// Consumes one escape sequence or one codepoint at `i`, adding its cells and
-// folding any style it carries into `st`.
+// One escape or one codepoint at `i`: adds its cells, folds its style into st.
 static size_t step(const char *s, size_t n, size_t i, size_t *cells, struct style *st)
 {
     if (s[i] != '\x1b') {
@@ -419,7 +396,6 @@ static size_t step(const char *s, size_t n, size_t i, size_t *cells, struct styl
         if (j < n && s[j] == '\x1b')
             j++;
         size_t end = j < n ? j + 1 : n;
-        // A hyperlink spans the wrap, so it has to be reopened with the style.
         if (st && osc8)
             style_add(st, s + i, end - i);
         return end;
@@ -427,7 +403,6 @@ static size_t step(const char *s, size_t n, size_t i, size_t *cells, struct styl
     return j < n ? j + 1 : n;
 }
 
-// How many screen rows `s` needs at width W.
 static int wrap_count(const char *s, int W)
 {
     size_t n = strlen(s);
@@ -448,8 +423,7 @@ static int wrap_count(const char *s, int W)
 
 /* --- painting ------------------------------------------------------------ */
 
-// The rows an entry draws as at this width, re-rendering it if the width has
-// changed since last time. Raw entries have no renderer and keep their rows.
+// Re-renders the entry if the width changed. Raw entries keep their rows.
 static void item_rows(struct item *it, int W)
 {
     if (!it->render || it->cols == W)
@@ -461,7 +435,6 @@ static void item_rows(struct item *it, int W)
     free(painted);
 }
 
-// Screen rows an entry needs at this width.
 static int item_height(struct item *it, int W)
 {
     item_rows(it, W);
@@ -473,10 +446,8 @@ static int item_height(struct item *it, int W)
     return used;
 }
 
-// A frame is what the screen should look like: one string per screen row, and
-// a hash of each so two frames can be compared without comparing their bytes.
-// An image row is a couple of kilobytes of placeholder cells, so what a paint
-// costs is decided by how much of the frame it can leave alone.
+// What the screen should look like: a string per row, hashed so frames compare
+// without comparing bytes. An image row is kilobytes of placeholder cells.
 struct frame {
     char              **row;
     unsigned long long *hash;
@@ -534,8 +505,7 @@ static void frame_swap(struct frame *a, struct frame *b)
     *b = t;
 }
 
-// Splits one stored row into the screen rows it draws as at width W, each
-// carrying the style the cut before it left behind, and appends them.
+// Appends one stored row as the screen rows it draws as at width W.
 static void row_into_frame(struct frame *f, const char *s, int W)
 {
     size_t n = strlen(s);
@@ -571,7 +541,7 @@ static void row_into_frame(struct frame *f, const char *s, int W)
 
 static char *blank_row(void) { return strdup(""); }
 
-// Unwrapped output that has not reached its newline still shows.
+// Unwrapped output short of its newline still shows.
 static int window_pending(struct item *pending)
 {
     if (open_len && !open_wrapped) {
@@ -582,10 +552,8 @@ static int window_pending(struct item *pending)
     return 0;
 }
 
-// Walk back from the newest entry until the window is covered, so the cost is
-// the size of the window rather than the size of the history. Returns the
-// index of the first entry shown, and how many screen rows it and everything
-// after it need.
+// Walks back from the newest entry until the window is covered: cost is the
+// size of the window, not of the history. Returns the first entry and its rows.
 static int window_first(int W, int body, int scroll, struct item *pending, int total,
                         int *have_out)
 {
@@ -612,8 +580,7 @@ static int body_rows(void)
     return H - ch;
 }
 
-// Asked, not remembered: the window is recomputed here rather than read off
-// the last paint, so the answer is right even before the next frame lands.
+// Recomputed, not read off the last paint, so it is right before the next one.
 int viewport_visible(unsigned mark)
 {
     int W = tty_screen_columns();
@@ -627,9 +594,8 @@ int viewport_visible(unsigned mark)
     return first >= nitems ? mark >= next_id : mark >= items[first].id;
 }
 
-// How far the frame moved as a whole. Scrolling shifts every row, so without
-// this a wheel tick would redraw the screen; with it the terminal moves what
-// it already has and only the rows that came into view are sent.
+// How far the frame moved as a whole, so a scroll sends only the rows that
+// came into view instead of redrawing the screen.
 static int shift_score(int body, int k)
 {
     int score = 0;
@@ -649,9 +615,8 @@ static int frame_shift(int body, int *score_out)
     if (shown.n < body)
         return 0;
 
-    // Staying put is the baseline a shift has to beat. Without it a screen of
-    // repeated rows — an image is exactly that — scores just as well shifted
-    // as not, and the frame would be scrolled for nothing.
+    // Staying put is the baseline: repeated rows (an image) score the same
+    // shifted as not, and would scroll for nothing.
     int best = shift_score(body, 0);
     int best_k = 0;
     for (int k = -(body - 1); k < body; k++) {
@@ -690,8 +655,7 @@ void viewport_paint(void)
     struct item pending = {0};
     int total = nitems + window_pending(&pending);
 
-    // The chrome is the end of the stream, not a fixture on the screen:
-    // scrolling back pushes it off the bottom the way it pushes anything else.
+    // The chrome is the end of the stream, not a fixture: it scrolls off.
     int chrome_shown = ch - scrolled;
     if (chrome_shown < 0)
         chrome_shown = 0;
@@ -701,7 +665,7 @@ void viewport_paint(void)
     int have = 0;
     int first = window_first(W, body, scroll, &pending, total, &have);
     if (first == 0 && have < body + scroll) {
-        // Scrolled past the beginning: the oldest row holds at the top.
+        // Past the beginning: the oldest row holds at the top.
         int most = have + ch - H;
         scrolled = most > 0 ? most : 0;
         chrome_shown = ch - scrolled;
@@ -716,7 +680,6 @@ void viewport_paint(void)
     if (skip < 0)
         skip = 0;
 
-    // Every screen row the window could show, then the slice of it that fits.
     struct frame all = {0};
     for (int r = first; r < total; r++) {
         struct item *it = (r == nitems) ? &pending : &items[r];
@@ -731,8 +694,7 @@ void viewport_paint(void)
 
     frame_reset(&built);
 
-    // A transcript shorter than the window sits on the bottom of it, against
-    // the chrome, rather than hanging from the top of the screen.
+    // A short transcript rests on the bottom rather than hanging from the top.
     int content = all.n - skip;
     if (content < 0)
         content = 0;
@@ -747,12 +709,10 @@ void viewport_paint(void)
     free(all.row);
     free(all.hash);
 
-    // Scrolling back takes the chrome off the bottom a row at a time, so what
-    // is left of it is its first rows.
     for (int i = 0; i < chrome_shown; i++)
         frame_push(&built, strdup(chrome_rows[i]));
 
-    // A resize invalidates everything the terminal is showing.
+    // A resize invalidates everything on screen.
     if (shown_rows != H || shown_cols != W) {
         frame_reset(&shown);
         shown_rows = H;
@@ -763,10 +723,7 @@ void viewport_paint(void)
     direct_str("\x1b[?25l");
     direct_str("\x1b[?7l");
 
-    // Let the terminal move the rows it already has, and send only what that
-    // leaves uncovered.
-    // The chrome moves with everything else now, so the whole screen is one
-    // thing to shift rather than a body with a fixture under it.
+    // Move what the terminal already has; send only what that leaves uncovered.
     int span = built.n;
     int score = 0;
     int k = shown.n == built.n ? frame_shift(span, &score) : 0;
@@ -778,8 +735,7 @@ void viewport_paint(void)
         direct_str(esc);
         direct_str("\x1b[r");
 
-        // Follow the move in the record of what is displayed, so the diff
-        // below only names rows the scroll did not put right.
+        // Follow the move, so the diff below only names rows it missed.
         for (int i = 0; i < span; i++) {
             int j = k > 0 ? i : span - 1 - i;
             int from = j + k;
@@ -950,7 +906,6 @@ void viewport_resume(void)
     direct_str("\x1b[?1049h");
     direct_str(MOUSE_ON);
     fflush(stdout);
-    // Whatever had the screen left it in a state this knows nothing about.
     viewport_forget();
     viewport_paint();
 }

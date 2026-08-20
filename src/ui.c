@@ -28,8 +28,6 @@ static const struct {
     [UI_STICKY]  = { NULL, COLOR_BASE9, 90 },
     [UI_STICKY_DONE] = { NULL, COLOR_BASE11, 90 },
     [UI_BRAND]   = { NULL, COLOR_BASE12, 0 },
-    // A side turn's question, washed like the echo and the sticky prompt: it
-    // is something the user asked, not something the reply said.
     [UI_SIDE]    = { NULL, COLOR_BASE12, 90 },
     [UI_CHROME]  = { NULL, COLOR_UI_BORDER_FLOAT, 0 },
     [UI_DIM]     = { NULL, COLOR_UI_DIM, 0 },
@@ -206,9 +204,8 @@ void ui_cursor_restore(void)
     fflush(stdout);
 }
 
-// The block painters render into a buffer so their rows can be blitted onto
-// absolute screen rows; nothing written here reaches the terminal, so it is
-// also where output tracking has to stop.
+// The chrome renders into a buffer, so nothing written here reaches the
+// terminal and output tracking stops.
 static FILE  *sink;
 static char  *sink_buf;
 static size_t sink_len;
@@ -219,7 +216,6 @@ static void out(const char *s, size_t n)
         fwrite(s, 1, n, sink);
         return;
     }
-    // The viewport keeps the transcript itself; only it writes to the screen.
     if (viewport_active()) {
         viewport_write(s, n);
         return;
@@ -263,12 +259,8 @@ char *ui_sink_end(void)
 
 void ui_raw(int on) { raw_newlines = on; }
 
-// Captures nest. The viewport re-renders an entry inside one, and an entry's
-// renderer may capture on its own account — a side turn's answer renders its
-// markdown at an inner width before putting a bar down each row. With a single
-// buffer the inner begin wiped what the outer had collected and the inner end
-// switched capturing off altogether, so everything after it escaped into the
-// transcript instead of into the entry being rendered.
+// Captures nest: the viewport re-renders an entry inside one, and the entry's
+// renderer may capture on its own account.
 #define CAPTURE_MAX 8
 
 struct capture {
@@ -313,8 +305,8 @@ static void emit(const char *s, size_t n)
 
 void ui_capture_begin(int columns)
 {
-    // The depth is counted even past the limit, so a begin and its end always
-    // pair up and an overflow cannot pop somebody else's buffer.
+    // Counted past the limit, so begin and end pair up and an overflow cannot
+    // pop somebody else's buffer.
     if (capture_depth < CAPTURE_MAX) {
         struct capture *c = &captures[capture_depth];
         c->len = 0;
@@ -346,8 +338,7 @@ void ui_putn(const char *s, size_t n)
         emit(s, n);
         return;
     }
-    // The viewport splits rows itself, and a row it paints needs no carriage
-    // return: every one is placed absolutely.
+    // The viewport places every row absolutely, so no carriage return.
     if (!sink && viewport_active()) {
         viewport_write(s, n);
         return;
@@ -405,8 +396,7 @@ void ui_esc(const char *s)
 
 void ui_pad(int cells)
 {
-    // Through ui_putn, not emit: the indent is transcript width like any other,
-    // and the anchor has to count it.
+    // Through ui_putn, not emit: the indent counts toward the width.
     for (int i = 0; i < cells; i++)
         ui_putn(" ", 1);
 }
@@ -445,10 +435,8 @@ int ui_screen_columns(void)
     return cols > 0 ? cols : tty_screen_columns();
 }
 
-// The layout has a floor, so a narrower pane gets lines wider than the screen.
-// Every row we count is then several rows the terminal holds, so the cursor-up
-// rewind falls short and each repaint stacks a fresh copy into the scrollback.
-// Draw nothing until the pane is wide enough to hold a painted row.
+// The layout has a floor, so a narrower pane would get rows wider than the
+// screen. Draw nothing until it is wide enough for one.
 int ui_too_narrow(void) { return ui_screen_columns() < TTY_MIN_COLUMNS; }
 
 static unsigned decode(const char *s, size_t n, size_t *i)
@@ -512,8 +500,7 @@ size_t ui_cells_n(const char *s, size_t n)
 
 size_t ui_cells(const char *s) { return s ? ui_cells_n(s, strlen(s)) : 0; }
 
-// The string-terminated sequences: OSC, DCS, APC, PM and SOS all run to BEL or
-// to ST, and none of them puts a cell on screen.
+// OSC, DCS, APC, PM and SOS: run to BEL or ST, and put no cell on screen.
 static int opens_string(unsigned char c)
 {
     return c == ']' || c == 'P' || c == '_' || c == '^' || c == 'X';
@@ -547,8 +534,7 @@ size_t ui_cells_visible(const char *s, size_t n)
     return ui_cells_stream(&st, s, n);
 }
 
-// Where the stream is between calls. TEXT also covers a codepoint whose bytes
-// have not all arrived; they wait in `pending` until it is whole.
+// Where the stream is between calls. TEXT covers a part-arrived codepoint too.
 enum { CS_TEXT, CS_ESC, CS_CSI, CS_STR, CS_STR_ESC };
 
 static size_t utf8_len(unsigned char c)
@@ -596,7 +582,6 @@ size_t ui_cells_stream(struct ui_cellstream *st, const char *s, size_t n)
             continue;
 
         case CS_STR_ESC:
-            // ESC \ ends it; any other ESC-something restarts the scan.
             st->state = c == '\\' ? CS_TEXT : CS_STR;
             continue;
 
@@ -610,8 +595,7 @@ size_t ui_cells_stream(struct ui_cellstream *st, const char *s, size_t n)
             continue;
         }
 
-        // Hold the bytes of a codepoint until it is complete: a width can only
-        // be asked of the whole thing.
+        // A width can only be asked of a whole codepoint.
         if (st->pending_n == 0 && c < 0x80) {
             cells += (size_t)cell_width(c);
             continue;

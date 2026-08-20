@@ -15,9 +15,8 @@
 #include "ui.h"
 #include "viewport.h"
 
-// SIGURG rather than SIGUSR1: its default action is to ignore, so `make
-// install` can signal every mux on the machine without killing the ones still
-// running a build that predates this handler.
+// SIGURG, not SIGUSR1: its default action is to ignore, so signalling every
+// mux on the machine cannot kill one built before this handler.
 #define RESTART_SIGNAL SIGURG
 
 static volatile sig_atomic_t wanted;
@@ -36,14 +35,11 @@ void restart_arm(int safe)
     struct sigaction sa = {0};
     sa.sa_handler = on_signal;
     sigemptyset(&sa.sa_mask);
-    // No SA_RESTART: the pending select() should break so a session waiting at
-    // the prompt restarts now rather than after the user's next keystroke.
+    // No SA_RESTART: select() should break so a waiting prompt restarts now.
     sigaction(RESTART_SIGNAL, &sa, NULL);
 }
 
-// Worker threads call this so the restart signal is only ever delivered to the
-// main thread, where the prompt loop can act on it and no blocking call in a
-// worker is interrupted for it.
+// Workers call this so the restart signal only reaches the main thread.
 void restart_shield_thread(void)
 {
     sigset_t set;
@@ -62,8 +58,7 @@ int restart_wanted(void)
     return wanted != 0;
 }
 
-// The session owns every string below and is freed before the exec, so each
-// argument is copied into a pool that outlives it.
+// The session is freed before the exec, so its strings are copied to a pool.
 static char  pool[8192];
 static size_t pool_used;
 
@@ -118,8 +113,7 @@ int restart_exec(struct session *s)
         if (!argv[i])
             return 0;
 
-    // Checked before the session is torn down: past that point there is no
-    // session left to return to, so an unrunnable binary has to be caught here.
+    // Checked before the teardown: past it there is nothing to return to.
     if (strchr(argv[0], '/') && access(argv[0], X_OK) != 0)
         return 0;
 
@@ -127,8 +121,8 @@ int restart_exec(struct session *s)
     ui_put("\n");
     ui_flush();
 
-    // The agent CLI is a child of this process: it has to go before the exec,
-    // or the replacement leaves it orphaned and still holding the session.
+    // The agent CLI is a child: it goes before the exec, or it is orphaned
+    // still holding the session.
     session_free(s);
     viewport_end();
     ui_raw(0);

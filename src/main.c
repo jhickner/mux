@@ -246,9 +246,8 @@ int main(int argc, char **argv)
         ui_cursor_plain();
         viewport_begin();
 
-        // Whatever was typed before raw mode landed was echoed by the terminal
-        // onto the line we are about to draw on. Wipe it: the bytes themselves
-        // are still queued and surface at the prompt once it opens.
+        // The terminal echoed whatever was typed before raw mode onto the row
+        // we are about to draw on. The bytes are queued and reach the prompt.
         if (tty_input_waiting()) {
             ui_esc("\r");
             ui_esc(UI_ERASE_BELOW);

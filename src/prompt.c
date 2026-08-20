@@ -205,10 +205,8 @@ static struct ui_wrap bar_wrap(size_t budget, enum ui_role role, int cap,
                                const char *mark)
 {
     struct ui_wrap w = {0};
-    // The ellipsis a clipped block ends with is written past the budget, so a
-    // capped block keeps a cell back for it. Without that it lands one column
-    // beyond the row and is clipped away with the wrapping turned off, and a
-    // block that was cut short gives no sign of it.
+    // The ellipsis is written past the budget, so a capped block keeps a cell
+    // back for it or it lands off the row and is clipped away.
     if (cap > 0 && budget > 1)
         budget--;
     w.budget = budget;
@@ -310,8 +308,7 @@ static void emit_input(struct prompt *p, int rows)
     }
 }
 
-// Renders the input into the frame and reports how many rows it needs. The
-// frame is kept, so painting it afterwards costs nothing extra.
+// Renders the input into the frame and reports its rows. The frame is kept.
 int prompt_input_rows(struct prompt *p, int cols)
 {
     if (!p)
@@ -363,8 +360,8 @@ static void echo_paint(const struct echo_item *e)
 {
     struct ui_wrap w = bar_wrap(queued_budget(ui_columns()), e->role, e->cap, NULL);
     ui_wrap_paint(e->text, &w);
-    // A blank row under it, to stand the reply off — except for a shell
-    // command, whose output starts on the very next row.
+    // A blank row under it, except for a shell command: its output starts on
+    // the next row.
     if (e->role != UI_BASH)
         ui_put("\n");
 }
@@ -396,8 +393,7 @@ void prompt_echo_message(const char *text)
             e = NULL;
         }
     }
-    // Kept, so the bar and its wrap are laid out again for the new width
-    // rather than the rows being chopped where the old width happened to end.
+    // Kept, so the bar and its wrap are laid out again at a new width.
     if (e) {
         viewport_item_begin(echo_render, e, echo_free);
         echo_paint(e);
@@ -815,8 +811,8 @@ static void idle_ready_hook(void *ud)
     repaint(p);
 }
 
-// A half-typed line or a queued message is work the restart would throw away,
-// so it waits: the request is sticky and the next idle moment picks it up.
+// A restart would throw away a half-typed line, so the request is sticky and
+// waits for an idle moment.
 static void restart_check(struct prompt *p)
 {
     if (!p->restart || p->repl.len || p->queued_count)
@@ -832,23 +828,20 @@ static void restart_check(struct prompt *p)
 static char *read_loop(struct prompt *p)
 {
     repaint(p);
-    // Covers a request that landed mid-turn, when nothing was waiting in select.
     restart_check(p);
 
     int resizing = 0;
     for (;;) {
         tty_event ev;
 
-        // Waiting for a keystroke costs nothing, but something animating in
-        // the transcript needs waking on a frame instead.
+        // Something animating needs waking on a frame, not on a keystroke.
         int animating = !resizing && p->animate_busy && p->animate_busy(p->animate_ud);
         int wait = resizing ? TTY_RESIZE_SETTLE_MS : (animating ? SPIN_FRAME_MS : -1);
 
         if (!tty_read(&ev, wait)) {
             if (resizing) {
                 resizing = 0;
-                // Whatever else drew on the pane while it was resizing, this
-                // frame goes over all of it.
+                // Goes over whatever else drew on the pane while it resized.
                 viewport_forget();
                 repaint(p);
             } else {
@@ -881,8 +874,6 @@ static char *read_loop(struct prompt *p)
 
         default:
             repaint(p);
-            // Picks up a request that was held back by a line the user has
-            // now cleared, without waiting for the next wakeup.
             restart_check(p);
             continue;
         }

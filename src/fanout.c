@@ -79,9 +79,7 @@ struct worker {
     int           laid;
 };
 
-// The board is one transcript entry that knows how to draw itself. It is
-// redrawn in place while the turns run and again when they are all back, and
-// a resize re-renders it at the new width like anything else.
+// One transcript entry, redrawn in place while the turns run.
 struct board {
     struct worker w[FAN_MAX];
     int           n;
@@ -365,8 +363,7 @@ static void label_row(const struct board *b, int width, int closing)
     ui_put("\n");
 }
 
-// Too narrow to put side by side: one column after another, each under its
-// own heading.
+// Too narrow for columns: one after another, each under its own heading.
 static void board_stacked(struct board *b, int cols)
 {
     for (int i = 0; i < b->n; i++) {
@@ -382,9 +379,7 @@ static void board_stacked(struct board *b, int cols)
     }
 }
 
-// How much of a running board is shown. Its columns only grow, and it is at
-// the end of the transcript, so without a cap a long turn would push
-// everything else off the screen.
+// A cap, so a long turn does not push the rest of the transcript off screen.
 static int live_rows(void)
 {
     int rows = tty_rows() * 2 / 3;
@@ -395,8 +390,7 @@ static void board_render(void *ud, int cols)
 {
     struct board *b = ud;
 
-    // The workers write to their logs as they go, and this runs on whatever
-    // paint asked for it.
+    // The workers are still writing to their logs.
     pthread_mutex_lock(&board_lock);
 
     int width = board_width(b, cols);
@@ -533,8 +527,7 @@ int fanout_run(struct session *s, const char *prompt)
     if (!prompt || !*prompt)
         return 0;
 
-    // The board outlives this call: the transcript keeps it and draws it again
-    // at whatever width the screen has later.
+    // The board outlives this call: the transcript keeps it.
     struct board *b = calloc(1, sizeof *b);
     if (!b)
         return 0;
@@ -580,8 +573,7 @@ int fanout_run(struct session *s, const char *prompt)
         }
     }
 
-    // With no viewport there is no transcript to keep the board in, so it is
-    // printed once at the end and freed here instead.
+    // With no viewport, print it once at the end and free it here.
     unsigned mark = 0;
     int      kept = viewport_active();
     if (kept) {
@@ -609,8 +601,6 @@ int fanout_run(struct session *s, const char *prompt)
         status_set_word(line);
         status_tick();
 
-        // The columns only change as fast as the turns write to them, and each
-        // redraw lays out every row that has arrived.
         double now = now_seconds();
         if (kept && now - painted >= 0.09) {
             painted = now;

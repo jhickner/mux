@@ -226,9 +226,8 @@ static void patch_add(struct patch *p, const char *s, size_t n)
     p->buf[p->len] = '\0';
 }
 
-// The ops as patch text: the changed lines with their context, hunks split
-// where the file was skipped over. What is worth showing is decided here;
-// how wide it is drawn is decided every time it is drawn.
+// The ops as patch text: changed lines with context, hunks split at skips.
+// What to show is decided here; how wide, every time it is drawn.
 static char *patch_of_ops(const struct op *ops, int nops, const char *path)
 {
     char *show = calloc((size_t)nops, 1);
@@ -356,7 +355,6 @@ int filediff_render_patch(const char *patch)
             continue;
         }
         if (n >= 2 && p[0] == '@' && p[1] == '@') {
-            // A hunk after another is a stretch of the file passed over.
             if (in_hunk && rows > 0 && rows < MAX_ROWS)
                 print_note("\xe2\x8b\xae");
             in_hunk = 1;

@@ -7,10 +7,8 @@
 #include "ui.h"
 #include "viewport.h"
 
-// The chrome under the transcript. The painters render into a buffer, this
-// splits it into rows, and the viewport paints them; nothing here touches the
-// screen or tracks where the terminal's cursor is, because the viewport paints
-// every frame whole.
+// The chrome under the transcript: renders into a buffer, splits it into rows,
+// hands them to the viewport. Nothing here touches the screen.
 
 #define ROWS_MAX 128
 
@@ -71,8 +69,7 @@ void block_row_begin(int row)
     ui_sink_begin();
 }
 
-// A single chrome row repainted in place. The viewport paints the whole frame
-// either way, so this only saves the painters from re-rendering the rest.
+// One chrome row in place: saves re-rendering the rest, not the paint.
 void block_row_end(void)
 {
     char *body = ui_sink_end();

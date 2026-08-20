@@ -42,8 +42,8 @@ void view_tool_output(const char *text, enum ui_role role);
 
 void view_tool_error(const char *text);
 
-// The same things, kept as entries that draw themselves again when the width
-// changes. `gap` puts a blank row above, inside the entry, so it moves with it.
+// The same things as entries that redraw themselves. `gap` puts a blank row
+// above, inside the entry.
 void view_keep_activity(const char *marker, const char *text, enum ui_role role, int gap);
 
 void view_keep_tool_call(const char *name, const char *arg, int gap);

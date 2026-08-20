@@ -243,8 +243,7 @@ static void on_event(void *ud, const backend_event *ev)
             status_pause();
             paused = 1;
 
-            // The patch is kept, not the rows it drew: a diff has to be able
-            // to lay itself out again at another width.
+            // The patch is kept, not the rows it drew.
             char *patch;
             if (ev->diff) {
                 patch = strdup(ev->diff);

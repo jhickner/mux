@@ -20,9 +20,8 @@
 
 #define SIDE_MAX 4
 
-// A side turn is a note in the margin. The person who asked is in the middle
-// of another conversation and never sees a prompt from this one, so anything
-// that ends in a question to them is a dead end on the screen.
+// The asker never sees a prompt from this turn, so a question back is a dead
+// end on the screen.
 #define BTW_PREAMBLE                                                            \
     "Answer the question below as an aside in a conversation you are not part " \
     "of. The person asking cannot reply to you: you get one answer and the "    \
@@ -35,8 +34,7 @@ struct stream {
     size_t len, cap;
 };
 
-// A question that has been answered: the two are one transcript entry, so the
-// answer cannot drift away from what was asked.
+// An answered question: one entry, so the answer stays with what was asked.
 struct btw {
     char *question;
     char *answer;
@@ -78,8 +76,7 @@ static const char *const SPIN[] = {"\u280b", "\u2819", "\u2839", "\u2838", "\u28
 #define BTW_DONE "\u2713 "
 #define BTW_FAIL "\u00d7 "
 
-// Every row carries the brand bar, which is what tells a side answer apart
-// from the main turn it landed in the middle of.
+// Every row carries the bar, which tells a side answer from the main turn.
 static void bar_rows(const char *painted, enum ui_role role)
 {
     size_t len = strlen(painted);
@@ -116,11 +113,8 @@ static void btw_render(void *ud, int cols)
     char mark[16];
     snprintf(mark, sizeof mark, "%s", b->failed ? BTW_FAIL : BTW_DONE);
 
-    // A blank row above: this lands wherever the main turn had got to, which
-    // is as likely as not to be the last line of some tool's output. Whether
-    // one was owed was settled when the entry was made — asking again while
-    // redrawing would answer about the transcript as it is now, with this
-    // entry already in it.
+    // Settled when the entry was made: asking now would answer about a
+    // transcript this entry is already in.
     if (b->gap)
         ui_put("\n");
 
@@ -139,8 +133,6 @@ static void btw_render(void *ud, int cols)
         return;
     }
 
-    // The answer sits under the question inside the same entry, so it stays
-    // with the question however far the transcript has moved on.
     int inner = ui_columns() - 2;
     ui_capture_begin(inner > 8 ? inner : 8);
     if (b->failed)
@@ -152,7 +144,6 @@ static void btw_render(void *ud, int cols)
         bar_rows(painted, UI_BRAND);
         free(painted);
     }
-    // A blank row of its own, so the next thing printed does not run into it.
     ui_put("\n");
 }
 
@@ -164,10 +155,8 @@ static void btw_free(void *ud)
     free(b);
 }
 
-// A question still waiting is chrome, not transcript: it stays on the bottom of
-// the screen where it can be watched, instead of scrolling away with whatever
-// the main turn is printing. Only once it is answered does it become
-// transcript, with the answer under it.
+// A question still waiting is chrome: it stays on screen instead of scrolling
+// away with the main turn. Answered, it becomes transcript.
 static int    spin_frame;
 static double spun_at;
 
@@ -194,8 +183,6 @@ void sidechannel_paint(int budget)
             room = 8;
         size_t fit = ui_fit_visible(flat, strlen(flat), (size_t)room);
 
-        // Erased with the style already set, so the wash covers the whole row
-        // rather than stopping where the text does.
         ui_esc(ui_style(UI_SIDE));
         ui_esc(UI_ERASE_EOL);
         ui_put(UI_BAR);
@@ -211,11 +198,8 @@ void sidechannel_paint(int budget)
     }
 }
 
-// Advanced on the clock, not on the call. This is asked both from the prompt's
-// idle timeout and from the agent's abort check, and the abort check runs at
-// whatever rate the driver polls at — far faster than a frame. Counting calls
-// made the spinner race whenever a main turn was running beside it, and
-// repainted the chrome at the pump's rate for good measure.
+// Advanced on the clock, not on the call: the abort check calls this at the
+// driver's poll rate, far faster than a frame.
 void sidechannel_tick(void)
 {
     if (!sidechannel_rows())
@@ -224,9 +208,7 @@ void sidechannel_tick(void)
     if (!spin_advance(&spin_frame, &spun_at))
         return;
 
-    // The chrome carries the spinner, so the chrome is what has to be drawn
-    // again — asked for directly, because status.c only runs a paint loop
-    // while a main turn is going and /btw outlives that.
+    // Asked for directly: status.c only paints while a main turn runs.
     chrome_paint();
 }
 
@@ -244,9 +226,8 @@ static struct side *free_slot(void)
     return NULL;
 }
 
-// The child is a non-interactive mux resuming this conversation with
-// --fork-session, so it reads the shared context but writes its turn to a
-// session of its own, leaving the transcript we are still using alone.
+// A non-interactive mux resuming this conversation with --fork-session: it
+// reads the shared context but writes its turn to a session of its own.
 static int spawn(struct side *c, const struct session *s, const char *prompt)
 {
     int out_pipe[2], err_pipe[2];
@@ -415,8 +396,6 @@ static void emit(struct side *c, int status)
     if (!answer) {
         failed = 1;
         if (why) {
-            // Only the child's own diagnosis explains an empty side turn, so
-            // it is worth more here than a generic failure line.
             answer = why;
         } else if (WIFEXITED(status) && WEXITSTATUS(status) == 127) {
             snprintf(note, sizeof note, "could not run %s for the side turn",
@@ -473,9 +452,8 @@ static int drain(struct stream *s)
             break;                      /* the child is gone: real EOF */
         if (errno == EINTR)
             continue;
-        // mux's SIGWINCH and SIGURG handlers carry no SA_RESTART, and this runs
-        // from the turn's abort check, so an interrupted read is routine and
-        // must not be mistaken for the child finishing.
+        // SIGWINCH and SIGURG carry no SA_RESTART, so EINTR here is routine
+        // and is not the child finishing.
         if (errno == EAGAIN || errno == EWOULDBLOCK)
             return 1;
         break;
@@ -500,12 +478,9 @@ void sidechannel_poll(void)
         while (waitpid(c->pid, &status, 0) < 0 && errno == EINTR)
             ;
 
-        // The slot is taken out of service before anything that might paint,
-        // because a paint can reach back into this poll: chrome asks the
-        // prompt whether the session is busy, the session asks the driver, and
-        // the driver services the client, which runs the abort check that
-        // calls this. A slot still holding a reaped pid answers the same
-        // question again at every level it is re-entered.
+        // Released before anything that might paint: a paint reaches back
+        // into this poll through the busy check, and a slot still holding a
+        // reaped pid emits again at every level it is re-entered.
         struct side done = *c;
         slot_init(c);
 
@@ -515,7 +490,6 @@ void sidechannel_poll(void)
         stream_free(&done.err);
         free(done.question);
 
-        // The question is no longer pending, so the row it had must go.
         chrome_paint();
     }
 }
