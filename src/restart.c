@@ -79,6 +79,20 @@ static char *arg_copy(const char *s)
     return out;
 }
 
+// The rows travel to the successor through a file in the temp directory; it
+// unlinks it once it has them.
+static int dump_path(char *out, size_t n)
+{
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || !*tmp)
+        tmp = "/tmp";
+    size_t len = strlen(tmp);
+    while (len > 1 && tmp[len - 1] == '/')
+        len--;
+    return snprintf(out, n, "%.*s/" APP_NAME "-restore-%ld", (int)len, tmp,
+                    (long)getpid()) < (int)n;
+}
+
 int restart_exec(struct session *s)
 {
     wanted = 0;
@@ -127,16 +141,39 @@ int restart_exec(struct session *s)
     ui_put("\n");
     ui_flush();
 
+    // Handed over rather than torn down, so the screen is not wiped between
+    // the two builds.
+    char path[4096];
+    int carried = dump_path(path, sizeof path) && viewport_dump(path);
+    if (carried) {
+        char *arg = arg_copy(path);
+        if (arg) {
+            argv[n++] = "--restore";
+            argv[n++] = arg;
+            argv[n] = NULL;
+        } else {
+            unlink(path);
+            carried = 0;
+        }
+    }
+
     // The agent CLI is a child: it goes before the exec, or it is orphaned
     // still holding the session.
     session_free(s);
-    viewport_end();
+    if (carried)
+        viewport_handoff();
+    else
+        viewport_end();
     ui_raw(0);
     tty_raw_end();
 
     execvp(argv[0], argv);
 
     // The session is already gone, so there is nothing to fall back to.
+    if (carried) {
+        unlink(path);
+        viewport_end();
+    }
     ui_raw(0);
     fprintf(stderr, APP_NAME ": could not exec %s\n", argv[0]);
     _exit(1);

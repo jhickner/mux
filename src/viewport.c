@@ -36,6 +36,7 @@ static int    chrome_n, chrome_cap;
 static int    chrome_caret_row, chrome_caret_col = -1;
 
 static int active;
+static int handed;              /* the alt screen was left up for a successor */
 static int suspended;
 static int scrolled;
 static int dirty;
@@ -876,14 +877,71 @@ void viewport_begin(void)
 
 void viewport_end(void)
 {
-    if (!active)
+    if (!active && !handed)
         return;
     active = 0;
+    handed = 0;
     suspended = 0;
     direct_str(MOUSE_OFF);
     direct_str("\x1b[?25h");
     direct_str("\x1b[?1049l");
     fflush(stdout);
+}
+
+// Exec'ing a successor: the alt screen stays up, so nothing flashes and the
+// terminal's own scrollback is never touched. It restores the rows itself.
+void viewport_handoff(void)
+{
+    if (!active)
+        return;
+    active = 0;
+    handed = 1;
+    suspended = 0;
+    direct_str(MOUSE_OFF);
+    direct_str("\x1b[?25h");
+    fflush(stdout);
+}
+
+// Started into an alt screen a predecessor left up.
+void viewport_inherit(void)
+{
+    if (active)
+        return;
+    active = 1;
+    direct_str(MOUSE_ON);
+    fflush(stdout);
+    viewport_forget();
+}
+
+// Rows, not entries: what comes back soft-wraps like any raw output, since the
+// renderers that drew it belong to a process that is gone.
+int viewport_dump(const char *path)
+{
+    FILE *f = fopen(path, "w");
+    if (!f)
+        return 0;
+    for (int i = 0; i < nitems; i++)
+        for (int j = 0; j < items[i].nrows; j++)
+            fprintf(f, "%s\n", items[i].rows[j]);
+    if (open_len)
+        fwrite(open_buf, 1, open_len, f);
+    int ok = ferror(f) == 0;
+    return fclose(f) == 0 && ok;
+}
+
+int viewport_restore(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return 0;
+
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0)
+        viewport_write(buf, n);
+    fclose(f);
+    viewport_paint();
+    return 1;
 }
 
 

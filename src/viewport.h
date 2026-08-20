@@ -11,6 +11,13 @@ int  viewport_active(void);
 void viewport_begin(void);
 void viewport_end(void);
 
+// Restarting into a new binary: the alt screen is handed over rather than torn
+// down, and the rows travel through a file.
+void viewport_handoff(void);
+void viewport_inherit(void);
+int  viewport_dump(const char *path);
+int  viewport_restore(const char *path);
+
 // Transcript output, split into rows. Escapes ride inside a row, taking no cells.
 void viewport_write(const char *s, size_t n);
 

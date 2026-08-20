@@ -68,6 +68,7 @@ static void usage(void)
             "  -r         --resume: pick a past conversation to continue\n"
             "  --session id  resume a specific conversation (used by the fork commands)\n"
             "  --fork     with --session: branch off it instead of writing back to it\n"
+            "  --restore f  take over the screen from a restarting mux (used by /restart)\n"
             "  -h         this help\n"
             "\n"
             "With a prompt on the command line, answer it and exit.\n",
@@ -161,6 +162,7 @@ int main(int argc, char **argv)
         {"resume",  no_argument,       NULL, 'r'},
         {"session", required_argument, NULL, 'S'},
         {"fork",    no_argument,       NULL, 'F'},
+        {"restore", required_argument, NULL, 'R'},
         {"help",    no_argument,       NULL, 'h'},
         {NULL,      0,                 NULL, 0},
     };
@@ -170,6 +172,7 @@ int main(int argc, char **argv)
     const char *effort = NULL;
     const char *dir = NULL;
     const char *session_arg = NULL;
+    const char *restore_arg = NULL;
     int fork_session = 0;
     int safe_mode = 0;
     int resume = 0;
@@ -185,6 +188,7 @@ int main(int argc, char **argv)
         case 'r': resume = 1; break;
         case 'S': session_arg = optarg; break;
         case 'F': fork_session = 1; break;
+        case 'R': restore_arg = optarg; break;
         default:  usage(); return opt == 'h' ? 0 : 2;
         }
     }
@@ -245,7 +249,15 @@ int main(int argc, char **argv)
         atexit(restore_terminal);
         ui_raw(1);
         ui_cursor_plain();
-        viewport_begin();
+
+        // A restart: the alt screen is already up and holds the last frame.
+        if (restore_arg) {
+            viewport_inherit();
+            viewport_restore(restore_arg);
+            unlink(restore_arg);
+        } else {
+            viewport_begin();
+        }
 
         // The terminal echoed whatever was typed before raw mode onto the row
         // we are about to draw on. The bytes are queued and reach the prompt.
