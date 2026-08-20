@@ -100,6 +100,14 @@ static void paint(void *ud)
 
 int pick_run(const char *title, const struct pick_item *items, int count, int initial)
 {
+    return pick_run_keys(title, items, count, initial, NULL, NULL);
+}
+
+int pick_run_keys(const char *title, const struct pick_item *items, int count,
+                  int initial, const char *shortcuts, int *pressed)
+{
+    if (pressed)
+        *pressed = 0;
     if (count <= 0)
         return -1;
 
@@ -145,6 +153,15 @@ int pick_run(const char *title, const struct pick_item *items, int count, int in
             if (ev.cp == 3 || ev.cp == 4) {
                 chrome_modal(NULL, NULL);
                 return -1;
+            }
+
+            if (shortcuts && ev.cp > 0 && ev.cp < 128 &&
+                strchr(shortcuts, (int)ev.cp)) {
+                int chosen = v.sel;
+                chrome_modal(NULL, NULL);
+                if (pressed)
+                    *pressed = (int)ev.cp;
+                return chosen;
             }
 
             if (ev.cp >= '1' && ev.cp <= '9' && (int)(ev.cp - '1') < count)

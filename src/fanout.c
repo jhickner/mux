@@ -9,6 +9,7 @@
 
 #include "app.h"
 #include "filediff.h"
+#include "muxcfg.h"
 #include "md.h"
 #include "restart.h"
 #include "session.h"
@@ -21,10 +22,13 @@
 #include "viewport.h"
 #include "vendor/agents/backend.h"
 
-#define FAN_MAX     8
-#define FAN_ROSTER  "claude,codex,grok"
+#define FAN_MAX MUX_MAX
 
-#define FAN_COL_MIN 14
+// The table needs room for a name beside a readable answer; under that it
+// falls back to one board after another.
+#define FAN_LABEL_MIN 8
+#define FAN_LABEL_MAX 22
+#define FAN_BODY_MIN  24
 
 enum fan_state { FAN_WORK, FAN_OK, FAN_FAIL };
 
@@ -44,18 +48,31 @@ struct entry {
     int           painted_width;
 };
 
-struct cell;
+// One laid-out line of a cell, pointing into an entry's painted text.
+struct cell {
+    const char *text;
+    size_t      bytes;
+    int         width;
+};
+
+struct rowbuf {
+    struct cell *v;
+    int          n;
+    int          cap;
+};
 
 struct worker {
     char name[32];
     char model[128];
     char effort[32];
+    char system[MUX_PROMPT];
     char resolved[128];
 
     const char *cwd;
     const char *prompt;
     const char *permission;
 
+    double      began;
     char       *reply;
     char        error[256];
     double      secs;
@@ -72,9 +89,7 @@ struct worker {
     int           after_activity;
     int           after_tool;
 
-    struct cell  *rows;
-    int           nrows;
-    int           rows_cap;
+    struct rowbuf rows;
     int           rows_width;
     int           laid;
 };
@@ -83,7 +98,13 @@ struct worker {
 struct board {
     struct worker w[FAN_MAX];
     int           n;
-    int           live;         /* still running: only the tail of a column shows */
+    int           live;         /* still running: only the tail of a cell shows */
+
+    char          config[MUX_NAME];
+    char         *prompt;
+    char         *head;         /* the prompt, painted at the body width */
+    int           head_width;
+    struct rowbuf head_rows;
 };
 
 static atomic_int      aborted;
@@ -91,14 +112,6 @@ static atomic_int      show_thinking;
 static pthread_mutex_t board_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int fan_aborted(void) { return atomic_load(&aborted); }
-
-static int known_backend(const char *name)
-{
-    for (const char *const *p = backend_names(); *p; p++)
-        if (strcmp(name, *p) == 0)
-            return 1;
-    return 0;
-}
 
 static struct entry *log_add(struct worker *w, enum fan_kind kind, const char *text)
 {
@@ -130,7 +143,7 @@ static void log_free(struct worker *w)
     }
     free(w->log);
     w->log = NULL;
-    w->count = w->cap = w->laid = w->nrows = 0;
+    w->count = w->cap = w->laid = w->rows.n = 0;
 }
 
 static void fan_event(void *ud, const backend_event *ev)
@@ -244,132 +257,250 @@ static const char *entry_painted(struct entry *e, int width)
     return e->painted;
 }
 
-struct cell {
-    const char *text;
-    size_t      bytes;
-    int         width;
-};
-
-static int board_width(const struct board *b, int cols)
-{
-    return (cols - 1) / b->n;
-}
-
-static void column_row(struct worker *w, const char *text, size_t bytes, int width)
+static void rowbuf_add(struct rowbuf *rb, const char *text, size_t bytes, int width)
 {
     if (ui_cells_visible(text, bytes) > (size_t)width)
         bytes = ui_fit_visible(text, bytes, (size_t)width);
 
-    if (w->nrows == w->rows_cap) {
-        int cap = w->rows_cap ? w->rows_cap * 2 : 64;
-        struct cell *grown = realloc(w->rows, (size_t)cap * sizeof *grown);
+    if (rb->n == rb->cap) {
+        int cap = rb->cap ? rb->cap * 2 : 64;
+        struct cell *grown = realloc(rb->v, (size_t)cap * sizeof *grown);
         if (!grown)
             return;
-        w->rows = grown;
-        w->rows_cap = cap;
+        rb->v = grown;
+        rb->cap = cap;
     }
-    w->rows[w->nrows++] = (struct cell){text, bytes, (int)ui_cells_visible(text, bytes)};
+    rb->v[rb->n++] = (struct cell){text, bytes, (int)ui_cells_visible(text, bytes)};
+}
+
+static void rowbuf_split(struct rowbuf *rb, const char *painted, int width)
+{
+    const char *p = painted;
+    while (p && *p) {
+        const char *nl = strchr(p, '\n');
+        rowbuf_add(rb, p, nl ? (size_t)(nl - p) : strlen(p), width);
+        if (!nl)
+            break;
+        p = nl + 1;
+    }
 }
 
 // Called with the board locked: the workers are still writing to their logs.
-static void column_lay(struct worker *w, int width)
+static void cell_lay(struct worker *w, int width)
 {
     if (w->rows_width != width) {
         w->rows_width = width;
-        w->nrows = 0;
+        w->rows.n = 0;
         w->laid = 0;
     }
 
     int count = w->count;
 
-    for (; w->laid < count; w->laid++) {
-        const char *p = entry_painted(&w->log[w->laid], width);
-        while (p && *p) {
-            const char *nl = strchr(p, '\n');
-            column_row(w, p, nl ? (size_t)(nl - p) : strlen(p), width);
-            if (!nl)
-                break;
-            p = nl + 1;
-        }
-    }
+    for (; w->laid < count; w->laid++)
+        rowbuf_split(&w->rows, entry_painted(&w->log[w->laid], width), width);
+}
+
+static void head_lay(struct board *b, int width)
+{
+    if (b->head && b->head_width == width)
+        return;
+
+    free(b->head);
+    b->head_rows.n = 0;
+    b->head_width = width;
+    ui_capture_begin(width);
+    ui_wrapped(b->prompt ? b->prompt : "", 0, UI_ECHO);
+    b->head = ui_capture_end();
+    rowbuf_split(&b->head_rows, b->head, width);
 }
 
 static void board_lay(struct board *b, int width)
 {
+    head_lay(b, width);
     for (int i = 0; i < b->n; i++)
-        column_lay(&b->w[i], width - 1);
+        cell_lay(&b->w[i], width);
 }
 
-static int board_height(const struct board *b)
+// The y axis: what answered, and how it was asked to.
+static int worker_labels(const struct worker *w, int live, char out[4][64],
+                         enum ui_role *role)
 {
-    int tallest = 0;
-    for (int i = 0; i < b->n; i++)
-        if (b->w[i].nrows > tallest)
-            tallest = b->w[i].nrows;
-    return tallest;
+    int n = 0;
+
+    role[n] = w->state == FAN_FAIL ? UI_ERROR : UI_BOLD;
+    snprintf(out[n++], 64, "%s", w->name);
+
+    const char *model = *w->resolved ? w->resolved : *w->model ? w->model : "default";
+    if (!strncmp(w->name, "claude", 6) && !strncmp(model, "claude-", 7) && model[7])
+        model += 7;
+    role[n] = UI_DIM;
+    snprintf(out[n++], 64, "%s", model);
+
+    if (*w->effort && strcmp(w->effort, "default")) {
+        role[n] = UI_DIM;
+        snprintf(out[n++], 64, "%s", w->effort);
+    }
+
+    if (w->began) {
+        double secs = w->state == FAN_WORK ? now_seconds() - w->began : w->secs;
+        role[n] = live && w->state == FAN_WORK ? UI_ACCENT : UI_DIM;
+        snprintf(out[n++], 64, "%.1fs", secs);
+    }
+    return n;
 }
 
-static void board_row(const struct board *b, int width, const int *from, int r)
+static int label_width(const struct board *b, int live, int budget)
 {
-    int last = -1;
-    for (int i = 0; i < b->n; i++)
-        if (from[i] + r < b->w[i].nrows)
-            last = i;
+    int width = FAN_LABEL_MIN;
 
     for (int i = 0; i < b->n; i++) {
-        if (i > last)
-            break;
-        int cell = width - (i + 1 < b->n ? 0 : 1);
-        int at = from[i] + r;
-        if (at >= b->w[i].nrows) {
-            if (i < last)
-                ui_pad(cell);
-            continue;
+        char         text[4][64];
+        enum ui_role role[4];
+        int          n = worker_labels(&b->w[i], live, text, role);
+        for (int r = 0; r < n; r++) {
+            int cells = (int)ui_cells(text[r]);
+            if (cells > width)
+                width = cells;
         }
-        const struct cell *c = &b->w[i].rows[at];
-        ui_putn(c->text, c->bytes);
-
-        ui_esc(ui_style(UI_RESET));
-        if (i < last)
-            ui_pad(cell - c->width);
     }
+    if (width > FAN_LABEL_MAX)
+        width = FAN_LABEL_MAX;
+    return width > budget ? budget : width;
+}
+
+static void rule(int labelw, int bodyw, const char *left, const char *mid,
+                 const char *right)
+{
+    ui_esc(ui_style(UI_CHROME));
+    ui_put(left);
+    for (int i = 0; i < labelw + 2; i++)
+        ui_put("\xe2\x94\x80");
+    ui_put(mid);
+    for (int i = 0; i < bodyw + 2; i++)
+        ui_put("\xe2\x94\x80");
+    ui_put(right);
+    ui_esc(ui_style(UI_RESET));
     ui_put("\n");
 }
 
-static void label_row(const struct board *b, int width, int closing)
+static void edge(void)
 {
-    for (int i = 0; i < b->n; i++) {
-        const struct worker *w = &b->w[i];
-        char text[160];
-        enum ui_role role = UI_BOLD;
+    ui_esc(ui_style(UI_CHROME));
+    ui_put("\xe2\x94\x82");
+    ui_esc(ui_style(UI_RESET));
+}
 
-        if (!closing) {
-            snprintf(text, sizeof text, "%s", w->name);
-        } else if (w->state == FAN_FAIL) {
-            snprintf(text, sizeof text, "%s \xc2\xb7 failed", w->name);
-            role = UI_ERROR;
-        } else {
-            snprintf(text, sizeof text, "%s \xc2\xb7 %.1fs", w->name, w->secs);
-            role = UI_DIM;
-        }
-
-        size_t bytes = ui_fit_bytes(text, (size_t)(width - 1));
+static void table_row(int labelw, int bodyw, const char *label, enum ui_role role,
+                      const struct cell *c)
+{
+    edge();
+    ui_put(" ");
+    if (label && *label) {
+        size_t bytes = ui_fit_bytes(label, (size_t)labelw);
         ui_esc(ui_style(role));
-        ui_putn(text, bytes);
+        ui_putn(label, bytes);
         ui_esc(ui_style(UI_RESET));
-        if (i + 1 < b->n)
-            ui_pad(width - (int)ui_cells_n(text, bytes));
+        ui_pad(labelw - (int)ui_cells_n(label, bytes));
+    } else {
+        ui_pad(labelw);
     }
+    ui_put(" ");
+
+    edge();
+    ui_put(" ");
+    if (c) {
+        ui_putn(c->text, c->bytes);
+        ui_esc(ui_style(UI_RESET));
+        ui_pad(bodyw - c->width);
+    } else {
+        ui_pad(bodyw);
+    }
+    ui_put(" ");
+    edge();
     ui_put("\n");
 }
 
-// Too narrow for columns: one after another, each under its own heading.
+static void head_block(struct board *b, int labelw, int bodyw)
+{
+    int rows = b->head_rows.n > 0 ? b->head_rows.n : 1;
+
+    for (int r = 0; r < rows; r++)
+        table_row(labelw, bodyw, r ? NULL : b->config, UI_DIM,
+                  r < b->head_rows.n ? &b->head_rows.v[r] : NULL);
+}
+
+// What the row was told to always do, kept at the top of its cell: the answer
+// below it scrolls, this does not.
+static int standing_row(const struct worker *w, int bodyw, char *out, size_t cap,
+                        struct cell *pin)
+{
+    if (!*w->system)
+        return 0;
+
+    char text[MUX_PROMPT + 8];
+    snprintf(text, sizeof text, "\xe2\x80\xba %s", w->system);
+
+    size_t bytes = ui_fit_bytes(text, (size_t)(bodyw > 1 ? bodyw - 1 : 1));
+    snprintf(out, cap, "%s%.*s%s%s", ui_style(UI_DIM), (int)bytes, text,
+             text[bytes] ? "\xe2\x80\xa6" : "", ui_style(UI_RESET));
+
+    size_t n = strlen(out);
+    *pin = (struct cell){out, n, (int)ui_cells_visible(out, n)};
+    return 1;
+}
+
+static void worker_block(struct worker *w, int live, int labelw, int bodyw, int cap)
+{
+    char         label[4][64];
+    enum ui_role role[4];
+    int          labels = worker_labels(w, live, label, role);
+
+    char        note[MUX_PROMPT + 64];
+    struct cell pin;
+    int         pinned = standing_row(w, bodyw, note, sizeof note, &pin);
+
+    int from = 0, rows = w->rows.n;
+    if (cap && rows > cap - pinned) {
+        from = rows - (cap - pinned);
+        rows = cap - pinned;
+    }
+
+    int height = rows + pinned > labels ? rows + pinned : labels;
+    if (height < 1)
+        height = 1;
+
+    for (int r = 0; r < height; r++) {
+        const struct cell *c = NULL;
+        if (pinned && r == 0)
+            c = &pin;
+        else if (r - pinned < rows)
+            c = &w->rows.v[from + r - pinned];
+
+        table_row(labelw, bodyw, r < labels ? label[r] : NULL,
+                  r < labels ? role[r] : UI_DIM, c);
+    }
+}
+
+// Too narrow for a table: one board after another, each under its own heading.
 static void board_stacked(struct board *b, int cols)
 {
     for (int i = 0; i < b->n; i++) {
         struct worker *w = &b->w[i];
-        ui_bar(ui_style(UI_CHROME), "%s \xc2\xb7 %.1fs", w->name, w->secs);
+        char           label[4][64];
+        enum ui_role   role[4];
+        int            labels = worker_labels(w, b->live, label, role);
+
+        ui_bar(ui_style(UI_CHROME), "%s \xc2\xb7 %s", label[0],
+               labels > 1 ? label[1] : "");
         ui_put("\n");
+        if (*w->system) {
+            char note[MUX_PROMPT + 64];
+            struct cell pin;
+            if (standing_row(w, cols, note, sizeof note, &pin)) {
+                ui_putn(pin.text, pin.bytes);
+                ui_put("\n");
+            }
+        }
         for (int e = 0; e < w->count; e++) {
             const char *painted = entry_painted(&w->log[e], cols);
             if (painted)
@@ -393,31 +524,36 @@ static void board_render(void *ud, int cols)
     // The workers are still writing to their logs.
     pthread_mutex_lock(&board_lock);
 
-    int width = board_width(b, cols);
-    if (width < FAN_COL_MIN) {
+    // The last column stays clear: a glyph there wraps on some terminals.
+    int total = cols - 1;
+    int labelw = label_width(b, b->live, total / 3);
+    int bodyw = total - labelw - 7;
+
+    if (bodyw < FAN_BODY_MIN || labelw < FAN_LABEL_MIN) {
         board_stacked(b, cols);
         pthread_mutex_unlock(&board_lock);
         return;
     }
 
-    board_lay(b, width);
-    int height = board_height(b);
-    int body = height;
-    if (b->live && body > live_rows())
-        body = live_rows();
+    board_lay(b, bodyw);
 
-    int from[FAN_MAX];
-    for (int i = 0; i < b->n; i++) {
-        int tail = b->w[i].nrows > body ? b->w[i].nrows - body : 0;
-        from[i] = tail;
+    // While the turns run, each row shows only its tail, so a long answer
+    // cannot push the rest of the transcript off screen.
+    int cap = 0;
+    if (b->live) {
+        cap = live_rows() / b->n;
+        if (cap < 3)
+            cap = 3;
     }
 
     ui_put("\n");
-    label_row(b, width, 0);
-    for (int r = 0; r < body; r++)
-        board_row(b, width, from, r);
-    if (!b->live)
-        label_row(b, width, 1);
+    rule(labelw, bodyw, "\xe2\x94\x8c", "\xe2\x94\xac", "\xe2\x94\x90");
+    head_block(b, labelw, bodyw);
+    for (int i = 0; i < b->n; i++) {
+        rule(labelw, bodyw, "\xe2\x94\x9c", "\xe2\x94\xbc", "\xe2\x94\xa4");
+        worker_block(&b->w[i], b->live, labelw, bodyw, cap);
+    }
+    rule(labelw, bodyw, "\xe2\x94\x94", "\xe2\x94\xb4", "\xe2\x94\x98");
     ui_put("\n");
 
     pthread_mutex_unlock(&board_lock);
@@ -428,9 +564,12 @@ static void board_free(void *ud)
     struct board *b = ud;
     for (int i = 0; i < b->n; i++) {
         free(b->w[i].reply);
-        free(b->w[i].rows);
+        free(b->w[i].rows.v);
         log_free(&b->w[i]);
     }
+    free(b->head_rows.v);
+    free(b->head);
+    free(b->prompt);
     free(b);
 }
 
@@ -444,6 +583,7 @@ static void *fan_work(void *arg)
     o.name = w->name;
     o.model = *w->model ? w->model : NULL;
     o.effort = *w->effort ? w->effort : NULL;
+    o.system = *w->system ? w->system : NULL;
     o.cwd = w->cwd;
     o.session_name = APP_NAME " fanout";
     o.ephemeral = 1;
@@ -462,7 +602,9 @@ static void *fan_work(void *arg)
     b->set_abort_check(b, fan_aborted);
     b->set_event_cb(b, fan_event, w);
 
-    double started = now_seconds();
+    pthread_mutex_lock(&board_lock);
+    double started = w->began = now_seconds();
+    pthread_mutex_unlock(&board_lock);
 
     backend_result meta = {0};
     char *reply = b->ask_ex(b, w->prompt, &meta);
@@ -497,31 +639,6 @@ static void *fan_work(void *arg)
     return NULL;
 }
 
-static int roster(struct worker *w, int max, const char *spec)
-{
-    int n = 0;
-    const char *p = spec;
-    while (*p && n < max) {
-        while (*p == ',' || *p == ' ')
-            p++;
-        size_t len = strcspn(p, ", ");
-        if (!len)
-            break;
-        char name[32];
-        if (len < sizeof name) {
-            memcpy(name, p, len);
-            name[len] = '\0';
-            int seen = 0;
-            for (int i = 0; i < n; i++)
-                seen |= strcmp(w[i].name, name) == 0;
-            if (!seen && known_backend(name))
-                snprintf(w[n++].name, sizeof w->name, "%s", name);
-        }
-        p += len;
-    }
-    return n;
-}
-
 int fanout_run(struct session *s, const char *prompt)
 {
     if (!prompt || !*prompt)
@@ -532,26 +649,26 @@ int fanout_run(struct session *s, const char *prompt)
     if (!b)
         return 0;
 
-    const char *spec = settings_get_str(SETTING_MUX_BACKENDS, FAN_ROSTER);
-    int n = roster(b->w, FAN_MAX, spec);
+    struct mux_spec spec[FAN_MAX];
+    int             n = muxcfg_load(spec, FAN_MAX);
     if (n < 1) {
         free(b);
-        ui_error("no known backends in " SETTING_MUX_BACKENDS " (%s)", spec);
+        ui_error("the mux matrix is empty \xe2\x80\x94 /mux config to fill it in");
         ui_put("\n");
         ui_flush();
         return 0;
     }
     b->n = n;
     b->live = 1;
+    b->prompt = strdup(prompt);
+    snprintf(b->config, sizeof b->config, "%s", muxcfg_active());
 
     for (int i = 0; i < n; i++) {
         struct worker *w = &b->w[i];
-        const char *model = session_saved_model(w->name);
-        const char *effort = session_saved_effort(w->name);
-        if (model)
-            snprintf(w->model, sizeof w->model, "%s", model);
-        if (effort)
-            snprintf(w->effort, sizeof w->effort, "%s", effort);
+        snprintf(w->name, sizeof w->name, "%s", spec[i].backend);
+        snprintf(w->model, sizeof w->model, "%s", spec[i].model);
+        snprintf(w->effort, sizeof w->effort, "%s", spec[i].effort);
+        snprintf(w->system, sizeof w->system, "%s", spec[i].prompt);
         w->cwd = session_cwd(s);
         w->prompt = prompt;
         w->permission = session_permission(s);

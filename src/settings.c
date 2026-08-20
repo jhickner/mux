@@ -7,7 +7,7 @@
 
 #define MAX_SETTINGS 512
 #define MAX_KEY      MAX_SETTING_KEY
-#define MAX_VALUE    256
+#define MAX_VALUE    MAX_SETTING_VALUE
 
 static struct {
     char key[MAX_KEY];

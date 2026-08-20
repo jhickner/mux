@@ -17,6 +17,7 @@
 #define SETTING_COLOR_EMPHASIS "color_emphasis"
 
 #define MAX_SETTING_KEY    64
+#define MAX_SETTING_VALUE  256
 
 void settings_open(const char *path);
 

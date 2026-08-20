@@ -5,6 +5,12 @@
 #include "vendor/repl.h"
 
 struct session;
+struct pick_item;
+
+// The model and effort lists the pickers offer for a backend. Never empty:
+// a backend with no list of its own gets a lone "default".
+const struct pick_item *cmd_model_choices(const char *backend, int *count);
+const struct pick_item *cmd_effort_choices(const char *backend, int *count);
 
 extern const ReplCommand CMD_TABLE[];
 extern const int         CMD_COUNT;

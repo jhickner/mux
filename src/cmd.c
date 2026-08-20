@@ -10,6 +10,9 @@
 #include "app.h"
 #include "fanout.h"
 #include "hud.h"
+#include "models.h"
+#include "muxcfg.h"
+#include "muxmake.h"
 #include "pick.h"
 #include "prompt.h"
 #include "restart.h"
@@ -31,7 +34,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/effort", "set reasoning/thinking effort", "[level]"},
     {"/backend", "continue with another backend", "<name>"},
     {"/cd", "work in another directory, starting fresh there", "<path>"},
-    {"/mux", "ask several backends the same thing", "<prompt>"},
+    {"/mux", "ask the whole matrix the same thing", "<prompt>|config|make <what>"},
     {"/btw", "answer this on the side, without waiting", "<prompt>"},
     {"/thinking", "show or hide the model's reasoning", "[on|off]"},
     {"/tools", "how much of each tool call to show", "[compact|full]"},
@@ -51,23 +54,6 @@ const ReplCommand CMD_TABLE[] = {
     {"/quit", "leave", NULL},
 };
 const int CMD_COUNT = COUNT(CMD_TABLE);
-
-static const struct pick_item MODELS[] = {
-    {"claude-opus-5", "most capable"},
-    {"claude-opus-5[1m]", "opus with a 1M-token context"},
-    {"claude-sonnet-5", "balanced speed and capability"},
-    {"claude-haiku-4-5", "fastest"},
-    {"claude-fable-5", "compact"},
-    {"default", "whatever the claude CLI is configured to use"},
-};
-#define MODEL_COUNT (COUNT(MODELS))
-
-static const struct pick_item GROK_MODELS[] = {
-    {"grok-4.6", "latest frontier model"},
-    {"grok-4.5", "the prior generation"},
-    {"default", "whatever the grok CLI is configured to use"},
-};
-#define GROK_MODEL_COUNT (COUNT(GROK_MODELS))
 
 static const struct pick_item CLAUDE_EFFORTS[] = {
     {"default", "auto: use the model's default effort"},
@@ -94,6 +80,9 @@ static const struct pick_item GROK_EFFORTS[] = {
     {"high", "more thorough reasoning"},
     {"xhigh", "extra-high reasoning, grok-4.6 only"},
 };
+static const struct pick_item DEFAULT_EFFORT[] = {
+    {"default", "whatever the CLI is configured to use"},
+};
 static const struct pick_item PI_EFFORTS[] = {
     {"default", "the thinking level active when pi started"},
     {"off", "no thinking"},
@@ -110,24 +99,20 @@ static int is_claude(const struct session *s)
     return strcmp(session_backend(s), "claude") == 0;
 }
 
-static const struct pick_item *model_choices(const struct session *s, int *count)
+const struct pick_item *cmd_model_choices(const char *backend, int *count)
 {
-    const char *backend = session_backend(s);
-    if (!strcmp(backend, "claude")) {
-        *count = MODEL_COUNT;
-        return MODELS;
-    }
-    if (!strcmp(backend, "grok")) {
-        *count = GROK_MODEL_COUNT;
-        return GROK_MODELS;
-    }
-    *count = 0;
-    return NULL;
+    const struct pick_item *v = NULL;
+    *count = models_for(backend, &v);
+    return v;
 }
 
-static const struct pick_item *effort_choices(const struct session *s, int *count)
+static const struct pick_item *model_choices(const struct session *s, int *count)
 {
-    const char *backend = session_backend(s);
+    return cmd_model_choices(session_backend(s), count);
+}
+
+const struct pick_item *cmd_effort_choices(const char *backend, int *count)
+{
     if (!strcmp(backend, "claude")) {
         *count = COUNT(CLAUDE_EFFORTS);
         return CLAUDE_EFFORTS;
@@ -144,8 +129,16 @@ static const struct pick_item *effort_choices(const struct session *s, int *coun
         *count = COUNT(PI_EFFORTS);
         return PI_EFFORTS;
     }
-    *count = 0;
-    return NULL;
+    *count = COUNT(DEFAULT_EFFORT);
+    return DEFAULT_EFFORT;
+}
+
+static const struct pick_item *effort_choices(const struct session *s, int *count)
+{
+    const struct pick_item *v = cmd_effort_choices(session_backend(s), count);
+    if (v == DEFAULT_EFFORT)
+        *count = 0;
+    return *count ? v : NULL;
 }
 
 __attribute__((format(printf, 2, 3)))
@@ -402,11 +395,37 @@ static void do_permission(struct session *s, const char *arg)
     reply_note("tool calls: %s", session_permission_desc(index));
 }
 
+static void do_mux(struct session *s, const char *arg);
+
 static void do_mux(struct session *s, const char *arg)
 {
+    if (arg && !strcmp(arg, "config")) {
+        muxcfg_run();
+        return;
+    }
+    if (arg && !strncmp(arg, "make ", 5)) {
+        if (muxmake_run(arg + 5))
+            do_mux(s, NULL);
+        return;
+    }
     if (!arg || !*arg) {
-        reply_note("/mux <prompt> — asks %s the same thing at once",
-                   settings_get_str(SETTING_MUX_BACKENDS, "claude, codex, grok"));
+        struct mux_spec v[MUX_MAX];
+        int             n = muxcfg_load(v, MUX_MAX);
+        reply_note("/mux <prompt> — asks the whole matrix at once; "
+                   "/mux config to change it, /mux make <what> to have one "
+                   "laid out for you");
+        ui_note("%s", muxcfg_active());
+        ui_put("\n");
+        for (int i = 0; i < n; i++) {
+            char label[160];
+            muxcfg_label(&v[i], label, sizeof label);
+            if (*v[i].prompt)
+                ui_note("  %s — %s", label, v[i].prompt);
+            else
+                ui_note("  %s", label);
+            ui_put("\n");
+        }
+        ui_flush();
         return;
     }
     fanout_run(s, arg);
