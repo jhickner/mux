@@ -6,8 +6,10 @@
 #include <string.h>
 
 #include "image.h"
+#include "scrollback.h"
 #include "ui.h"
 #include "viewport.h"
+#include "vendor/cJSON.h"
 
 #define LINK_MAX 64
 
@@ -752,6 +754,24 @@ static void kept_free(void *ud)
     free(k);
 }
 
+static char *kept_encode(void *ud)
+{
+    const struct kept *k = ud;
+    cJSON *o = cJSON_CreateObject();
+    if (!o)
+        return NULL;
+    cJSON_AddStringToObject(o, "text", k->text ? k->text : "");
+    cJSON_AddNumberToObject(o, "indent", k->indent);
+    char *out = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    return out;
+}
+
+void md_kept_load(const cJSON *st)
+{
+    md_render_kept(scrollback_str(st, "text"), scrollback_int(st, "indent"));
+}
+
 void md_render_kept(const char *text, int indent)
 {
     struct kept *k = malloc(sizeof *k);
@@ -763,11 +783,14 @@ void md_render_kept(const char *text, int indent)
             k = NULL;
         }
     }
+    unsigned mark = 0;
     if (k)
-        viewport_item_begin(kept_render, k, kept_free);
+        mark = viewport_item_begin(kept_render, k, kept_free);
     md_render(text, indent);
-    if (k)
+    if (k) {
         viewport_item_end();
+        viewport_item_persist(mark, MD_KEPT_KIND, kept_encode);
+    }
 }
 
 void md_render(const char *text, int indent)

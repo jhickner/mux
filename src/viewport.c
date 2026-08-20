@@ -6,6 +6,7 @@
 
 #include "tty.h"
 #include "ui.h"
+#include "vendor/cJSON.h"
 
 #define ITEMS_KEEP 8000
 
@@ -18,6 +19,8 @@ struct item {
     int    nrows;
     int    cols;
     unsigned id;
+    const char        *kind;    /* names the loader that rebuilds it */
+    viewport_encode_fn encode;
 };
 
 static struct item *items;
@@ -87,6 +90,15 @@ void *viewport_item_data(unsigned mark)
 {
     struct item *it = item_by_mark(mark);
     return it ? it->ud : NULL;
+}
+
+void viewport_item_persist(unsigned mark, const char *kind, viewport_encode_fn encode)
+{
+    struct item *it = item_by_mark(mark);
+    if (!it)
+        return;
+    it->kind = kind;
+    it->encode = encode;
 }
 
 void viewport_item_update(unsigned mark)
@@ -889,7 +901,7 @@ void viewport_end(void)
 }
 
 // Exec'ing a successor: the alt screen stays up, so nothing flashes and the
-// terminal's own scrollback is never touched. It restores the rows itself.
+// terminal's own scrollback is never touched. It restores the entries itself.
 void viewport_handoff(void)
 {
     if (!active)
@@ -913,36 +925,56 @@ void viewport_inherit(void)
     viewport_forget();
 }
 
-// Rows, not entries: what comes back soft-wraps like any raw output, since the
-// renderers that drew it belong to a process that is gone.
+// One JSON object per entry. An entry that can say what it is travels as its
+// own state and is rebuilt live; the rest travel as rows and come back as raw
+// output, soft-wrapped from then on.
+static int dump_item(FILE *f, const struct item *it)
+{
+    cJSON *line = cJSON_CreateObject();
+    if (!line)
+        return 0;
+
+    char *state = it->encode && it->kind ? it->encode(it->ud) : NULL;
+    if (state) {
+        cJSON_AddStringToObject(line, "kind", it->kind);
+        cJSON_AddItemToObject(line, "state", cJSON_CreateRaw(state));
+        free(state);
+    } else {
+        cJSON *rows = it->nrows > 0
+                          ? cJSON_CreateStringArray((const char *const *)it->rows, it->nrows)
+                          : cJSON_CreateArray();
+        cJSON_AddStringToObject(line, "kind", "rows");
+        cJSON_AddItemToObject(line, "rows", rows);
+    }
+
+    char *text = cJSON_PrintUnformatted(line);
+    cJSON_Delete(line);
+    if (!text)
+        return 0;
+    int ok = fprintf(f, "%s\n", text) > 0;
+    free(text);
+    return ok;
+}
+
 int viewport_dump(const char *path)
 {
     FILE *f = fopen(path, "w");
     if (!f)
         return 0;
+
+    int ok = 1;
     for (int i = 0; i < nitems; i++)
-        for (int j = 0; j < items[i].nrows; j++)
-            fprintf(f, "%s\n", items[i].rows[j]);
-    if (open_len)
-        fwrite(open_buf, 1, open_len, f);
-    int ok = ferror(f) == 0;
+        ok = dump_item(f, &items[i]) && ok;
+    if (open_len) {
+        struct item tail = {0};
+        rows_set(&tail, open_buf, 0);
+        ok = dump_item(f, &tail) && ok;
+        rows_free(&tail);
+    }
+    ok = ferror(f) == 0 && ok;
     return fclose(f) == 0 && ok;
 }
 
-int viewport_restore(const char *path)
-{
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return 0;
-
-    char buf[8192];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof buf, f)) > 0)
-        viewport_write(buf, n);
-    fclose(f);
-    viewport_paint();
-    return 1;
-}
 
 
 void viewport_suspend(void)

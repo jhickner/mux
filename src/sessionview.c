@@ -6,6 +6,7 @@
 
 #include "filediff.h"
 #include "highlight.h"
+#include "scrollback.h"
 #include "text.h"
 #include "toolstyle.h"
 #include "viewport.h"
@@ -63,6 +64,63 @@ static void keep_render(void *ud, int cols)
     }
 }
 
+static const char HEX[] = "0123456789abcdef";
+
+static char *spans_hex(const unsigned char *spans, size_t n)
+{
+    char *out = malloc(n * 2 + 1);
+    if (!out)
+        return NULL;
+    for (size_t i = 0; i < n; i++) {
+        out[i * 2] = HEX[spans[i] >> 4];
+        out[i * 2 + 1] = HEX[spans[i] & 0xf];
+    }
+    out[n * 2] = '\0';
+    return out;
+}
+
+static unsigned char *hex_spans(const char *hex, size_t want)
+{
+    if (!hex || strlen(hex) != want * 2)
+        return NULL;
+    unsigned char *out = malloc(want ? want : 1);
+    if (!out)
+        return NULL;
+    for (size_t i = 0; i < want; i++) {
+        const char *hi = strchr(HEX, hex[i * 2]), *lo = strchr(HEX, hex[i * 2 + 1]);
+        if (!hi || !lo) {
+            free(out);
+            return NULL;
+        }
+        out[i] = (unsigned char)((hi - HEX) << 4 | (lo - HEX));
+    }
+    return out;
+}
+
+static char *keep_encode(void *ud)
+{
+    const struct keep *k = ud;
+    cJSON *o = cJSON_CreateObject();
+    if (!o)
+        return NULL;
+    cJSON_AddNumberToObject(o, "kind", k->kind);
+    cJSON_AddStringToObject(o, "a", k->a ? k->a : "");
+    cJSON_AddStringToObject(o, "b", k->b ? k->b : "");
+    cJSON_AddNumberToObject(o, "role", k->role);
+    cJSON_AddNumberToObject(o, "error", k->error);
+    cJSON_AddNumberToObject(o, "gap", k->gap);
+    if (k->spans && k->a) {
+        char *hex = spans_hex(k->spans, strlen(k->a));
+        if (hex) {
+            cJSON_AddStringToObject(o, "spans", hex);
+            free(hex);
+        }
+    }
+    char *out = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    return out;
+}
+
 // Opens the entry, draws it once, closes it. Returns its mark.
 static unsigned keep(struct keep *k)
 {
@@ -73,6 +131,7 @@ static unsigned keep(struct keep *k)
     unsigned mark = viewport_item_begin(keep_render, k, keep_free);
     keep_render(k, ui_columns());
     viewport_item_end();
+    viewport_item_persist(mark, VIEW_KEEP_KIND, keep_encode);
     return mark;
 }
 
@@ -82,6 +141,30 @@ static struct keep *keep_new(enum keep_kind kind)
     if (k)
         k->kind = kind;
     return k;
+}
+
+void view_keep_load(const cJSON *st)
+{
+    int kind = scrollback_int(st, "kind");
+    if (kind < KEEP_ACTIVITY || kind > KEEP_CLUSTER)
+        return;
+
+    struct keep *k = keep_new((enum keep_kind)kind);
+    if (!k)
+        return;
+    k->a = strdup(scrollback_str(st, "a"));
+    k->b = strdup(scrollback_str(st, "b"));
+    k->role = (enum ui_role)scrollback_int(st, "role");
+    k->error = scrollback_int(st, "error");
+    k->gap = scrollback_int(st, "gap");
+    if (!k->a || !k->b) {
+        keep_free(k);
+        return;
+    }
+    const char *hex = scrollback_str(st, "spans");
+    if (*hex)
+        k->spans = hex_spans(hex, strlen(k->a));
+    keep(k);
 }
 
 void view_keep_activity(const char *marker, const char *text, enum ui_role role, int gap)

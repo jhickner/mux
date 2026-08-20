@@ -528,6 +528,80 @@ static void check_soft_wrap(struct screen *s)
         fail("the tail of a wrapped row is shown, not clipped");
 }
 
+// A restart dumps the entries, not the screen: one that can say what it is
+// travels as its own state, and anything else falls back to its rows.
+static char *fake_encode(void *ud)
+{
+    (void)ud;
+    return strdup("{\"text\":\"hi\"}");
+}
+
+static char *no_encode(void *ud)
+{
+    (void)ud;
+    return NULL;
+}
+
+static void check_dump(void)
+{
+    viewport_clear();
+    set_size(80, 24);
+
+    viewport_write("RAW\n", 4);
+
+    unsigned live = viewport_item_begin(width_render, NULL, NULL);
+    width_render(NULL, 80);
+    viewport_item_end();
+    viewport_item_persist(live, "fake", fake_encode);
+
+    unsigned mute = viewport_item_begin(width_render, NULL, NULL);
+    width_render(NULL, 80);
+    viewport_item_end();
+    viewport_item_persist(mute, "fake", no_encode);
+
+    char path[] = "/tmp/mux-dumptest-XXXXXX";
+    int  fd = mkstemp(path);
+    if (fd < 0) {
+        fail("a dump file could be made");
+        return;
+    }
+    close(fd);
+
+    if (!viewport_dump(path))
+        fail("the entries dump");
+
+    char  *text = NULL;
+    size_t len = 0;
+    FILE  *f = fopen(path, "r");
+    if (f) {
+        char buf[4096];
+        size_t n;
+        while ((n = fread(buf, 1, sizeof buf, f)) > 0) {
+            char *grown = realloc(text, len + n + 1);
+            if (!grown)
+                break;
+            text = grown;
+            memcpy(text + len, buf, n);
+            len += n;
+            text[len] = '\0';
+        }
+        fclose(f);
+    }
+    unlink(path);
+    if (!text) {
+        fail("the dump reads back");
+        return;
+    }
+
+    if (!strstr(text, "{\"kind\":\"fake\",\"state\":{\"text\":\"hi\"}}"))
+        fail("an entry that encodes travels as its state");
+    if (!strstr(text, "\"kind\":\"rows\"") || !strstr(text, "RAW"))
+        fail("raw output travels as rows");
+    if (!strstr(text, "WIDTH-80"))
+        fail("an entry that cannot encode falls back to its rows");
+    free(text);
+}
+
 int main(void)
 {
     set_size(80, 24);
@@ -565,6 +639,7 @@ int main(void)
     check_live_entry(&s);
     check_scroll_is_cheap(&s);
     check_resize_strands_nothing(&s);
+    check_dump();
 
     fflush(stdout);
     if (failures)

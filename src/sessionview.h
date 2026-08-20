@@ -2,6 +2,8 @@
 #ifndef SESSIONVIEW_H
 #define SESSIONVIEW_H
 
+#include "vendor/cJSON.h"
+
 #include <stddef.h>
 
 #include "ui.h"
@@ -52,5 +54,9 @@ void view_keep_output(const char *text, enum ui_role role, int error);
 
 // Takes the patch.
 void view_keep_diff(char *patch);
+
+// Carried across a restart.
+#define VIEW_KEEP_KIND "keep"
+void view_keep_load(const cJSON *st);
 
 #endif

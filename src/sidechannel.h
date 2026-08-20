@@ -2,6 +2,8 @@
 #ifndef SIDECHANNEL_H
 #define SIDECHANNEL_H
 
+#include "vendor/cJSON.h"
+
 struct session;
 
 // Runs `prompt` as a one-turn fork of the session in a background mux, so it
@@ -28,5 +30,9 @@ void sidechannel_paint(int budget);
 int sidechannel_busy(void);
 
 void sidechannel_close_all(void);
+
+// An answered question, carried across a restart.
+#define SIDECHANNEL_BTW_KIND "btw"
+void sidechannel_btw_load(const cJSON *st);
 
 #endif

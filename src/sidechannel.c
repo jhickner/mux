@@ -11,12 +11,14 @@
 
 #include "chrome.h"
 #include "md.h"
+#include "scrollback.h"
 #include "session.h"
 #include "sessionfork.h"
 #include "status.h"
 #include "text.h"
 #include "ui.h"
 #include "viewport.h"
+#include "vendor/cJSON.h"
 
 #define SIDE_MAX 4
 
@@ -103,6 +105,21 @@ static void bar_rows(const char *painted, enum ui_role role)
             break;
         p = nl + 1;
     }
+}
+
+static char *btw_encode(void *ud)
+{
+    const struct btw *b = ud;
+    cJSON *o = cJSON_CreateObject();
+    if (!o)
+        return NULL;
+    cJSON_AddStringToObject(o, "question", b->question ? b->question : "");
+    cJSON_AddStringToObject(o, "answer", b->answer ? b->answer : "");
+    cJSON_AddNumberToObject(o, "failed", b->failed);
+    cJSON_AddNumberToObject(o, "gap", b->gap);
+    char *out = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    return out;
 }
 
 static void btw_render(void *ud, int cols)
@@ -420,10 +437,31 @@ static void emit(struct side *c, int status)
         return;
     }
 
-    viewport_item_begin(btw_render, b, btw_free);
+    unsigned mark = viewport_item_begin(btw_render, b, btw_free);
     btw_render(b, ui_columns());
     viewport_item_end();
+    viewport_item_persist(mark, SIDECHANNEL_BTW_KIND, btw_encode);
     ui_flush();
+}
+
+void sidechannel_btw_load(const cJSON *st)
+{
+    struct btw *b = calloc(1, sizeof *b);
+    if (!b)
+        return;
+    b->question = strdup(scrollback_str(st, "question"));
+    b->answer = strdup(scrollback_str(st, "answer"));
+    b->failed = scrollback_int(st, "failed");
+    b->gap = scrollback_int(st, "gap");
+    if (!b->question || !b->answer) {
+        btw_free(b);
+        return;
+    }
+
+    unsigned mark = viewport_item_begin(btw_render, b, btw_free);
+    btw_render(b, ui_columns());
+    viewport_item_end();
+    viewport_item_persist(mark, SIDECHANNEL_BTW_KIND, btw_encode);
 }
 
 // Returns nonzero while the stream is still open.

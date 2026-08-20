@@ -14,8 +14,10 @@
 #include <unistd.h>
 
 #include "app.h"
+#include "scrollback.h"
 #include "ui.h"
 #include "viewport.h"
+#include "vendor/cJSON.h"
 
 #define TERM_H
 // Placeholder cells are text and go in the transcript row; the graphics
@@ -339,6 +341,39 @@ static void placed_render(void *ud, int cols)
     place(p->id, p->indent, p->img_w, p->img_h);
 }
 
+static char *placed_encode(void *ud)
+{
+    const struct placed *p = ud;
+    cJSON *o = cJSON_CreateObject();
+    if (!o)
+        return NULL;
+    cJSON_AddNumberToObject(o, "id", p->id);
+    cJSON_AddNumberToObject(o, "indent", p->indent);
+    cJSON_AddNumberToObject(o, "w", p->img_w);
+    cJSON_AddNumberToObject(o, "h", p->img_h);
+    char *out = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    return out;
+}
+
+// The image itself is the terminal's, and it outlives the process that sent
+// it: the placeholders come back pointing at the same id.
+void image_placed_load(const cJSON *st)
+{
+    struct placed *p = malloc(sizeof *p);
+    if (!p)
+        return;
+    p->id = (uint32_t)scrollback_int(st, "id");
+    p->indent = scrollback_int(st, "indent");
+    p->img_w = scrollback_int(st, "w");
+    p->img_h = scrollback_int(st, "h");
+
+    unsigned mark = viewport_item_begin(placed_render, p, free);
+    place(p->id, p->indent, p->img_w, p->img_h);
+    viewport_item_end();
+    viewport_item_persist(mark, IMAGE_PLACED_KIND, placed_encode);
+}
+
 // Kept, so a narrower pane re-fits the image instead of keeping its old box.
 static unsigned place_kept(uint32_t id, int indent, int img_w, int img_h)
 {
@@ -352,8 +387,10 @@ static unsigned place_kept(uint32_t id, int indent, int img_w, int img_h)
         mark = viewport_item_begin(placed_render, p, free);
     }
     place(id, indent, img_w, img_h);
-    if (p)
+    if (p) {
         viewport_item_end();
+        viewport_item_persist(mark, IMAGE_PLACED_KIND, placed_encode);
+    }
     return mark;
 }
 

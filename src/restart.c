@@ -79,7 +79,7 @@ static char *arg_copy(const char *s)
     return out;
 }
 
-// The rows travel to the successor through a file in the temp directory; it
+// The entries travel to the successor through a file in the temp directory; it
 // unlinks it once it has them.
 static int dump_path(char *out, size_t n)
 {

@@ -2,6 +2,8 @@
 #ifndef PROMPT_H
 #define PROMPT_H
 
+#include "vendor/cJSON.h"
+
 #include "tty.h"
 #include "ui.h"
 #include "vendor/repl.h"
@@ -69,5 +71,9 @@ void prompt_set_idle(struct prompt *p, int (*fds)(void *ud, int *out, int max),
 char *prompt_take_queued(struct prompt *p);
 
 void prompt_echo_message(const char *text);
+
+// Carried across a restart.
+#define PROMPT_ECHO_KIND "echo"
+void prompt_echo_load(const cJSON *st);
 
 #endif

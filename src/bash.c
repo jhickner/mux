@@ -18,10 +18,12 @@
 #endif
 
 #include "block.h"
+#include "scrollback.h"
 #include "text.h"
 #include "tty.h"
 #include "ui.h"
 #include "viewport.h"
+#include "vendor/cJSON.h"
 
 #define RAW_CAP  (1u << 20)
 #define CTX_CAP  16384
@@ -253,6 +255,32 @@ static void ran_render(void *ud, int cols)
         ui_wrapped(r->out, 4, UI_DIM);
 }
 
+static char *ran_encode(void *ud)
+{
+    const struct ran *r = ud;
+    cJSON *o = cJSON_CreateObject();
+    if (!o)
+        return NULL;
+    cJSON_AddStringToObject(o, "out", r->out ? r->out : "");
+    char *out = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    return out;
+}
+
+void bash_ran_load(const cJSON *st)
+{
+    struct ran *r = calloc(1, sizeof *r);
+    if (!r)
+        return;
+    const char *out = scrollback_str(st, "out");
+    r->out = *out ? strdup(out) : NULL;
+
+    unsigned mark = viewport_item_begin(ran_render, r, ran_free);
+    ran_render(r, ui_columns());
+    viewport_item_end();
+    viewport_item_persist(mark, BASH_RAN_KIND, ran_encode);
+}
+
 // Opens empty and is amended as the command writes.
 static unsigned keep_ran(void)
 {
@@ -263,6 +291,7 @@ static unsigned keep_ran(void)
     unsigned mark = viewport_item_begin(ran_render, r, ran_free);
     ran_render(r, ui_columns());
     viewport_item_end();
+    viewport_item_persist(mark, BASH_RAN_KIND, ran_encode);
     return mark;
 }
 

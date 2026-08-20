@@ -16,6 +16,7 @@
 #include "image.h"
 #include "prompt.h"
 #include "restart.h"
+#include "scrollback.h"
 #include "session.h"
 #include "sessionfork.h"
 #include "settings.h"
@@ -253,7 +254,7 @@ int main(int argc, char **argv)
         // A restart: the alt screen is already up and holds the last frame.
         if (restore_arg) {
             viewport_inherit();
-            viewport_restore(restore_arg);
+            scrollback_restore(restore_arg);
             unlink(restore_arg);
         } else {
             viewport_begin();

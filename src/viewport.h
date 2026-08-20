@@ -12,11 +12,10 @@ void viewport_begin(void);
 void viewport_end(void);
 
 // Restarting into a new binary: the alt screen is handed over rather than torn
-// down, and the rows travel through a file.
+// down, and the entries travel through a file.
 void viewport_handoff(void);
 void viewport_inherit(void);
 int  viewport_dump(const char *path);
-int  viewport_restore(const char *path);
 
 // Transcript output, split into rows. Escapes ride inside a row, taking no cells.
 void viewport_write(const char *s, size_t n);
@@ -63,6 +62,12 @@ int      viewport_visible(unsigned mark);
 void *viewport_item_data(unsigned mark);
 
 void  viewport_item_update(unsigned mark);
+
+// An entry that survives a restart. `kind` names the loader that rebuilds it
+// and `encode` writes its payload as JSON, called at dump time so an entry
+// still being amended travels as it last stood.
+typedef char *(*viewport_encode_fn)(void *ud);
+void viewport_item_persist(unsigned mark, const char *kind, viewport_encode_fn encode);
 
 void viewport_scroll(int delta);
 void viewport_scroll_end(void);

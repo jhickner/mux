@@ -13,12 +13,14 @@
 #include "block.h"
 #include "files.h"
 #include "paste.h"
+#include "scrollback.h"
 #include "settings.h"
 #include "sidechannel.h"
 #include "status.h"
 #include "tty.h"
 #include "ui.h"
 #include "viewport.h"
+#include "vendor/cJSON.h"
 #include "text.h"
 
 #define REPL_STYLE_NONE ((signed char)-1)
@@ -373,6 +375,21 @@ static void echo_paint(const struct echo_item *e)
         ui_put("\n");
 }
 
+static char *echo_encode(void *ud)
+{
+    const struct echo_item *e = ud;
+    cJSON *o = cJSON_CreateObject();
+    if (!o)
+        return NULL;
+    cJSON_AddStringToObject(o, "text", e->text ? e->text : "");
+    cJSON_AddNumberToObject(o, "role", e->role);
+    cJSON_AddNumberToObject(o, "cap", e->cap);
+    cJSON_AddNumberToObject(o, "gap", e->gap);
+    char *out = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    return out;
+}
+
 static void echo_render(void *ud, int cols)
 {
     (void)cols;
@@ -405,9 +422,10 @@ void prompt_echo_message(const char *text)
     }
     // Kept, so the bar and its wrap are laid out again at a new width.
     if (e) {
-        viewport_item_begin(echo_render, e, echo_free);
+        unsigned mark = viewport_item_begin(echo_render, e, echo_free);
         echo_paint(e);
         viewport_item_end();
+        viewport_item_persist(mark, PROMPT_ECHO_KIND, echo_encode);
     } else {
         struct echo_item fallback = {(char *)(text ? text : ""),
                                      bash_is_command(text) ? UI_BASH : UI_ECHO,
@@ -415,6 +433,25 @@ void prompt_echo_message(const char *text)
         echo_paint(&fallback);
     }
     ui_flush();
+}
+
+void prompt_echo_load(const cJSON *st)
+{
+    struct echo_item *e = malloc(sizeof *e);
+    if (!e)
+        return;
+    e->text = strdup(scrollback_str(st, "text"));
+    e->role = (enum ui_role)scrollback_int(st, "role");
+    e->cap = scrollback_int(st, "cap");
+    e->gap = scrollback_int(st, "gap");
+    if (!e->text) {
+        free(e);
+        return;
+    }
+    unsigned mark = viewport_item_begin(echo_render, e, echo_free);
+    echo_paint(e);
+    viewport_item_end();
+    viewport_item_persist(mark, PROMPT_ECHO_KIND, echo_encode);
 }
 
 struct prompt *prompt_new(const ReplCommand *commands, int command_count)
