@@ -79,10 +79,8 @@ static int size_changing(void)
     }
     if (resize_owed && (now_seconds() - resize_at) * 1000.0 >= TTY_RESIZE_SETTLE_MS) {
         resize_owed = 0;
-        // While a pane is being resized mux is not the only thing writing to
-        // it: tmux replays its own copy of the screen. Nothing on it can be
-        // trusted to still be what was last painted, so the frame that ends a
-        // resize is sent whole.
+        // tmux redraws a resizing pane from its own copy, so the frame that
+        // ends a resize is sent whole rather than diffed.
         viewport_forget();
         dirty = 1;
         return 0;
@@ -119,9 +117,7 @@ static void humanize(double seconds, char *out, size_t n)
         snprintf(out, n, "%ldh %ldm", total / 3600, (total % 3600) / 60);
 }
 
-// The echo of the prompt is a transcript entry, and the viewport knows which
-// entries are on screen. Asking it is exact — there is no running count to
-// drift and nothing to re-establish after a resize.
+// Exact: the viewport knows whether the echo's entry is still on screen.
 static int sticky_gone(void)
 {
     if (!sticky_tracking)
@@ -208,6 +204,8 @@ void status_paint_spin(void)
 
 int status_spinning(void) { return active && visible; }
 
+int status_turning(void) { return active; }
+
 int status_gap_row(void) { return gap ? 1 : 0; }
 
 static void paint(void)
@@ -292,8 +290,7 @@ void status_sticky_prompt(const char *text)
     sticky_text = text && *text ? strdup(text) : NULL;
     dirty = 1;
 
-    // The echo has just been written, so it is the newest entry; it is gone
-    // once that entry has scrolled past the top.
+    // The echo is the newest entry, and gone once it scrolls past the top.
     sticky_tracking = 1;
     sticky_mark = viewport_mark() - 1;
 }

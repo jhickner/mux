@@ -11,7 +11,6 @@ static struct prompt   *bound;
 static chrome_modal_fn  modal;
 static void            *modal_ud;
 
-// Rows the whole block may spend, and where the spinner landed in it.
 static int budget;
 static int spin_row = -1;
 static int above_rows;
@@ -45,9 +44,8 @@ void chrome_modal(chrome_modal_fn fn, void *ud)
     chrome_paint();
 }
 
-// The sections above the input, in the order they are drawn. Each is dropped
-// whole rather than clipped, cheapest first, until what is left fits over the
-// input.
+// The sections above the input, in draw order. Dropped whole, cheapest first,
+// until what is left fits.
 struct above {
     int side;
     int sticky;
@@ -63,7 +61,6 @@ static int above_height(const struct above *a, int busy, int cols)
         rows += status_sticky_measure(busy);
     if (a->queued)
         rows += prompt_queued_rows(bound, cols);
-    // Whatever is pinned up there is followed by a blank row.
     return rows ? rows + 1 : 0;
 }
 
@@ -103,11 +100,12 @@ void chrome_paint(void)
     }
 
     int cols = ui_columns();
-    int busy = prompt_busy(bound);
+    // A turn in flight, or work it left running behind it.
+    int busy = status_turning() || prompt_busy(bound);
     int spinning = status_spinning();
 
-    // The input is measured first: it is the one section that is never
-    // dropped, so everything above it is fitted into what it leaves.
+    // The input is never dropped, so it is measured first and the rest fitted
+    // into what it leaves.
     int input_rows = prompt_input_rows(bound, cols);
     int gap = status_gap_row();
 
@@ -120,8 +118,6 @@ void chrome_paint(void)
 
     if (gap)
         ui_put("\n");
-    // A side turn is a question already asked and still out; the sticky prompt
-    // is the one being answered now. The nearer the input, the more current.
     if (a.side)
         sidechannel_paint(chrome_rows_left());
     if (a.sticky)
@@ -129,15 +125,13 @@ void chrome_paint(void)
     if (a.queued)
         prompt_paint_queued(bound, chrome_rows_left());
 
-    // A blank row under everything pinned above, so the sticky prompt and the
-    // side turns read as their own block rather than running into the spinner.
+    // A blank row under what is pinned above, off the spinner.
     if (ui_sink_rows() - gap > 0) {
         ui_esc(UI_ERASE_EOL);
         ui_put("\n");
     }
 
-    // Counted off what was painted rather than off what the fit predicted, so
-    // the caret lands on the row it was actually drawn into.
+    // Counted off what was painted, not what the fit predicted.
     above_rows = ui_sink_rows() - gap;
 
     if (spinning) {

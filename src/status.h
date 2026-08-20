@@ -27,6 +27,9 @@ int    status_sticky_measure(int busy);
 // A turn is running and its spinner belongs in the stack.
 int    status_spinning(void);
 
+// A turn is in flight, whether or not its chrome is on screen.
+int    status_turning(void);
+
 int    status_gap_row(void);
 
 void   status_set_word(const char *text);
