@@ -356,10 +356,15 @@ struct echo_item {
     char        *text;
     enum ui_role role;
     int          cap;
+    int          gap;           /* owed a blank row above */
 };
 
 static void echo_paint(const struct echo_item *e)
 {
+    // Settled when the entry was made, not per redraw.
+    if (e->gap)
+        ui_put("\n");
+
     struct ui_wrap w = bar_wrap(queued_budget(ui_columns()), e->role, e->cap, NULL);
     ui_wrap_paint(e->text, &w);
     // A blank row under it, except for a shell command: its output starts on
@@ -385,11 +390,14 @@ void prompt_echo_message(const char *text)
 {
     int cap = settings_get_int(SETTING_ECHO_ROWS, ECHO_ROWS_DEFAULT);
 
+    int gap = !viewport_ends_blank();
+
     struct echo_item *e = malloc(sizeof *e);
     if (e) {
         e->text = strdup(text ? text : "");
         e->role = bash_is_command(text) ? UI_BASH : UI_ECHO;
         e->cap = cap > 0 ? cap : 0;
+        e->gap = gap;
         if (!e->text) {
             free(e);
             e = NULL;
@@ -403,7 +411,7 @@ void prompt_echo_message(const char *text)
     } else {
         struct echo_item fallback = {(char *)(text ? text : ""),
                                      bash_is_command(text) ? UI_BASH : UI_ECHO,
-                                     cap > 0 ? cap : 0};
+                                     cap > 0 ? cap : 0, gap};
         echo_paint(&fallback);
     }
     ui_flush();

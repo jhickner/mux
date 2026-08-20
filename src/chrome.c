@@ -52,15 +52,19 @@ struct above {
     int queued;
 };
 
+// Each section that draws anything is set off from the one above it.
 static int above_height(const struct above *a, int cols)
 {
     int rows = 0;
-    if (a->side)
-        rows += sidechannel_rows();
-    if (a->sticky)
-        rows += status_sticky_measure();
-    if (a->queued)
-        rows += prompt_queued_rows(bound, cols);
+    int drawn = 0;
+    int n;
+
+    if (a->side && (n = sidechannel_rows()) > 0)
+        rows += n + (drawn++ ? 1 : 0);
+    if (a->sticky && (n = status_sticky_measure()) > 0)
+        rows += n + (drawn++ ? 1 : 0);
+    if (a->queued && (n = prompt_queued_rows(bound, cols)) > 0)
+        rows += n + (drawn++ ? 1 : 0);
     return rows ? rows + 1 : 0;
 }
 
@@ -116,12 +120,23 @@ void chrome_paint(void)
 
     if (gap)
         ui_put("\n");
-    if (a.side)
+
+    int drawn = 0;
+    if (a.side && sidechannel_rows() > 0) {
         sidechannel_paint(chrome_rows_left());
-    if (a.sticky)
+        drawn = 1;
+    }
+    if (a.sticky && status_sticky_measure() > 0) {
+        if (drawn)
+            ui_put("\n");
         status_paint_sticky();
-    if (a.queued)
+        drawn = 1;
+    }
+    if (a.queued && prompt_queued_rows(bound, cols) > 0) {
+        if (drawn)
+            ui_put("\n");
         prompt_paint_queued(bound, chrome_rows_left());
+    }
 
     // A blank row under what is pinned above, off the spinner.
     if (ui_sink_rows() - gap > 0) {
