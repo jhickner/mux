@@ -55,6 +55,9 @@ $(BUILD)/statustest: tools/statustest.c src/status.o src/chrome.o src/prompt.o s
 $(BUILD)/chrometest: tools/chrometest.c src/status.o src/chrome.o src/block.o src/prompt.o src/files.o src/paste.o src/settings.o src/tty.o src/ui.o src/viewport.o src/bash.o src/vendor/impl.o src/vendor/cJSON.o src/text.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^) $(LIBS)
 
+$(BUILD)/imagerowtest: tools/imagerowtest.c src/image.o src/viewport.o src/ui.o src/tty.o src/settings.o src/scrollback.o src/text.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
+	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
+
 $(BUILD)/viewporttest: tools/viewporttest.c src/viewport.o src/ui.o src/tty.o src/settings.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
@@ -106,7 +109,7 @@ $(BUILD)/sessionviewtest: tools/sessionviewtest.c src/sessionview.o src/filediff
 $(BUILD)/highlighttest: tools/highlighttest.c src/highlight.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
-CHECKS  := viewporttest chrometest imagefittest mdtest reflowtest toolstyletest sessionlisttest claudetest codextest \
+CHECKS  := viewporttest imagerowtest chrometest imagefittest mdtest reflowtest toolstyletest sessionlisttest claudetest codextest \
            groktest filedifftest pitest agenttabstest statustest transcripttest \
            sessionviewtest highlighttest
 

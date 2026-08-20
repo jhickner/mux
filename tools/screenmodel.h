@@ -14,10 +14,11 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <wchar.h>
 
 #define ROWS_MAX 64
 #define COLS_MAX 256
-#define CELL_MAX 5              /* a UTF-8 codepoint and its terminator */
+#define CELL_MAX 16             /* a UTF-8 codepoint, its marks and a terminator */
 
 struct screen {
     int  rows, cols;
@@ -79,11 +80,37 @@ __attribute__((unused)) static void scroll_region(struct screen *s, int n)
 
 // One codepoint into one cell. Wrapping is off in every paint the viewport
 // makes, so anything past the last column is dropped the way the terminal
-// drops it.
+// drops it. A combining mark takes no column of its own: it joins the cell
+// before it, which is what makes an image's placeholder cells - a base
+// codepoint and two diacritics - one column each rather than three.
+static int is_combining(const char *p, size_t n)
+{
+    unsigned cp = 0;
+    if (n == 2 && ((unsigned char)p[0] & 0xE0) == 0xC0)
+        cp = (unsigned)(p[0] & 0x1F) << 6 | (p[1] & 0x3F);
+    else if (n == 3 && ((unsigned char)p[0] & 0xF0) == 0xE0)
+        cp = (unsigned)(p[0] & 0x0F) << 12 | (unsigned)(p[1] & 0x3F) << 6 | (p[2] & 0x3F);
+    else
+        return 0;
+    return wcwidth((wchar_t)cp) == 0;
+}
+
 __attribute__((unused)) static void screen_put(struct screen *s, const char *p, size_t n)
 {
     if (s->cur_r < 0 || s->cur_r >= s->rows || s->cur_c < 0 || s->cur_c >= s->cols) {
-        s->cur_c++;
+        if (!is_combining(p, n))
+            s->cur_c++;
+        return;
+    }
+    if (is_combining(p, n)) {
+        if (s->cur_c == 0)
+            return;
+        char  *cell = s->cell[s->cur_r][s->cur_c - 1];
+        size_t at = strlen(cell);
+        if (at + n < CELL_MAX) {
+            memcpy(cell + at, p, n);
+            cell[at + n] = '\0';
+        }
         return;
     }
     if (n > CELL_MAX - 1)

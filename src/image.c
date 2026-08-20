@@ -318,7 +318,12 @@ static int box_size(int indent, int img_w, int img_h, int *cols, int *rows)
     int cw, ch, term_rows;
     cell_pixels(&cw, &ch, &term_rows);
 
-    int cols_box = ui_columns() - indent;
+    // The last column is left alone. The viewport paints with autowrap off, so
+    // a row that fills the screen parks the cursor there, and tmux then hangs
+    // the cell's combining marks on the cell before it: the last placeholder
+    // loses its row and column, the one before it gains a diacritic that reads
+    // as a different image id, and both stop being drawn.
+    int cols_box = ui_columns() - indent - 1;
     int rows_box = term_rows - 4 < max_rows ? term_rows - 4 : max_rows;
     if (cols_box < 4 || rows_box < 2)
         return 0;
