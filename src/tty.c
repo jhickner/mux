@@ -413,7 +413,7 @@ static void decode_csi(tty_event *ev, const int *params, int nparams, int final)
             ev->text = NULL;
             return;
         }
-        emit(ev, TK_ESCAPE);
+        emit(ev, TK_NONE);
         return;
     case '~':
         switch (nparams >= 1 ? params[0] : 0) {
@@ -422,12 +422,33 @@ static void decode_csi(tty_event *ev, const int *params, int nparams, int final)
         case 4: case 8: emit(ev, TK_END); return;
         case 5:         emit(ev, TK_PAGE_UP); return;
         case 6:         emit(ev, TK_PAGE_DOWN); return;
-        default:        emit(ev, TK_ESCAPE); return;
+        default:        emit(ev, TK_NONE); return;
         }
     default:
-        emit(ev, TK_ESCAPE);
+        // Device reports land here — a cursor position or attribute answer the
+        // terminal sent us unasked. Not a key, so not a keystroke.
+        emit(ev, TK_NONE);
         return;
     }
+}
+
+// OSC, DCS, APC, PM, SOS: a body of arbitrary bytes closed by ST or BEL. Read
+// to the close, or the whole thing arrives in the prompt as text.
+static void skip_string(tty_event *ev)
+{
+    for (size_t i = 0; i < 64u << 10; i++) {
+        int c = take_byte(50);
+        if (c < 0)
+            break;
+        if (c == 0x07)
+            break;
+        if (c == 0x1b) {
+            if (peek_byte(50) == '\\')
+                pending_pos++;
+            break;
+        }
+    }
+    emit(ev, TK_NONE);
 }
 
 static void decode_escape(tty_event *ev)
@@ -445,7 +466,7 @@ static void decode_escape(tty_event *ev)
         for (;;) {
             int c = take_byte(50);
             if (c < 0) {
-                emit(ev, TK_ESCAPE);
+                emit(ev, TK_NONE);
                 return;
             }
             if (c >= '0' && c <= '9') {
@@ -461,9 +482,16 @@ static void decode_escape(tty_event *ev)
                 have_digits = 1;
                 continue;
             }
-            if (c == '?' || c == '<' || c == '>') {
+            if (c == '?' || c == '<' || c == '>' || c == '=') {
                 private = c;
                 continue;
+            }
+            // Intermediates sit between the parameters and the final byte.
+            if (c >= 0x20 && c <= 0x2f)
+                continue;
+            if (c < 0x40 || c > 0x7e) {
+                emit(ev, TK_NONE);
+                return;
             }
             if (have_digits)
                 nparams++;
@@ -490,8 +518,14 @@ static void decode_escape(tty_event *ev)
         case 'D': emit(ev, TK_LEFT); return;
         case 'H': emit(ev, TK_HOME); return;
         case 'F': emit(ev, TK_END); return;
-        default:  emit(ev, TK_ESCAPE); return;
+        default:  emit(ev, TK_NONE); return;
         }
+    }
+
+    if (b == ']' || b == 'P' || b == '_' || b == '^' || b == 'X') {
+        pending_pos++;
+        skip_string(ev);
+        return;
     }
 
     pending_pos++;
@@ -500,6 +534,7 @@ static void decode_escape(tty_event *ev)
     case 'f': emit(ev, TK_WORD_RIGHT); return;
     case '\r': case '\n': emit(ev, TK_NEWLINE); return;
     case 0x7f: emit(ev, TK_WORD_LEFT); return;
+    case '\\': emit(ev, TK_NONE); return;
     default: emit(ev, TK_ESCAPE); return;
     }
 }
