@@ -52,27 +52,27 @@ struct above {
     int queued;
 };
 
-static int above_height(const struct above *a, int busy, int cols)
+static int above_height(const struct above *a, int cols)
 {
     int rows = 0;
     if (a->side)
         rows += sidechannel_rows();
     if (a->sticky)
-        rows += status_sticky_measure(busy);
+        rows += status_sticky_measure();
     if (a->queued)
         rows += prompt_queued_rows(bound, cols);
     return rows ? rows + 1 : 0;
 }
 
-static void fit_above(struct above *a, int busy, int cols, int room)
+static void fit_above(struct above *a, int cols, int room)
 {
-    if (above_height(a, busy, cols) <= room)
+    if (above_height(a, cols) <= room)
         return;
     a->queued = 0;
-    if (above_height(a, busy, cols) <= room)
+    if (above_height(a, cols) <= room)
         return;
     a->sticky = 0;
-    if (above_height(a, busy, cols) <= room)
+    if (above_height(a, cols) <= room)
         return;
     a->side = 0;
 }
@@ -100,8 +100,6 @@ void chrome_paint(void)
     }
 
     int cols = ui_columns();
-    // A turn in flight, or work it left running behind it.
-    int busy = status_turning() || prompt_busy(bound);
     int spinning = status_spinning();
 
     // The input is never dropped, so it is measured first and the rest fitted
@@ -110,7 +108,7 @@ void chrome_paint(void)
     int gap = status_gap_row();
 
     struct above a = {1, 1, 1};
-    fit_above(&a, busy, cols, tty_rows() - 1 - input_rows - spinning - gap);
+    fit_above(&a, cols, tty_rows() - 1 - input_rows - spinning - gap);
 
     block_begin();
     budget = tty_rows() - 1;
@@ -121,7 +119,7 @@ void chrome_paint(void)
     if (a.side)
         sidechannel_paint(chrome_rows_left());
     if (a.sticky)
-        status_paint_sticky(busy);
+        status_paint_sticky();
     if (a.queued)
         prompt_paint_queued(bound, chrome_rows_left());
 

@@ -21,14 +21,11 @@ void   status_end(void);
 // The sections chrome.c composes. Each draws itself and nothing else; where
 // they sit in the stack is not their business.
 void   status_paint_spin(void);
-void   status_paint_sticky(int busy);
-int    status_sticky_measure(int busy);
+void   status_paint_sticky(void);
+int    status_sticky_measure(void);
 
 // A turn is running and its spinner belongs in the stack.
 int    status_spinning(void);
-
-// A turn is in flight, whether or not its chrome is on screen.
-int    status_turning(void);
 
 int    status_gap_row(void);
 

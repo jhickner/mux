@@ -33,6 +33,7 @@ static int   sticky_on;
 static char *sticky_text;
 static int   sticky_drawn;
 static int   sticky_tracking;
+static int   sticky_busy;       /* the turn this prompt asked for is still going */
 static unsigned sticky_mark;
 
 static unsigned resize_epoch;
@@ -128,8 +129,9 @@ static int sticky_gone(void)
 #define STICKY_DONE "\xe2\x9c\x93 "
 #define STICKY_BUSY "\xe2\x8b\xaf "
 
-static struct ui_wrap sticky_wrap(int busy, int measure)
+static struct ui_wrap sticky_wrap(int measure)
 {
+    int busy = sticky_busy;
     int cols = ui_columns();
     struct ui_wrap w = {0};
     w.budget = (size_t)(cols - 5 > 4 ? cols - 5 : 4);
@@ -147,21 +149,21 @@ static int sticky_showing(void)
     return sticky_on && sticky_text && *sticky_text && sticky_gone();
 }
 
-int status_sticky_measure(int busy)
+int status_sticky_measure(void)
 {
     if (!sticky_showing())
         return 0;
-    struct ui_wrap w = sticky_wrap(busy, 1);
+    struct ui_wrap w = sticky_wrap(1);
     return ui_wrap_paint(sticky_text, &w);
 }
 
-void status_paint_sticky(int busy)
+void status_paint_sticky(void)
 {
     sticky_drawn = 0;
     if (!sticky_showing())
         return;
 
-    struct ui_wrap w = sticky_wrap(busy, 0);
+    struct ui_wrap w = sticky_wrap(0);
     sticky_drawn = ui_wrap_paint(sticky_text, &w);
 }
 
@@ -203,8 +205,6 @@ void status_paint_spin(void)
 }
 
 int status_spinning(void) { return active && visible; }
-
-int status_turning(void) { return active; }
 
 int status_gap_row(void) { return gap ? 1 : 0; }
 
@@ -293,6 +293,10 @@ void status_sticky_prompt(const char *text)
     // The echo is the newest entry, and gone once it scrolls past the top.
     sticky_tracking = 1;
     sticky_mark = viewport_mark() - 1;
+
+    // A prompt is pinned as its turn is sent, and marked done when that turn
+    // ends. Reading it off whatever is busy now answers a different question.
+    sticky_busy = 1;
 }
 
 void status_sticky_erased(void) { sticky_tracking = 0; }
@@ -311,6 +315,7 @@ void status_end(void)
     visible = 0;
     active = 0;
     started = 0;
+    sticky_busy = 0;
     ui_esc(UI_CURSOR_SHOW);
 
 }
