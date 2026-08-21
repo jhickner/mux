@@ -79,6 +79,19 @@ static int      anchor_skip;
 #define MOUSE_ON  "\x1b[?1000h\x1b[?1006h"
 #define MOUSE_OFF "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
 
+// A frame goes out inside a synchronized update, so the terminal shows it
+// whole rather than mid-diff. Not under tmux: tmux answers the end of one by
+// redrawing the entire pane, which turns every frame — every spinner tick —
+// into a full repaint, and that is the flicker the update was meant to avoid.
+// tmux batches what it sends its client anyway.
+static int sync_frames(void)
+{
+    static int on = -1;
+    if (on < 0)
+        on = getenv("TMUX") == NULL;
+    return on;
+}
+
 static void direct(const char *s, size_t n)
 {
     fwrite(s, 1, n, stdout);
@@ -1008,7 +1021,8 @@ void viewport_paint(void)
         shown_cols = W;
     }
 
-    direct_str("\x1b[?2026h");
+    if (sync_frames())
+        direct_str("\x1b[?2026h");
     direct_str("\x1b[?25l");
     direct_str("\x1b[?7l");
 
@@ -1059,7 +1073,8 @@ void viewport_paint(void)
         direct_str("\x1b[?25h");
     }
 
-    direct_str("\x1b[?2026l");
+    if (sync_frames())
+        direct_str("\x1b[?2026l");
     fflush(stdout);
 
     frame_swap(&shown, &built);
