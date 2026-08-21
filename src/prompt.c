@@ -703,6 +703,51 @@ static void cycle_colors(struct prompt *p, int live, int mine)
     }
 }
 
+#define KEY_CTRL(c) ((c) - 'A' + 1)
+
+// Every row here is a key feed_key() below handles, or one the repl underneath
+// it handles on the prompt's behalf. Adding a binding without a row leaves it
+// undocumented, so add both.
+static const struct prompt_key SHORTCUTS[] = {
+    {"enter", "submit prompt, or queue it while a turn is running"},
+    {"enter (empty)", "reprint the status bar"},
+    {"ctrl-j", "insert a newline"},
+    {"ctrl-a / ctrl-e", "jump to the start / end of the line"},
+    {"ctrl-w", "delete the word before the cursor"},
+    {"ctrl-u / ctrl-k", "delete to the start / end of the line"},
+    {"ctrl-y", "put back whatever those last deleted"},
+    {"ctrl-_", "undo the last edit"},
+    {"ctrl-g", "edit the prompt in $EDITOR"},
+    {"ctrl-v", "paste text, or a clipboard image as a file path"},
+    {"tab", "accept the completion"},
+    {"@", "complete a file path from the working directory"},
+    {"up / down", "move through the completion list, else browse history"},
+    {"ctrl-r", "search history"},
+    {"esc", "close the completion, else interrupt the model or a tool"},
+    {"ctrl-c", "clear the prompt line, or interrupt a running turn"},
+    {"ctrl-d (empty)", "close the session (quit on the last one)"},
+    {"left (empty)", "the list of every session"},
+    {"ctrl-t", "a shell split here, in this directory"},
+    {"ctrl-b", "another session like this one, or the idle one already open"},
+    {"ctrl-n / ctrl-o", "cycle the colours of your input / of reply highlights"},
+    {"page up/down", "scroll the transcript half a screen"},
+    {"ctrl-l", "clear the screen"},
+};
+
+const struct prompt_key *prompt_shortcuts(int *count)
+{
+    if (count)
+        *count = (int)(sizeof SHORTCUTS / sizeof *SHORTCUTS);
+    return SHORTCUTS;
+}
+
+// The dropdown and the history search own the keys that would otherwise reach
+// the session, so every "nothing is in the way" guard has to test both.
+static int overlay_open(const struct prompt *p)
+{
+    return p->repl.dropdown_open || p->repl.searching;
+}
+
 static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
 {
     switch (ev->key) {
@@ -722,14 +767,13 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         return KEY_OK;
 
     case TK_CHAR:
-        if (ev->cp == 4) {
-            if (p->repl.len == 0)
+        if (ev->cp == KEY_CTRL('D')) {
+            if (p->repl.len == 0 && !overlay_open(p))
                 return KEY_EOF;
             delete_forward(p);
             return KEY_OK;
         }
-        if (ev->cp == 3 && p->repl.len == 0 &&
-            !p->repl.dropdown_open && !p->repl.searching) {
+        if (ev->cp == KEY_CTRL('C') && p->repl.len == 0 && !overlay_open(p)) {
             if (live)
                 return KEY_CANCEL;
             // Nothing typed and a turn running behind the prompt: the key
@@ -737,17 +781,17 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
             if (p->cancel && p->cancel(p->cancel_ud))
                 return KEY_OK;
         }
-        if (ev->cp == 22) {
+        if (ev->cp == KEY_CTRL('V')) {
             paste_clipboard(p, live);
             return KEY_OK;
         }
-        if (ev->cp == 7) {
+        if (ev->cp == KEY_CTRL('G')) {
             edit_in_editor(p, live);
             return KEY_OK;
         }
         // A shell beside this one, where the session is working. Nothing is
         // said about it mid-turn: the stream owns the screen then.
-        if (ev->cp == 20) {
+        if (ev->cp == KEY_CTRL('T')) {
             if (p->split)
                 p->split(p->split_ud, live);
             if (!live)
@@ -756,18 +800,18 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         }
         // Another session beside this one. Mid-turn the stream owns the
         // screen, so the key is ignored then.
-        if (ev->cp == 2) {
+        if (ev->cp == KEY_CTRL('B')) {
             if (!live && p->another) {
                 chrome_clear();
                 p->another(p->another_ud);
             }
             return KEY_OK;
         }
-        if (ev->cp == 14 || ev->cp == 15) {
-            cycle_colors(p, live, ev->cp == 14);
+        if (ev->cp == KEY_CTRL('N') || ev->cp == KEY_CTRL('O')) {
+            cycle_colors(p, live, ev->cp == KEY_CTRL('N'));
             return KEY_OK;
         }
-        if (ev->cp == 12) {
+        if (ev->cp == KEY_CTRL('L')) {
             if (live)
                 return KEY_OK;
             status_sticky_erased();
@@ -791,10 +835,9 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
 
     case TK_ESCAPE:
 
-        if (live && !p->repl.dropdown_open)
+        if (live && !overlay_open(p))
             return KEY_CANCEL;
-        if (!p->repl.dropdown_open && !p->repl.searching && p->repl.len == 0 &&
-            p->cancel && p->cancel(p->cancel_ud))
+        if (!overlay_open(p) && p->repl.len == 0 && p->cancel && p->cancel(p->cancel_ud))
             return KEY_OK;
         feed(p, REPL_KEY_ESCAPE, 0, NULL);
         return KEY_OK;
@@ -803,8 +846,7 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         // The repl consumes enter on an empty line, so it never submits one.
         // It works mid-turn too, which is when the status is most worth asking
         // for; the spinner steps aside the way a live command's echo does.
-        if (p->blank && p->repl.len == 0 && !p->repl.dropdown_open &&
-            !p->repl.searching) {
+        if (p->blank && p->repl.len == 0 && !overlay_open(p)) {
             if (live)
                 status_pause();
             chrome_clear();
@@ -839,7 +881,7 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         // Left with nothing typed is not a cursor move: it is the way out of
         // this conversation into the list of all of them.
         if (ev->key == TK_LEFT && !live && p->switcher && p->repl.len == 0 &&
-            !p->repl.dropdown_open && !p->repl.searching) {
+            !overlay_open(p)) {
             chrome_clear();
             p->switcher(p->switcher_ud);
             return KEY_OK;

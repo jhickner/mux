@@ -21,6 +21,17 @@ void prompt_rehome(const char *root);
 
 char *prompt_read(struct prompt *p);
 
+// The keys the prompt's input path implements, with what they do. Lives beside
+// that code so a binding and its documentation cannot drift apart; /help just
+// renders this. Prompt keys only — the shell escape and the prose about skills
+// belong to their own owners.
+struct prompt_key {
+    const char *key;
+    const char *desc;
+};
+
+const struct prompt_key *prompt_shortcuts(int *count);
+
 int  prompt_live_key(void *ud, tty_event *ev);
 // The sections chrome.c composes.
 int  prompt_input_rows(struct prompt *p, int cols);

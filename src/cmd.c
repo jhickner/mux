@@ -10,6 +10,7 @@
 #include "app.h"
 #include "chrome.h"
 #include "fanout.h"
+#include "frontend.h"
 #include "hud.h"
 #include "models.h"
 #include "muxcfg.h"
@@ -29,7 +30,6 @@
 #include "settingsui.h"
 #include "text.h"
 #include "status.h"
-#include "tg.h"
 #include "ui.h"
 #include "vendor/agents/backend.h"
 
@@ -203,16 +203,16 @@ static void note_identity(const struct session *s)
 }
 
 // A picker is a modal on the keyboard, so there has to be one and it has to be
-// free: not already inside a list, and not a line submitted over Telegram,
-// which has no keyboard behind it. The general fix is a "no keyboard" capability
-// on the front end; this is the caller side of it.
+// free: not already inside a list, and not a front end with no keyboard behind
+// it. The modal layer refuses on its own too; this is the caller side, where
+// there is a usage line to say why.
 static int can_pick(const char *usage)
 {
     if (chrome_modal_active()) {
         reply_note("%s \xe2\x80\x94 a list is already open", usage);
         return 0;
     }
-    if (tg_line_in_flight()) {
+    if (!frontend_has_keyboard()) {
         reply_note("%s \xe2\x80\x94 nothing here to pick from a list with", usage);
         return 0;
     }
@@ -678,12 +678,18 @@ static void do_help(struct session *s, const char *arg);
 static void do_settings(struct session *s, const char *arg)
 {
     (void)arg;
+    if (!can_pick("/settings"))
+        return;
     settingsui_run(s);
 }
 
 static void do_resume(struct session *s, const char *arg)
 {
     (void)arg;
+    // Only the command form is gated: cmd_resume is also the -r startup path,
+    // where the terminal is the front end and does have a keyboard.
+    if (!can_pick("/resume"))
+        return;
     cmd_resume(s);
 }
 
@@ -691,6 +697,8 @@ static void do_sessions(struct session *s, const char *arg)
 {
     (void)s;
     (void)arg;
+    if (!can_pick("/sessions"))
+        return;
     sessionswitch_run();
 }
 
@@ -935,25 +943,13 @@ static void do_help(struct session *s, const char *arg)
     }
     ui_put("\n");
     help_heading("shortcuts");
+    // The shell escape is main.c's line dispatch, not a prompt key; the rest
+    // come from the prompt, which keeps them beside the code that acts on them.
     help_row("!cmd", "run cmd in $SHELL instead of sending it to the agent");
-    help_row("enter", "submit prompt, or queue it while a turn is running");
-    help_row("enter (empty)", "reprint the status bar");
-    help_row("ctrl-j", "insert a newline");
-    help_row("ctrl-g", "edit the prompt in $EDITOR");
-    help_row("ctrl-v", "paste text, or a clipboard image as a file path");
-    help_row("tab", "accept the completion");
-    help_row("@", "complete a file path from the working directory");
-    help_row("up / down", "browse history");
-    help_row("ctrl-r", "search history");
-    help_row("esc", "interrupt the model or a running tool");
-    help_row("ctrl-c", "clear the prompt line, or interrupt a running turn");
-    help_row("ctrl-d", "close the session (quit on the last one)");
-    help_row("left (empty)", "the list of every session");
-    help_row("ctrl-t", "a shell split here, in this directory");
-    help_row("ctrl-b", "another session like this one, or the idle one already open");
-    help_row("ctrl-n / ctrl-o", "cycle the colours of your input / of reply highlights");
-    help_row("page up/down", "scroll the transcript half a screen");
-    help_row("ctrl-l", "clear the screen");
+    int                      key_count = 0;
+    const struct prompt_key *keys = prompt_shortcuts(&key_count);
+    for (int i = 0; i < key_count; i++)
+        help_row(keys[i].key, keys[i].desc);
     ui_put("\n");
     help_heading("skills");
     help_row("", "your skills, CLAUDE.md, MCP servers and agents load by default.");

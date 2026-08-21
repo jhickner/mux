@@ -35,4 +35,7 @@ const char *reminders_path(void);
  */
 int reminders_pop_due(time_t now, char *out, size_t n);
 
+/* Non-blank lines in the store, read under a shared lock. */
+int reminders_scheduled_count(void);
+
 #endif /* REMINDERS_H */

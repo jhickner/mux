@@ -3,6 +3,7 @@
 #include <stdlib.h>
 
 #include "chrome.h"
+#include "frontend.h"
 #include "tty.h"
 #include "ui.h"
 
@@ -27,7 +28,7 @@ int confirm_run(const char *question)
 {
     if (!question || !*question)
         return 0;
-    if (!tty_is_raw())
+    if (!frontend_has_keyboard() || !tty_is_raw())
         return 0;               // no keyboard to answer on: taken as "no"
 
     chrome_modal(paint_question, (void *)question);

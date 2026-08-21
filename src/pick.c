@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "chrome.h"
+#include "frontend.h"
 #include "status.h"
 #include "text.h"
 #include "tty.h"
@@ -352,9 +353,9 @@ static int run(const char *title, const struct pick_item *items, int count,
     if (count <= 0)
         return -1;
 
-    // Nothing to pick with: a front end that is not the terminal asked, and
-    // there is no keyboard to answer on. Reads as a cancel.
-    if (!tty_is_raw())
+    // Nothing to pick with: a front end that is not the terminal asked, or
+    // the terminal is not taking keys. Reads as a cancel.
+    if (!frontend_has_keyboard() || !tty_is_raw())
         return -1;
 
     struct view v = {0};

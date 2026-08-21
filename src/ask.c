@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "chrome.h"
+#include "frontend.h"
 #include "text.h"
 #include "tty.h"
 #include "ui.h"
@@ -109,7 +110,7 @@ static void paint(void *ud)
 
 char *ask_run(const char *title, const char *initial)
 {
-    if (!tty_is_raw())
+    if (!frontend_has_keyboard() || !tty_is_raw())
         return NULL;            // nothing to type on
 
     struct field f = {.title = title ? title : ""};

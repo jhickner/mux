@@ -33,6 +33,7 @@
 #include "app.h"
 #include "bash.h"
 #include "cmd.h"
+#include "frontend.h"
 #include "gitinfo.h"
 #include "reminders.h"
 #include "handoff.h"
@@ -70,7 +71,6 @@ static char            last_log[240];   // the client's last complaint, for /tg
 static int             log_repeats;
 static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
 static int             from_chat;       // the turn now running came from the chat
-static int             line_in_flight;  // depth of run_line: no keyboard behind this line
 
 // ---- config -------------------------------------------------------------
 
@@ -1382,27 +1382,6 @@ static void *poller_thread(void *ud)
 
 // ---- running a line -----------------------------------------------------
 
-// Lines in the reminder store: what /tg reports as scheduled. Cheap and
-// approximate on purpose — the store is the agent's to read in detail.
-static int reminders_count(void)
-{
-    FILE *f = fopen(reminders_path(), "r");
-    if (!f)
-        return 0;
-    int n = 0, c, content = 0;
-    while ((c = fgetc(f)) != EOF) {
-        if (c == '\n') {
-            n += content;
-            content = 0;
-        } else if (c != ' ' && c != '\t' && c != '\r') {
-            content = 1;
-        }
-    }
-    n += content;
-    fclose(f);
-    return n;
-}
-
 static void send_bridge_status(void)
 {
     char msg[1400];
@@ -1417,7 +1396,7 @@ static void send_bridge_status(void)
     appendf(msg, sizeof msg, &n, "%-10s %s\n", "artifacts",
             server ? art_base : "not running");
     appendf(msg, sizeof msg, &n, "%-10s %d scheduled\n", "reminders",
-            reminders_count());
+            reminders_scheduled_count());
     appendf(msg, sizeof msg, &n, "%-10s %d running, %d this session\n", "agents",
             subagents_running(), agent_count);
     pthread_mutex_lock(&log_lock);
@@ -1511,7 +1490,7 @@ static void run_line(char *line, int quiet)
     free(last_said);
     last_said = NULL;
     from_chat = 1;
-    line_in_flight++;
+    frontend_push(0);   // the chat has no keyboard behind it
     nudge_queued = 0;
     repeat_task = 0;
     stop_wanted = 0;    // a stop sent before this line was meant for the last
@@ -1578,12 +1557,9 @@ static void run_line(char *line, int quiet)
 
 done:
     from_chat = 0;
-    if (line_in_flight > 0)
-        line_in_flight--;
+    frontend_pop();
     free(line);
 }
-
-int tg_line_in_flight(void) { return line_in_flight > 0; }
 
 // ---- the front end ------------------------------------------------------
 

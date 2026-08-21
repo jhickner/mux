@@ -3,12 +3,16 @@
 #include "vendor/cJSON.h"
 
 #include <ctype.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <time.h>
+#include <unistd.h>
 
-#define REMINDERS_MAX_BYTES (1u << 20)
+#define REMINDERS_MAX_BYTES (1u << 24)
+#define REMINDERS_PATH_MAX  4300
 
 const char *reminders_path(void)
 {
@@ -16,6 +20,71 @@ const char *reminders_path(void)
     if (!path[0] && !path_config_file(path, sizeof path, "reminders"))
         snprintf(path, sizeof path, "/tmp/reminders");
     return path;
+}
+
+/* "<store><suffix>" into `out`; 0 if it would not fit. */
+static int sidecar_path(char *out, size_t n, const char *suffix)
+{
+    int k = snprintf(out, n, "%s%s", reminders_path(), suffix);
+    return k > 0 && (size_t)k < n;
+}
+
+/*
+ * Advisory lock for the store. The lock lives in a sidecar file rather than the
+ * store itself: reminders_pop_due() replaces the store by rename(), so a lock
+ * taken on the store's descriptor would end up held on an unlinked inode while
+ * the next writer locked the fresh one. The sidecar is never renamed or
+ * unlinked, so every participant agrees on one inode.
+ *
+ * This serializes mux against itself (poller thread vs. main thread, and a
+ * second mux process). The agent appends with its own file tools and takes no
+ * lock, so the rewrite path additionally re-reads the store under the lock and
+ * carries over anything appended behind our back.
+ */
+static int store_lock(int op)
+{
+    char lp[REMINDERS_PATH_MAX];
+    if (!sidecar_path(lp, sizeof lp, ".lock"))
+        return -1;
+    int fd = open(lp, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    if (fd < 0)
+        return -1;
+    if (flock(fd, op) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static void store_unlock(int fd)
+{
+    if (fd >= 0) {
+        flock(fd, LOCK_UN);
+        close(fd);
+    }
+}
+
+int reminders_scheduled_count(void)
+{
+    int   lock = store_lock(LOCK_SH);
+    FILE *f = fopen(reminders_path(), "rb");
+    if (!f) {
+        store_unlock(lock);
+        return 0;
+    }
+    int n = 0, c, content = 0;
+    while ((c = fgetc(f)) != EOF) {
+        if (c == '\n') {
+            n += content;
+            content = 0;
+        } else if (c != ' ' && c != '\t' && c != '\r') {
+            content = 1;
+        }
+    }
+    n += content;
+    fclose(f);
+    store_unlock(lock);
+    return n;
 }
 
 /* ---- time helpers ----------------------------------------------------- */
@@ -188,23 +257,107 @@ static int reschedule(cJSON *o, time_t fired_ts, time_t now)
     return 0;
 }
 
+typedef struct {
+    cJSON *o;
+    time_t at;
+} Ent;
+
+/*
+ * Rewrite the store from `ents`. `orig`/`orig_len` are the exact bytes we
+ * parsed; the store is re-read first so that lines the agent appended in the
+ * meantime survive. If it no longer starts with what we parsed (the agent
+ * rewrote or truncated it) the rewrite is skipped rather than clobbering it.
+ */
+static void store_rewrite(const Ent *ents, int nent, const char *orig, size_t orig_len)
+{
+    const char *path = reminders_path();
+    size_t      cur_len = 0;
+    char       *cur = text_slurp(path, REMINDERS_MAX_BYTES, &cur_len);
+    if (!cur)
+        return;
+    if (cur_len < orig_len || memcmp(cur, orig, orig_len) != 0) {
+        free(cur);
+        return;
+    }
+
+    char tmp[REMINDERS_PATH_MAX];
+    if (!sidecar_path(tmp, sizeof tmp, ".tmp")) {
+        free(cur);
+        return;
+    }
+    FILE *f = fopen(tmp, "wb");
+    if (!f) {
+        free(cur);
+        return;
+    }
+    for (int i = 0; i < nent; i++) {
+        if (!ents[i].o)
+            continue;
+        char *s = cJSON_PrintUnformatted(ents[i].o);
+        if (!s) {
+            fclose(f);
+            unlink(tmp);
+            free(cur);
+            return;
+        }
+        fputs(s, f);
+        fputc('\n', f);
+        free(s);
+    }
+    if (cur_len > orig_len)
+        fwrite(cur + orig_len, 1, cur_len - orig_len, f);
+    free(cur);
+
+    int ok = !ferror(f);
+    if (fclose(f) != 0)
+        ok = 0;
+    if (!ok || rename(tmp, path) != 0)
+        unlink(tmp);
+}
+
 int reminders_pop_due(time_t now, char *out, size_t n)
 {
-    char *buf = text_slurp(reminders_path(), REMINDERS_MAX_BYTES, NULL);
-    if (!buf)
-        return 0;
+    int lock = store_lock(LOCK_EX);
 
-    cJSON *objs[512];
-    time_t ats[512];
-    int    nobj = 0, dirty = 0;
-    for (char *p = buf; *p && nobj < 512;) {
+    size_t len = 0;
+    char  *buf = text_slurp(reminders_path(), REMINDERS_MAX_BYTES, &len);
+    if (!buf) {
+        store_unlock(lock);
+        return 0;
+    }
+    char *orig = malloc(len + 1);
+    if (!orig) {
+        free(buf);
+        store_unlock(lock);
+        return 0;
+    }
+    memcpy(orig, buf, len);
+    orig[len] = '\0';
+
+    Ent *ents = NULL;
+    int  nobj = 0, cap = 0, dirty = 0, oom = 0;
+    for (char *p = buf; *p;) {
         char *nl = strchr(p, '\n');
         if (nl)
             *nl = '\0';
         if (*p) {
             cJSON *o = cJSON_Parse(p);
-            if (o)
-                objs[nobj++] = o;
+            if (o) {
+                if (nobj == cap) {
+                    int  ncap = cap ? cap * 2 : 64;
+                    Ent *ne = realloc(ents, (size_t)ncap * sizeof *ne);
+                    if (!ne) {
+                        cJSON_Delete(o);
+                        oom = 1;
+                        break;
+                    }
+                    ents = ne;
+                    cap = ncap;
+                }
+                ents[nobj].o = o;
+                ents[nobj].at = (time_t)-1;
+                nobj++;
+            }
         }
         if (!nl)
             break;
@@ -212,53 +365,51 @@ int reminders_pop_due(time_t now, char *out, size_t n)
     }
     free(buf);
 
+    /* A short parse (allocation failure) must not fire or be written back: the
+     * rewrite would drop every line past the failure. */
+    if (oom) {
+        free(orig);
+        for (int i = 0; i < nobj; i++)
+            cJSON_Delete(ents[i].o);
+        free(ents);
+        store_unlock(lock);
+        return 0;
+    }
+
     /* Compute each reminder's next-fire time (normalizing rule-only ones). */
     for (int i = 0; i < nobj; i++)
-        ats[i] = effective_at(objs[i], now, &dirty);
+        ents[i].at = effective_at(ents[i].o, now, &dirty);
 
     /* Fire the earliest that's due. */
     int    fired = -1;
     time_t fired_ts = 0;
     for (int i = 0; i < nobj; i++)
-        if (ats[i] != (time_t)-1 && ats[i] <= now && (fired < 0 || ats[i] < fired_ts)) {
+        if (ents[i].at != (time_t)-1 && ents[i].at <= now &&
+            (fired < 0 || ents[i].at < fired_ts)) {
             fired = i;
-            fired_ts = ats[i];
+            fired_ts = ents[i].at;
         }
 
     int result = 0;
     if (fired >= 0) {
-        const char *txt = cJSON_GetStringValue(cJSON_GetObjectItem(objs[fired], "text"));
+        const char *txt = cJSON_GetStringValue(cJSON_GetObjectItem(ents[fired].o, "text"));
         snprintf(out, n, "%s", txt ? txt : "(reminder)");
-        if (!reschedule(objs[fired], fired_ts, now)) {
-            cJSON_Delete(objs[fired]);
-            objs[fired] = NULL;
+        if (!reschedule(ents[fired].o, fired_ts, now)) {
+            cJSON_Delete(ents[fired].o);
+            ents[fired].o = NULL;
         }
         dirty = 1;
         result = 1;
     }
 
-    if (dirty) {
-        const char *path = reminders_path();
-        char        tmp[640];
-        snprintf(tmp, sizeof tmp, "%s.tmp", path);
-        FILE *f = fopen(tmp, "wb");
-        if (f) {
-            for (int i = 0; i < nobj; i++) {
-                if (!objs[i])
-                    continue;
-                char *s = cJSON_PrintUnformatted(objs[i]);
-                if (s) {
-                    fputs(s, f);
-                    fputc('\n', f);
-                    free(s);
-                }
-            }
-            fclose(f);
-            rename(tmp, path);
-        }
-    }
+    if (dirty)
+        store_rewrite(ents, nobj, orig, len);
+
+    free(orig);
     for (int i = 0; i < nobj; i++)
-        if (objs[i])
-            cJSON_Delete(objs[i]);
+        if (ents[i].o)
+            cJSON_Delete(ents[i].o);
+    free(ents);
+    store_unlock(lock);
     return result;
 }
