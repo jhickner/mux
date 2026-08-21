@@ -548,13 +548,14 @@ static int switch_once(void)
     struct pick_live shown = {heading, spin, marks, relist, &listing};
     int picked = pick_run_live(title, items, n, initial, &shown, shortcuts, &pressed);
 
-    // Right is the way into whatever the row is, the same as enter.
-    if (pressed == PICK_KEY_RIGHT)
-        pressed = 0;
-
     struct row chosen = {0};
     if (picked >= 0)
         chosen = rows[picked];
+
+    // Right is the way into the row: a session of this window's is switched
+    // to, and one another window is holding is gone to, where it already is.
+    if (pressed == PICK_KEY_RIGHT)
+        pressed = chosen.kind == ROW_LIVE ? KEY_GO : 0;
 
     free(items);
     free(rows);
