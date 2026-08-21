@@ -110,6 +110,26 @@ static int dump_path(char *out, size_t n)
                     (long)getpid()) < (int)n;
 }
 
+// The installed build, for when the one this process was started from is gone.
+static int path_lookup(const char *name, char *out, size_t size)
+{
+    const char *path = getenv("PATH");
+    if (!path || !*path)
+        return 0;
+    while (*path) {
+        const char *end = strchr(path, ':');
+        size_t      len = end ? (size_t)(end - path) : strlen(path);
+        if (len > 0 && len < size &&
+            snprintf(out, size, "%.*s/%s", (int)len, path, name) < (int)size &&
+            access(out, X_OK) == 0)
+            return 1;
+        if (!end)
+            break;
+        path = end + 1;
+    }
+    return 0;
+}
+
 int restart_exec(struct session *s)
 {
     wanted = 0;
@@ -153,8 +173,17 @@ int restart_exec(struct session *s)
             return 0;
 
     // Checked before the teardown: past it there is nothing to return to.
-    if (strchr(argv[0], '/') && access(argv[0], X_OK) != 0)
-        return 0;
+    // A build launched by path can outlive its directory - a worktree that was
+    // merged away - so fall back to whatever is installed on PATH.
+    if (strchr(argv[0], '/') && access(argv[0], X_OK) != 0) {
+        char found[4096];
+        if (!path_lookup(APP_NAME, found, sizeof found))
+            return 0;
+        char *arg = arg_copy(found);
+        if (!arg)
+            return 0;
+        argv[0] = arg;
+    }
 
     ui_bar(ui_style(UI_DIM), "restarting");
     ui_put("\n");

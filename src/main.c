@@ -175,7 +175,9 @@ static int idle_restart(void *ud)
         if (i != workspace_index())
             workspace_close(i);
     if (!restart_exec(workspace_current())) {
-        ui_error("could not restart — staying on this build");
+        ui_error("could not restart: no runnable %s at %s or on PATH — "
+                 "staying on this build",
+                 APP_NAME, sessionfork_program());
         ui_put("\n");
         ui_flush();
     }
