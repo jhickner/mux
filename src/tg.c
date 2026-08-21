@@ -2185,10 +2185,13 @@ int tg_start(struct session *s, int headless)
 
     tg_set_abort_check(poller_aborting);
     tg_set_log(on_log);
+    // The successor is built from the session, which knows nothing about the
+    // front ends attached to it: without this a rebuilt window comes back with
+    // no bridge, and the chat goes quiet with nothing to say why.
+    restart_flag("--telegram");
     if (headless) {
         signal(SIGINT, on_signal);
         signal(SIGTERM, on_signal);
-        restart_flag("--telegram");
     }
     signal(SIGPIPE, SIG_IGN);
     running = 1;
