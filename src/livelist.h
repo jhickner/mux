@@ -17,6 +17,7 @@ struct live_session {
     char id[128];
     char title[200];
     char status[16];    /* working | finished | errored */
+    int  unseen;        /* its turn ended with the window showing another */
     char pane[32];
     char window[32];    /* tmux window id, "@3": which window holds it */
     char wname[64];     /* that window as tmux shows it, "3:mux" */

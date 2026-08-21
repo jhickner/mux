@@ -84,6 +84,11 @@ void session_interrupt(struct session *s);
 // A turn of its own, or work the agent still has running.
 int  session_busy(const struct session *s);
 
+// A turn that ended while the window was showing something else, and has not
+// been looked at since.
+void session_set_unseen(struct session *s, int on);
+int  session_unseen(const struct session *s);
+
 int  session_idle_fd(const struct session *s);
 
 int  session_idle_pump(struct session *s);

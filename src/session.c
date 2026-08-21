@@ -80,6 +80,7 @@ struct session {
     int      idle_busy;
     int      trust_requested;
     int      interrupted;
+    int      unseen;        /* a turn ended behind whoever is holding this */
 
     // A turn running on its own thread. Everything it produces is copied into
     // `queue` and drawn later by whoever owns the screen.
@@ -1574,6 +1575,20 @@ void session_interrupt(struct session *s)
     if (s && s->running)
         s->abort_request = 1;
 }
+
+// A turn that ended where nobody was looking. Set by the window, which is the
+// only thing that knows which of its sessions was in front at the time, and
+// republished so the other windows' lists say the same.
+void session_set_unseen(struct session *s, int on)
+{
+    on = on ? 1 : 0;
+    if (!s || s->unseen == on)
+        return;
+    s->unseen = on;
+    publish(s, session_busy(s) ? "working" : "finished");
+}
+
+int session_unseen(const struct session *s) { return s ? s->unseen : 0; }
 
 int session_busy(const struct session *s)
 {

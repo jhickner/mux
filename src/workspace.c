@@ -189,6 +189,7 @@ void workspace_show(int index)
     cur = index;
 
     block_forget();
+    session_set_unseen(tabs[cur].s, 0);
     status_sticky_prompt(tabs[cur].sticky);
     status_sticky_busy(session_busy(tabs[cur].s));
     follow(tabs[cur].s);
@@ -414,8 +415,13 @@ static int pump(int hold)
             busy |= session_idle_pump(s) ? 1 : 0;
         leave();
 
-        if (running && !session_turn_running(s))
+        if (running && !session_turn_running(s)) {
             tabs[i].finished = 1;
+            // Ended behind the tab in front: worth a mark in the list until
+            // somebody comes and looks at it.
+            if (i != cur)
+                session_set_unseen(s, 1);
+        }
         settle_finished(i, hold);
     }
     // A session that names itself while it is behind must not take the note

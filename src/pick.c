@@ -256,7 +256,9 @@ static void paint(void *ud)
                 ui_esc(ui_style(selected ? UI_ACCENT : UI_RESET));
                 ui_put(" ");
             } else if (mark && *mark) {
-                ui_esc(ui_style(UI_ERROR));
+                ui_esc(ui_style(v->live->mark_role
+                                ? (enum ui_role)v->live->mark_role[i]
+                                : UI_ERROR));
                 ui_put(mark);
                 ui_esc(ui_style(selected ? UI_ACCENT : UI_RESET));
                 ui_put(" ");

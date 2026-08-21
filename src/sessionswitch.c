@@ -637,7 +637,8 @@ static int switch_once(void)
     struct listing listing = {rows, n, spin, marks, &live, &nlive, 0, 0};
     sync_columns(&listing);
     listing.sig = listing_sig(&listing);
-    struct pick_live shown = {heading, spin, marks, relist, &listing};
+    struct pick_live shown = {.heading = heading, .spin = spin, .mark = marks,
+                              .tick = relist, .ud = &listing};
     int picked = pick_run_live(title, items, n, initial, &shown, shortcuts, &pressed);
 
     struct row chosen = {0};

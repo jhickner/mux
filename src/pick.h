@@ -37,8 +37,11 @@ struct pick_live {
     const unsigned char *heading;
     // A status column at the front of every other row: a turning spinner
     // where spin[i] is set, otherwise the still mark[i], where there is one.
+    // A mark is drawn in role[i] when roles are given, and as an error when
+    // they are not.
     const unsigned char *spin;
     const char *const   *mark;
+    const unsigned char *mark_role;
     // Called on the spinner's frames. Nonzero means the caller has changed
     // what the rows say, and the list is drawn again.
     int  (*tick)(void *ud);
