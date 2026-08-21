@@ -83,6 +83,13 @@ static void repaint(struct screen *s)
 
 static int row_of(const struct screen *s, const char *needle) { return row_with(s, needle); }
 
+static void paint_menu(void *ud)
+{
+    (void)ud;
+    ui_put("MENU\n");
+    ui_put("  item\n");
+}
+
 // Queued the way the prompt queues one: typed at the live prompt and submitted
 // while a turn is running.
 static void queue_line(struct prompt *p, const char *text)
@@ -215,6 +222,16 @@ int main(void)
     check_queued(p, &s);
 
     status_end();
+
+    // Ending a turn must not leave a cursor-show escape in the retained
+    // transcript. A cursorless modal paints after the turn and owns no caret.
+    // Replaying such an escape would make the terminal cursor appear at the
+    // end of the last menu row it repainted.
+    chrome_modal(paint_menu, NULL);
+    pump(&s);
+    if (s.cursor_visible)
+        fail("a modal opened after a turn keeps the terminal cursor hidden");
+    chrome_modal(NULL, NULL);
 
     chrome_bind(NULL);
     prompt_free(p);

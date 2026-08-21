@@ -24,6 +24,7 @@ struct screen {
     int  rows, cols;
     char cell[ROWS_MAX][COLS_MAX + 1][CELL_MAX];
     int  cur_r, cur_c;
+    int  cursor_visible;
     int  top, bot;              /* scroll region, 0-based inclusive */
 };
 
@@ -158,6 +159,12 @@ __attribute__((unused)) static void feed(struct screen *s, const char *p, size_t
                 } else {
                     break;
                 }
+            }
+            if (j < n && priv && args[0] == 25) {
+                if (p[j] == 'h')
+                    s->cursor_visible = 1;
+                else if (p[j] == 'l')
+                    s->cursor_visible = 0;
             }
             if (j < n && !priv) {
                 if (p[j] == 'H') {
