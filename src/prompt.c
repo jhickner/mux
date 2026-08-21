@@ -82,6 +82,7 @@ struct prompt {
     void        *cancel_ud;
     int          stopped;
     int          frame_ok;
+    int          aside;         /* the line goes out as a side question */
 };
 
 static void history_append(struct prompt *p, const char *line)
@@ -718,7 +719,7 @@ static const struct prompt_key SHORTCUTS[] = {
     {"ctrl-_", "undo the last edit"},
     {"ctrl-g", "edit the prompt in $EDITOR"},
     {"ctrl-v", "paste text, or a clipboard image as a file path"},
-    {"tab", "accept the completion"},
+    {"tab", "accept the completion, else ask the typed line on the side"},
     {"@", "complete a file path from the working directory"},
     {"up / down", "move through the completion list, else browse history"},
     {"ctrl-r", "search history"},
@@ -738,6 +739,18 @@ const struct prompt_key *prompt_shortcuts(int *count)
     if (count)
         *count = (int)(sizeof SHORTCUTS / sizeof *SHORTCUTS);
     return SHORTCUTS;
+}
+
+// Tab on a line with nothing left to complete asks it on the side.
+#define ASIDE_COMMAND "/btw "
+
+// A command or a shell line already says what it is; anything else is a
+// question, and a bare word is more likely a completion that found nothing.
+static int aside_worthy(const char *line)
+{
+    if (!line || !*line || *line == '/' || *line == '!')
+        return 0;
+    return strchr(line, ' ') != NULL;
 }
 
 // The dropdown and the history search own the keys that would otherwise reach
@@ -824,8 +837,18 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
 
         if (repl_accept_completion(&p->repl) || repl_open_completion(&p->repl))
             return KEY_OK;
-        if (repl_suggestion(&p->repl))
+        if (repl_suggestion(&p->repl)) {
             feed(p, REPL_KEY_RIGHT, 0, NULL);
+            return KEY_OK;
+        }
+        // Nothing to complete: what is typed goes out on the side instead,
+        // which is the quick way to ask something without holding up the
+        // conversation. A command or a shell line means itself.
+        if (p->repl.len && !overlay_open(p) && aside_worthy(repl_line(&p->repl))) {
+            p->aside = 1;
+            viewport_scroll_end();
+            return KEY_SUBMIT;
+        }
         return KEY_OK;
 
     case TK_DELETE:
@@ -908,10 +931,22 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
     }
 }
 
+// Typed as a question, sent as one: the line becomes the command that asks it
+// on the side, so history and the echo show what it really did.
+static char *aside_line(const char *line)
+{
+    size_t want = sizeof ASIDE_COMMAND + strlen(line);
+    char  *out = malloc(want);
+    if (out)
+        snprintf(out, want, "%s%s", ASIDE_COMMAND, line);
+    return out;
+}
+
 static char *take_line(struct prompt *p)
 {
     const char *line = repl_line(&p->repl);
-    char *out = line && *line ? strdup(line) : NULL;
+    char *out = line && *line ? (p->aside ? aside_line(line) : strdup(line)) : NULL;
+    p->aside = 0;
     p->frame_ok = 0;
     if (out) {
         repl_history_add(&p->repl, out);
