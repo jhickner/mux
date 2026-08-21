@@ -223,9 +223,13 @@ static int paint_spin_only(void)
     return 1;
 }
 
-void status_begin(void)
+void status_begin(void) { status_begin_at(0); }
+
+// Elapsed is passed in because a turn can be adopted mid-flight, when its tab
+// comes to the front; the clock belongs to the turn, not to this block.
+void status_begin_at(double elapsed)
 {
-    started = now_seconds();
+    started = now_seconds() - elapsed;
     frame = 0;
     frame_at = started;
     active = 1;

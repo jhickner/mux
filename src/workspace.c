@@ -48,16 +48,19 @@ void workspace_on_finish(void (*fn)(struct session *s))
 // by the tab strip instead.
 static void spin_follow(void)
 {
-    static int spinning;
-    int want = ntabs && session_turn_running(tabs[cur].s);
+    static const struct session *spinning;
+    const struct session *want = ntabs && session_turn_running(tabs[cur].s)
+                                 ? tabs[cur].s : NULL;
     if (want == spinning)
         return;
+    // A swap between two running tabs is still a swap: the block on the old
+    // screen goes, and the new one is drawn where its own turn started.
+    if (spinning)
+        status_end();
     spinning = want;
     if (want) {
-        session_spin_word(tabs[cur].s);
-        status_begin();
-    } else {
-        status_end();
+        session_spin_word(want);
+        status_begin_at(session_turn_elapsed(want));
     }
 }
 

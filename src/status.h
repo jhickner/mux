@@ -16,6 +16,7 @@
 int    spin_advance(int *frame, double *at);
 
 void   status_begin(void);
+void   status_begin_at(double elapsed);
 void   status_end(void);
 
 // The sections chrome.c composes. Each draws itself and nothing else; where
