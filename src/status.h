@@ -28,7 +28,6 @@ int    status_sticky_measure(void);
 // A turn is running and its spinner belongs in the stack.
 int    status_spinning(void);
 
-int    status_gap_row(void);
 
 void   status_set_word(const char *text);
 
@@ -41,7 +40,6 @@ void   status_touch(void);
 void   status_pause(void);
 void   status_resume(void);
 
-void   status_gap(int on);
 
 #define STICKY_LINES 3
 

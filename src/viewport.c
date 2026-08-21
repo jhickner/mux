@@ -33,6 +33,12 @@ static viewport_render_fn open_render;
 static void  *open_ud;
 static void (*open_free)(void *);
 static int    open_wrapped;
+static int    open_pad_after;   /* blank rows the entry being written wants below it */
+static int    open_paid;        /* its seam was settled when it was opened */
+
+// Owed by the last entry closed, and paid at the seam with whatever comes
+// next. Part of a screen's state: each session keeps its own.
+static int    tail_pad;
 
 // Renderers nest: an md entry can place an image, which opens an item of its
 // own. Only the outermost one owns an entry; the inner ones write into it.
@@ -257,8 +263,52 @@ static void open_append(const char *s, size_t n)
     open_buf[open_len] = '\0';
 }
 
+static int row_is_blank(const char *s, size_t n);
+
+// Blank rows already at the end of the store, which a seam counts as paid.
+static int trailing_blanks(void)
+{
+    int n = 0;
+    for (int i = nitems - 1; i >= 0; i--) {
+        for (int r = items[i].nrows - 1; r >= 0; r--) {
+            if (!row_is_blank(items[i].rows[r], strlen(items[i].rows[r])))
+                return n;
+            n++;
+        }
+        if (items[i].nrows == 0 && !items[i].render)
+            n++;                /* an empty raw line is a blank row */
+    }
+    return n;
+}
+
+static void blank_push(void)
+{
+    struct item *it = items_push();
+    if (it)
+        rows_set(it, "", 0);
+}
+
+// The seam above an entry about to be pushed. `own` is the blank rows it opens
+// with, which count toward the same gap.
+static void pad_seam(int before, int own)
+{
+    if (!nitems)                /* nothing above: the top of the transcript */
+        return;
+    int want = before > tail_pad ? before : tail_pad;
+    want -= trailing_blanks() + own;
+    for (int i = 0; i < want; i++)
+        blank_push();
+}
+
 static void open_close(int cols)
 {
+    // A wrapped entry paid its seam when it was opened; a raw line pays here,
+    // where its own leading blank is finally known.
+    if (!open_paid) {
+        const char *body = open_buf ? open_buf : "";
+        pad_seam(0, row_is_blank(body, open_len) ? 1 : 0);
+    }
+
     struct item *it = items_push();
     if (!it) {
         open_len = 0;
@@ -273,9 +323,13 @@ static void open_close(int cols)
     open_render = NULL;
     open_ud = NULL;
     open_free = NULL;
+    tail_pad = open_pad_after;
+    open_pad_after = 0;
+    open_paid = 0;
 }
 
-unsigned viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud)(void *))
+unsigned viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud)(void *),
+                             int before, int after)
 {
     // Counted past the limit, so begin and end pair up and an overflow cannot
     // pop somebody else's frame.
@@ -297,9 +351,22 @@ unsigned viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud
 
     if (viewport_active() && open_len)
         open_close(0);
+    if (viewport_active()) {
+        pad_seam(before, 0);
+        open_paid = 1;
+    } else {
+        // Nothing is kept, so the seam is printed as it is reached. Only what
+        // is owed on the way in: a pad below the last entry printed has
+        // nothing after it to be separated from.
+        int want = before > tail_pad ? before : tail_pad;
+        for (int i = 0; i < want; i++)
+            ui_put("\n");
+        tail_pad = after;
+    }
     open_render = render;
     open_ud = ud;
     open_free = free_ud;
+    open_pad_after = after;
 
     // With no viewport there is no entry to own the payload; item_end frees it.
     // No entry means no mark either: an id handed out now would be taken by
@@ -331,6 +398,8 @@ void viewport_item_end(void)
         open_render = NULL;
         open_ud = NULL;
         open_free = NULL;
+        open_pad_after = 0;
+        open_paid = 0;
         return;
     }
     open_wrapped = 0;
@@ -413,6 +482,9 @@ struct viewport_state {
     void  *open_ud;
     void (*open_free)(void *);
     int    open_wrapped;
+    int    open_pad_after;
+    int    open_paid;
+    int    tail_pad;
     int    scrolled;
     unsigned anchor_id;
     int      anchor_skip;
@@ -455,6 +527,9 @@ void viewport_stash(struct viewport_state *st)
     st->open_ud = open_ud;
     st->open_free = open_free;
     st->open_wrapped = open_wrapped;
+    st->open_pad_after = open_pad_after;
+    st->open_paid = open_paid;
+    st->tail_pad = tail_pad;
     st->scrolled = scrolled;
     st->anchor_id = anchor_id;
     st->anchor_skip = anchor_skip;
@@ -467,6 +542,9 @@ void viewport_stash(struct viewport_state *st)
     open_ud = NULL;
     open_free = NULL;
     open_wrapped = 0;
+    open_pad_after = 0;
+    open_paid = 0;
+    tail_pad = 0;
     scrolled = 0;
     anchor_id = 0;
     anchor_skip = 0;
@@ -487,6 +565,9 @@ void viewport_adopt(struct viewport_state *st)
     open_ud = st->open_ud;
     open_free = st->open_free;
     open_wrapped = st->open_wrapped;
+    open_pad_after = st->open_pad_after;
+    open_paid = st->open_paid;
+    tail_pad = st->tail_pad;
     scrolled = st->scrolled;
     anchor_id = st->anchor_id;
     anchor_skip = st->anchor_skip;
@@ -500,6 +581,7 @@ void viewport_clear(void)
         item_free(&items[i]);
     nitems = 0;
     open_len = 0;
+    tail_pad = 0;
     scrolled = 0;
     anchor_id = 0;
     anchor_skip = 0;

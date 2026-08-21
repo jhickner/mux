@@ -785,7 +785,7 @@ void md_render_kept(const char *text, int indent)
     }
     unsigned mark = 0;
     if (k)
-        mark = viewport_item_begin(kept_render, k, kept_free);
+        mark = viewport_item_begin(kept_render, k, kept_free, 1, 1);
     md_render(text, indent);
     if (k) {
         viewport_item_end();

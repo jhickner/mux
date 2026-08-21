@@ -6,6 +6,7 @@
 #include "status.h"
 #include "tty.h"
 #include "ui.h"
+#include "viewport.h"
 
 static struct prompt   *bound;
 static chrome_modal_fn  modal;
@@ -143,7 +144,9 @@ void chrome_paint(void)
     // The input is never dropped, so it is measured first and the rest fitted
     // into what it leaves.
     int input_rows = prompt_input_rows(bound, cols);
-    int gap = status_gap_row();
+    // The block sits one blank row clear of the transcript, unless the
+    // transcript already ends in one.
+    int gap = viewport_active() && !viewport_ends_blank();
 
     struct heights h = above_measure(cols);
     struct above a = {1, 1, 1};

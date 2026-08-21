@@ -353,21 +353,20 @@ struct echo_item {
     char        *text;
     enum ui_role role;
     int          cap;
-    int          gap;           /* owed a blank row above */
+    int          gap;           /* asks for a blank row above */
 };
 
 static void echo_paint(const struct echo_item *e)
 {
-    // Settled when the entry was made, not per redraw.
-    if (e->gap)
-        ui_put("\n");
-
     struct ui_wrap w = bar_wrap(queued_budget(ui_columns()), e->role, e->cap, NULL);
     ui_wrap_paint(e->text, &w);
-    // A blank row under it, except for a shell command: its output starts on
-    // the next row.
-    if (e->role != UI_BASH)
-        ui_put("\n");
+}
+
+// A blank row under it, except for a shell command: its output starts on the
+// next row.
+static int echo_pad_after(const struct echo_item *e)
+{
+    return e->role != UI_BASH;
 }
 
 static char *echo_encode(void *ud)
@@ -402,14 +401,12 @@ void prompt_echo_message(const char *text)
 {
     int cap = settings_get_int(SETTING_ECHO_ROWS, ECHO_ROWS_DEFAULT);
 
-    int gap = !viewport_ends_blank();
-
     struct echo_item *e = malloc(sizeof *e);
     if (e) {
         e->text = strdup(text ? text : "");
         e->role = bash_is_command(text) ? UI_BASH : UI_ECHO;
         e->cap = cap > 0 ? cap : 0;
-        e->gap = gap;
+        e->gap = 1;
         if (!e->text) {
             free(e);
             e = NULL;
@@ -417,14 +414,15 @@ void prompt_echo_message(const char *text)
     }
     // Kept, so the bar and its wrap are laid out again at a new width.
     if (e) {
-        unsigned mark = viewport_item_begin(echo_render, e, echo_free);
+        unsigned mark = viewport_item_begin(echo_render, e, echo_free,
+                                            e->gap, echo_pad_after(e));
         echo_paint(e);
         viewport_item_end();
         viewport_item_persist(mark, PROMPT_ECHO_KIND, echo_encode);
     } else {
         struct echo_item fallback = {(char *)(text ? text : ""),
                                      bash_is_command(text) ? UI_BASH : UI_ECHO,
-                                     cap > 0 ? cap : 0, gap};
+                                     cap > 0 ? cap : 0, 1};
         echo_paint(&fallback);
     }
     ui_flush();
@@ -443,7 +441,8 @@ void prompt_echo_load(const cJSON *st)
         free(e);
         return;
     }
-    unsigned mark = viewport_item_begin(echo_render, e, echo_free);
+    unsigned mark = viewport_item_begin(echo_render, e, echo_free,
+                                        e->gap, echo_pad_after(e));
     echo_paint(e);
     viewport_item_end();
     viewport_item_persist(mark, PROMPT_ECHO_KIND, echo_encode);

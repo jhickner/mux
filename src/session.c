@@ -220,10 +220,7 @@ static void render_event(struct session *s, const backend_event *ev)
         status_pause();
         paused = 1;
 
-        if (s->view.after_activity && !viewport_ends_blank())
-            ui_put("\n");
         md_render_kept(ev->text, 0);
-        ui_put("\n");
         stream_append(s, ev->text);
         view_cluster_forget(&s->view);
         s->view.after_activity = 0;
@@ -319,7 +316,6 @@ static void render_event(struct session *s, const backend_event *ev)
         break;
     }
 
-    status_gap(s->view.after_tool);
     if (paused)
         status_resume();
     ui_flush();
@@ -687,10 +683,8 @@ void session_replay(struct session *s)
         const struct transcript_turn *t = &s->transcript.turns[i];
         if (t->user && *t->user)
             prompt_echo_message(t->user);
-        if (t->assistant && *t->assistant) {
+        if (t->assistant && *t->assistant)
             md_render_kept(t->assistant, 0);
-            ui_put("\n");
-        }
         if (t->interrupted) {
             ui_error("  interrupted");
             ui_put("\n");
@@ -1450,10 +1444,7 @@ static int turn_finish(struct session *s, char *reply, const backend_result *met
                                       : why);
         }
     } else if (*reply && !shown) {
-        if (s->view.after_activity)
-            ui_put("\n");
         md_render_kept(reply, 0);
-        ui_put("\n");
     }
     s->interrupted = m.interrupted;
     if (m.interrupted && !s->silent) {

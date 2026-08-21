@@ -547,7 +547,6 @@ static void board_render(void *ud, int cols)
             cap = 3;
     }
 
-    ui_put("\n");
     rule(labelw, bodyw, "\xe2\x94\x8c", "\xe2\x94\xac", "\xe2\x94\x90");
     head_block(b, labelw, bodyw);
     for (int i = 0; i < b->n; i++) {
@@ -555,7 +554,6 @@ static void board_render(void *ud, int cols)
         worker_block(&b->w[i], b->live, labelw, bodyw, cap);
     }
     rule(labelw, bodyw, "\xe2\x94\x94", "\xe2\x94\xb4", "\xe2\x94\x98");
-    ui_put("\n");
 
     pthread_mutex_unlock(&board_lock);
 }
@@ -695,7 +693,7 @@ int fanout_run(struct session *s, const char *prompt)
     unsigned mark = 0;
     int      kept = viewport_active();
     if (kept) {
-        mark = viewport_item_begin(board_render, b, board_free);
+        mark = viewport_item_begin(board_render, b, board_free, 1, 1);
         board_render(b, ui_columns());
         viewport_item_end();
     }

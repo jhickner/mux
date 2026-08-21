@@ -24,9 +24,16 @@ void viewport_write(const char *s, size_t n);
 // again at any width. Output not wrapped this way soft-wraps on a resize.
 typedef void (*viewport_render_fn)(void *ud, int cols);
 
+// `before` and `after` are the blank rows the entry wants above and below
+// itself. An entry never draws its own padding: the seam between two entries
+// takes the larger of what the two sides ask for, and blank rows already there
+// count toward it, so a run of padded entries is separated by one row rather
+// than two or none.
+//
 // Returns the mark of the entry it opens. Taking it beforehand names the wrong
 // entry: opening one first closes any unwrapped output as an entry of its own.
-unsigned viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud)(void *));
+unsigned viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud)(void *),
+                             int before, int after);
 void viewport_item_end(void);
 
 // Hand the terminal to a child and take it back.

@@ -26,7 +26,6 @@ static char    note[128];
 
 static int              painted;
 static int              spin_width;
-static int              gap;
 static int              dirty;
 
 static int   sticky_on;
@@ -206,8 +205,6 @@ void status_paint_spin(void)
 
 int status_spinning(void) { return active && visible; }
 
-int status_gap_row(void) { return gap ? 1 : 0; }
-
 static void paint(void)
 {
     chrome_paint();
@@ -234,7 +231,6 @@ void status_begin_at(double elapsed)
     frame_at = started;
     active = 1;
     visible = 1;
-    gap = 0;
     painted = 0;
     paint();
 }
@@ -265,15 +261,6 @@ void status_resume(void)
     visible = 1;
     if (!size_changing())
         paint();
-}
-
-void status_gap(int on)
-{
-    on = on ? 1 : 0;
-    if (gap == on)
-        return;
-    gap = on;
-    dirty = 1;
 }
 
 void status_sticky_set(int on)
@@ -330,5 +317,4 @@ void status_end(void)
     visible = 0;
     active = 0;
     started = 0;
-    gap = 0;
 }

@@ -29,7 +29,7 @@ struct keep {
     unsigned char *spans;       /* highlighting for a cluster row */
     enum ui_role   role;
     int            error;       /* output drawn as a failure */
-    int            gap;         /* a blank row above */
+    int            gap;         /* asks for a blank row above */
 };
 
 static void keep_free(void *ud)
@@ -48,8 +48,6 @@ static void keep_render(void *ud, int cols)
     const struct keep *k = ud;
     (void)cols;
 
-    if (k->gap)
-        ui_put("\n");
     switch (k->kind) {
     case KEEP_ACTIVITY: view_activity(k->a, k->b, k->role);              break;
     case KEEP_CALL:     view_tool_call(k->a, k->b);                      break;
@@ -124,11 +122,7 @@ static char *keep_encode(void *ud)
 // Opens the entry, draws it once, closes it. Returns its mark.
 static unsigned keep(struct keep *k)
 {
-    // Settled once, not per redraw: two blanks where the last entry left one.
-    if (k->gap && viewport_ends_blank())
-        k->gap = 0;
-
-    unsigned mark = viewport_item_begin(keep_render, k, keep_free);
+    unsigned mark = viewport_item_begin(keep_render, k, keep_free, k->gap, 0);
     keep_render(k, ui_columns());
     viewport_item_end();
     viewport_item_persist(mark, VIEW_KEEP_KIND, keep_encode);

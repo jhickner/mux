@@ -185,7 +185,6 @@ static int draw_message(enum role role, const cJSON *content, const char *cwd,
         }
         if (role == ROLE_ASSISTANT && *content->valuestring) {
             md_render_kept(content->valuestring, 0);
-            ui_put("\n");
             return 1;
         }
         if (role == ROLE_THINKING && thinking && *content->valuestring) {
@@ -210,7 +209,6 @@ static int draw_message(enum role role, const cJSON *content, const char *cwd,
                 }
             } else if (*body) {
                 md_render_kept(body, 0);
-                ui_put("\n");
                 drew = 1;
             }
         } else if (!strcmp(kind, "thinking") || !strcmp(kind, "reasoning")) {

@@ -41,7 +41,7 @@ struct btw {
     char *question;
     char *answer;
     int   failed;
-    int   gap;                  /* owed a blank row above */
+    int   gap;                  /* asks for a blank row above */
 };
 
 struct side {
@@ -130,11 +130,6 @@ static void btw_render(void *ud, int cols)
     char mark[16];
     snprintf(mark, sizeof mark, "%s", b->failed ? BTW_FAIL : BTW_DONE);
 
-    // Settled when the entry was made: asking now would answer about a
-    // transcript this entry is already in.
-    if (b->gap)
-        ui_put("\n");
-
     int budget = ui_columns() - 5;
     struct ui_wrap w = {0};
     w.budget = (size_t)(budget > 4 ? budget : 4);
@@ -145,10 +140,8 @@ static void btw_render(void *ud, int cols)
     w.paint_empty = 1;
     ui_wrap_paint(b->question, &w);
 
-    if (!b->answer) {
-        ui_put("\n");
+    if (!b->answer)
         return;
-    }
 
     int inner = ui_columns() - 2;
     ui_capture_begin(inner > 8 ? inner : 8);
@@ -161,7 +154,6 @@ static void btw_render(void *ud, int cols)
         bar_rows(painted, UI_BRAND);
         free(painted);
     }
-    ui_put("\n");
 }
 
 static void btw_free(void *ud)
@@ -431,13 +423,13 @@ static void emit(struct side *c, int status)
     b->question = strdup(c->question ? c->question : "");
     b->answer = strdup(answer);
     b->failed = failed;
-    b->gap = !viewport_ends_blank();
+    b->gap = 1;
     if (!b->question || !b->answer) {
         btw_free(b);
         return;
     }
 
-    unsigned mark = viewport_item_begin(btw_render, b, btw_free);
+    unsigned mark = viewport_item_begin(btw_render, b, btw_free, b->gap, 1);
     btw_render(b, ui_columns());
     viewport_item_end();
     viewport_item_persist(mark, SIDECHANNEL_BTW_KIND, btw_encode);
@@ -458,7 +450,7 @@ void sidechannel_btw_load(const cJSON *st)
         return;
     }
 
-    unsigned mark = viewport_item_begin(btw_render, b, btw_free);
+    unsigned mark = viewport_item_begin(btw_render, b, btw_free, b->gap, 1);
     btw_render(b, ui_columns());
     viewport_item_end();
     viewport_item_persist(mark, SIDECHANNEL_BTW_KIND, btw_encode);
