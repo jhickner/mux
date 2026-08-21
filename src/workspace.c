@@ -190,6 +190,7 @@ void workspace_show(int index)
 
     block_forget();
     status_sticky_prompt(tabs[cur].sticky);
+    status_sticky_busy(session_busy(tabs[cur].s));
     follow(tabs[cur].s);
     spin_follow();
     viewport_forget();
@@ -347,6 +348,7 @@ static void drop(int index)
         viewport_adopt(tabs[cur].screen);
         block_forget();
         status_sticky_prompt(tabs[cur].sticky);
+        status_sticky_busy(session_busy(tabs[cur].s));
         follow(tabs[cur].s);
         spin_follow();
         viewport_forget();
@@ -418,8 +420,10 @@ static int pump(int hold)
     }
     // A session that names itself while it is behind must not take the note
     // off the one in front.
-    if (ntabs)
+    if (ntabs) {
         status_set_note(session_title(tabs[cur].s));
+        status_sticky_busy(session_busy(tabs[cur].s));
+    }
     spin_follow();
     return busy;
 }
