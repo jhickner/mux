@@ -70,6 +70,7 @@ static char            last_log[240];   // the client's last complaint, for /tg
 static int             log_repeats;
 static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
 static int             from_chat;       // the turn now running came from the chat
+static int             line_in_flight;  // depth of run_line: no keyboard behind this line
 
 // ---- config -------------------------------------------------------------
 
@@ -155,7 +156,7 @@ static char *state_read(const char *name)
     fclose(f);
     if (!r)
         return NULL;
-    buf[strcspn(buf, "\r\n")] = '\0';
+    text_chomp(buf);
     return buf[0] ? strdup(buf) : NULL;
 }
 
@@ -298,27 +299,15 @@ static char *strip_ansi(char *s)
 {
     if (!s)
         return NULL;
-    size_t w = 0;
-    for (size_t i = 0; s[i];) {
-        if (s[i] == '\x1b') {
-            i++;
-            if (s[i] == '[' || s[i] == ']') {
-                char kind = s[i++];
-                while (s[i] && !(kind == '[' ? (s[i] >= '@' && s[i] <= '~')
-                                             : (s[i] == '\a' || s[i] == '\x1b')))
-                    i++;
-                if (s[i] == '\x1b')
-                    continue;
-            }
-            if (s[i])
-                i++;
-            continue;
-        }
-        if (s[i] == '\r') {
-            i++;
-            continue;
-        }
-        s[w++] = s[i++];
+    size_t n = strlen(s), w = 0;
+    for (size_t i = 0; i < n;) {
+        enum ui_esc_kind kind;
+        size_t end = ui_esc_span(s, n, i, &kind);
+        if (kind == UI_ESC_TEXT)
+            for (size_t k = i; k < end; k++)
+                if (s[k] != '\r')
+                    s[w++] = s[k];
+        i = end;
     }
     s[w] = '\0';
     return s;
@@ -724,7 +713,7 @@ static struct subagent *subagent_note_launch(const backend_event *ev)
     if (!ev->name || !is_spawn_tool(ev->name))
         return NULL;
     char id[40];
-    snprintf(id, sizeof id, "%s-%d", session_backend(sess), ++seq);
+    snprintf(id, sizeof id, "%s-%d", sess ? session_backend(sess) : "agent", ++seq);
     struct subagent *a = subagent_add(id);
     if (!a)
         return NULL;
@@ -788,7 +777,8 @@ static void send_agents(void)
     if (!task_events)
         appendf(msg, sizeof msg, &n,
                 "\n%s reports no subagent life cycle, so these are the spawn\n"
-                "calls seen: what ran, not how it ended.", session_backend(sess));
+                "calls seen: what ran, not how it ended.",
+                sess ? session_backend(sess) : "this backend");
     send_pre(msg);
 }
 
@@ -1042,7 +1032,8 @@ static void send_artifacts(void)
         return;
     }
     char msg[1200];
-    size_t n = (size_t)snprintf(msg, sizeof msg, "%s/\n", art_base);
+    size_t n = 0;
+    appendf(msg, sizeof msg, &n, "%s/\n", art_base);
 
     struct artifact ents[64];
     int count = 0;
@@ -1066,11 +1057,11 @@ static void send_artifacts(void)
     qsort(ents, (size_t)count, sizeof *ents, artifact_newer);
 
     if (!count)
-        snprintf(msg + n, sizeof msg - n, "\nnothing published yet");
-    for (int i = 0; i < count && i < 10 && n + 300 < sizeof msg; i++)
-        n += (size_t)snprintf(msg + n, sizeof msg - n, "\n%s/%s", art_base, ents[i].name);
+        appendf(msg, sizeof msg, &n, "\nnothing published yet");
+    for (int i = 0; i < count && i < 10; i++)
+        appendf(msg, sizeof msg, &n, "\n%s/%s", art_base, ents[i].name);
     if (count > 10)
-        snprintf(msg + n, sizeof msg - n, "\n… and %d more", count - 10);
+        appendf(msg, sizeof msg, &n, "\n… and %d more", count - 10);
     send_pre(msg);
 }
 
@@ -1520,12 +1511,18 @@ static void run_line(char *line, int quiet)
     free(last_said);
     last_said = NULL;
     from_chat = 1;
+    line_in_flight++;
     nudge_queued = 0;
     repeat_task = 0;
     stop_wanted = 0;    // a stop sent before this line was meant for the last
 
     if (bridge_command(line))
         goto done;
+
+    if (!sess) {
+        send_note("that session is gone — start a new one at the terminal");
+        goto done;
+    }
 
     if (headless_mode && needs_terminal(line)) {
         send_notef("%s needs the terminal; not available over the chat", line);
@@ -1581,8 +1578,12 @@ static void run_line(char *line, int quiet)
 
 done:
     from_chat = 0;
+    if (line_in_flight > 0)
+        line_in_flight--;
     free(line);
 }
+
+int tg_line_in_flight(void) { return line_in_flight > 0; }
 
 // ---- the front end ------------------------------------------------------
 
@@ -1733,6 +1734,14 @@ struct session *tg_session(void)
     return sess;
 }
 
+// The session the bridge cached is going away: a tab closing frees it, a
+// handoff gives it to another window. Either way the pointer must not be used.
+void tg_forget_session(struct session *s)
+{
+    if (sess == s)
+        sess = NULL;
+}
+
 void tg_run_line(char *line)
 {
     run_line(line, 0);
@@ -1767,7 +1776,7 @@ void tg_run(struct session *s)
         // Nothing waiting: read whatever the agent produced on its own. A
         // background subagent finishing wakes some backends with no send from
         // here; on the others it streams its work and then waits to be asked.
-        if (session_idle_pump(sess))
+        if (sess && session_idle_pump(sess))
             nudge_for_subagents();
 
         struct timeval tv = {0, 250 * 1000};

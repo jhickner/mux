@@ -78,7 +78,7 @@ int sessionfork_run(const struct session *s, enum fork_where where)
         return 0;
     }
 
-    char *tmux[20];
+    char *tmux[24];
     int n = 0;
     tmux[n++] = "tmux";
     if (where == FORK_WINDOW) {
@@ -88,27 +88,16 @@ int sessionfork_run(const struct session *s, enum fork_where where)
         tmux[n++] = where == FORK_SPLIT_H ? "-h" : "-v";
     }
 
+    // tmux's own -c: where the pane starts, so the shell left behind when mux
+    // exits is in the right place. mux gets told separately, below.
     const char *cwd = session_cwd(s);
-    if (cwd) {
+    if (cwd && *cwd) {
         tmux[n++] = "-c";
         tmux[n++] = (char *)cwd;
     }
     tmux[n++] = program;
-    tmux[n++] = "-b";
-    tmux[n++] = (char *)session_backend(s);
-    tmux[n++] = "--session";
-    tmux[n++] = (char *)id;
-
-    const char *model = session_model(s);
-    if (strcmp(model, "default") != 0) {
-        tmux[n++] = "-m";
-        tmux[n++] = (char *)model;
-    }
-    const char *effort = session_effort(s);
-    if (strcmp(effort, "default") != 0) {
-        tmux[n++] = "-e";
-        tmux[n++] = (char *)effort;
-    }
+    n += session_argv(s, tmux + n, SESSION_ARGV_MAX,
+                      SESSION_ARGV_CWD | SESSION_ARGV_RESUME | SESSION_ARGV_SAFE);
     tmux[n] = NULL;
 
     if (run(tmux, NULL) != 0) {
@@ -169,26 +158,25 @@ void sessionfork_exit_note(const struct session *s)
     if (!id || !*id || !session_can_resume(s))
         return;
 
-    char here[4096];
+    // The directory is a cd in front rather than -C: this is a line the user
+    // reads and may run by hand, and it leaves the shell where the work was.
+    char        here[4096];
     const char *dir = session_cwd(s);
-    char lead[4200] = "";
+    char        cmd[9000];
+    size_t      n = 0;
     if (dir && *dir && !(getcwd(here, sizeof here) && !strcmp(here, dir)))
-        snprintf(lead, sizeof lead, "cd %s && ", dir);
+        n = (size_t)snprintf(cmd, sizeof cmd, "cd %s && ", dir);
+    n += (size_t)snprintf(cmd + n, sizeof cmd - n, "%s", APP_NAME);
 
-    char flags[4200] = "";
-    size_t n = 0;
-    const char *backend = session_backend(s);
-    if (strcmp(backend, "claude") != 0)
-        n += (size_t)snprintf(flags + n, sizeof flags - n, " -b %s", backend);
-    const char *model = session_model(s);
-    if (n < sizeof flags && strcmp(model, "default") != 0)
-        n += (size_t)snprintf(flags + n, sizeof flags - n, " -m %s", model);
-    const char *effort = session_effort(s);
-    if (n < sizeof flags && strcmp(effort, "default") != 0)
-        snprintf(flags + n, sizeof flags - n, " -e %s", effort);
-
-    char cmd[9000];
-    snprintf(cmd, sizeof cmd, "%s" APP_NAME "%s --session %s", lead, flags, id);
+    char *args[SESSION_ARGV_MAX];
+    int   count = session_argv(s, args, COUNT(args),
+                               SESSION_ARGV_RESUME | SESSION_ARGV_SAFE);
+    for (int i = 0; i < count; i++) {
+        int wrote = snprintf(cmd + n, sizeof cmd - n, " %s", args[i]);
+        if (wrote < 0 || (size_t)wrote >= sizeof cmd - n)
+            break;
+        n += (size_t)wrote;
+    }
 
     ui_bar(ui_style(UI_DIM), "resume this conversation:");
 

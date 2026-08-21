@@ -55,6 +55,12 @@ int session_start(struct session *s);
 int session_trust_project(struct session *s);
 int session_take_trust_request(struct session *s);
 
+// Whose events may draw. The window sets this around anything that renders
+// for one of its sessions, and puts back what it got. NULL means nothing
+// draws. Set to a session other than the one an event belongs to, that event
+// is kept but not drawn.
+struct session *session_set_drawing(struct session *s);
+
 int session_turn(struct session *s, const char *text);
 
 // The same turn, run on its own thread so the window is free while it happens.
@@ -133,6 +139,18 @@ const char *session_cwd(const struct session *s);
 
 const char *session_workdir(const struct session *s);
 const char *session_backend(const struct session *s);
+
+// The argv that reopens this session, program name excluded: -b, and whatever
+// of -C/-m/-e/-s/--session applies. `what` picks the parts that belong to the
+// caller's situation. Returns the count; the pointers are the session's own,
+// so they live as long as it does. SESSION_ARGV_MAX entries are enough.
+#define SESSION_ARGV_MAX 11
+enum {
+    SESSION_ARGV_CWD    = 1u << 0, // -C: for a process that will not start there
+    SESSION_ARGV_RESUME = 1u << 1, // --session: pick the conversation up again
+    SESSION_ARGV_SAFE   = 1u << 2, // -s: keep customizations off
+};
+int session_argv(const struct session *s, char **out, int max, unsigned what);
 const char *session_last_reply(const struct session *s);
 const char *session_last_error(const struct session *s);
 int         session_last_interrupted(const struct session *s);

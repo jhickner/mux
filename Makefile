@@ -97,7 +97,7 @@ $(BUILD)/imagetest: tools/imagetest.c src/image.o src/md.o src/ui.o src/viewport
 $(BUILD)/mdtest: tools/mdtest.c src/md.o src/ui.o src/viewport.o src/block.o src/settings.o src/tty.o src/text.o src/image.o src/vendor/impl.o src/vendor/cJSON.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
-$(BUILD)/pastetest: tools/pastetest.c src/paste.o | $(BUILD)
+$(BUILD)/pastetest: tools/pastetest.c src/paste.o src/text.o | $(BUILD)
 	$(CC) $(ALL_CFLAGS) -MMD -MP -o $@ $(filter %.c %.o,$^)
 
 $(BUILD)/transcripttest: tools/transcripttest.c src/transcript.o | $(BUILD)

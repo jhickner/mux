@@ -92,11 +92,17 @@ static void tmux_where(void)
     if (!getenv("TMUX") || !pane || !*pane)
         return;
 
-    char cmd[256];
-    snprintf(cmd, sizeof cmd,
-             "tmux display-message -p -t '%s' "
-             "'#{window_id}\t#{window_index}:#{window_name}\t#{pane_index}' 2>/dev/null",
-             pane);
+    char quoted[256];
+    if (!text_shell_quote(pane, quoted, sizeof quoted))
+        return;
+
+    char cmd[512];
+    if (snprintf(cmd, sizeof cmd,
+                 "tmux display-message -p -t %s "
+                 "'#{window_id}\t#{window_index}:#{window_name}\t#{pane_index}' 2>/dev/null",
+                 quoted) >= (int)sizeof cmd)
+        return;
+
     FILE *p = popen(cmd, "r");
     if (!p)
         return;

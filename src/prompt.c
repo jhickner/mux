@@ -178,27 +178,7 @@ static const char *style_open(ReplStyle style)
 static void put_codepoint(uint32_t cp)
 {
     char buf[4];
-    int n;
-    if (cp < 0x80) {
-        buf[0] = (char)cp;
-        n = 1;
-    } else if (cp < 0x800) {
-        buf[0] = (char)(0xC0 | (cp >> 6));
-        buf[1] = (char)(0x80 | (cp & 0x3F));
-        n = 2;
-    } else if (cp < 0x10000) {
-        buf[0] = (char)(0xE0 | (cp >> 12));
-        buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
-        buf[2] = (char)(0x80 | (cp & 0x3F));
-        n = 3;
-    } else {
-        buf[0] = (char)(0xF0 | (cp >> 18));
-        buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
-        buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
-        buf[3] = (char)(0x80 | (cp & 0x3F));
-        n = 4;
-    }
-    ui_putn(buf, (size_t)n);
+    ui_putn(buf, text_utf8_encode(cp, buf));
 }
 
 static int row_extent(const struct frame *f, int y)
@@ -631,8 +611,14 @@ static void edit_in_editor(struct prompt *p, int live)
         return;
     }
 
+    // $EDITOR is user config and may carry its own arguments, so it goes in as
+    // written; only the path is quoted.
+    char quoted[sizeof path * 4 + 3];
     char cmd[4096];
-    if ((size_t)snprintf(cmd, sizeof cmd, "%s '%s'", editor, path) >= sizeof cmd) {
+    int  len = text_shell_quote(path, quoted, sizeof quoted)
+                   ? snprintf(cmd, sizeof cmd, "%s %s", editor, quoted)
+                   : -1;
+    if (len < 0 || (size_t)len >= sizeof cmd) {
         unlink(path);
         if (!live) {
             ui_note("$EDITOR command is too long");

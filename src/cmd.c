@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "app.h"
+#include "chrome.h"
 #include "fanout.h"
 #include "hud.h"
 #include "models.h"
@@ -28,40 +29,9 @@
 #include "settingsui.h"
 #include "text.h"
 #include "status.h"
+#include "tg.h"
 #include "ui.h"
 #include "vendor/agents/backend.h"
-
-const ReplCommand CMD_TABLE[] = {
-    {"/new", "start a fresh conversation", NULL},
-    {"/clear", "alias for /new", NULL},
-    {"/model", "switch model", "[name]"},
-    {"/effort", "set reasoning/thinking effort", "[level]"},
-    {"/backend", "continue with another backend", "<name>"},
-    {"/cd", "work in another directory, starting fresh there", "<path>"},
-    {"/mux", "ask the whole matrix the same thing", "<prompt>|config|make <what>"},
-    {"/btw", "answer this on the side, without waiting", "<prompt>"},
-    {"/thinking", "show or hide the model's reasoning", "[on|off]"},
-    {"/tools", "how much of each tool call to show", "[compact|full]"},
-    {"/sticky", "float the prompt above the spinner", "[on|off]"},
-    {"/image", "tallest an inline image may be drawn", "[rows]"},
-    {"/permission", "how the CLI gates tool calls", "[mode]"},
-    {"/settings", "show and change every setting", NULL},
-    {"/resume", "resume a past conversation", NULL},
-    {"/sessions", "every session: this window's, other windows', past ones", NULL},
-    {"/fh", "fork into a horizontal tmux split", NULL},
-    {"/fs", "alias for /fh", NULL},
-    {"/fv", "fork into a vertical tmux split", NULL},
-    {"/fw", "fork into a tmux window", NULL},
-    {"/split", "a shell split here, in this directory", "[h|v|w]"},
-    {"/status", "reprint the status bar", NULL},
-    {"/session", "show this session's info and totals", NULL},
-    {"/rename", "name this session, or ask the model to name it again", "[name]"},
-    {"/copy", "copy last response to clipboard", NULL},
-    {"/restart", "reload the mux binary, keeping this conversation", NULL},
-    {"/help", "show this help", NULL},
-    {"/quit", "leave", NULL},
-};
-const int CMD_COUNT = COUNT(CMD_TABLE);
 
 static const struct pick_item CLAUDE_EFFORTS[] = {
     {"default", "auto: use the model's default effort"},
@@ -181,7 +151,10 @@ static void help_row(const char *label, const char *text)
 {
     ui_put("  ");
     ui_put(label);
-    for (size_t i = strlen(label); i < 16; i++)
+    size_t width = strlen(label);
+    for (size_t i = width; i < 16; i++)
+        ui_put(" ");
+    if (width >= 16)
         ui_put(" ");
     ui_esc(ui_style(UI_DIM));
     ui_put(text);
@@ -195,43 +168,6 @@ static void help_heading(const char *text)
     ui_put(text);
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");
-}
-
-static void show_help(void)
-{
-    help_heading("commands");
-    for (int i = 0; i < CMD_COUNT; i++) {
-        char label[32];
-        if (CMD_TABLE[i].args)
-            snprintf(label, sizeof label, "%s %s", CMD_TABLE[i].name, CMD_TABLE[i].args);
-        else
-            snprintf(label, sizeof label, "%s", CMD_TABLE[i].name);
-        help_row(label, CMD_TABLE[i].desc);
-    }
-    ui_put("\n");
-    help_heading("shortcuts");
-    help_row("!cmd", "run cmd in $SHELL instead of sending it to the agent");
-    help_row("enter", "submit prompt, or queue it while a turn is running");
-    help_row("ctrl-j", "insert a newline");
-    help_row("ctrl-g", "edit the prompt in $EDITOR");
-    help_row("tab", "accept the completion");
-    help_row("@", "complete a file path from the working directory");
-    help_row("up / down", "browse history");
-    help_row("ctrl-r", "search history");
-    help_row("esc", "interrupt the model or a running tool");
-    help_row("ctrl-c", "clear the prompt line, or interrupt a running turn");
-    help_row("ctrl-d", "close the session (quit on the last one)");
-    help_row("ctrl-t", "a shell split here, in this directory");
-    help_row("ctrl-b", "another session like this one, or the idle one already open");
-    help_row("ctrl-l", "clear the screen");
-    ui_put("\n");
-    help_heading("skills");
-    help_row("", "your skills, CLAUDE.md, MCP servers and agents load by default.");
-    help_row("", "any slash command not listed above goes to the agent CLI, so");
-    help_row("", "/w, /todo and the rest work here. start with -s to run without");
-    help_row("", "them; /session shows what is active.");
-    ui_put("\n");
-    ui_flush();
 }
 
 static int copy_to_clipboard(const char *text)
@@ -266,10 +202,29 @@ static void note_identity(const struct session *s)
     ui_flush();
 }
 
+// A picker is a modal on the keyboard, so there has to be one and it has to be
+// free: not already inside a list, and not a line submitted over Telegram,
+// which has no keyboard behind it. The general fix is a "no keyboard" capability
+// on the front end; this is the caller side of it.
+static int can_pick(const char *usage)
+{
+    if (chrome_modal_active()) {
+        reply_note("%s \xe2\x80\x94 a list is already open", usage);
+        return 0;
+    }
+    if (tg_line_in_flight()) {
+        reply_note("%s \xe2\x80\x94 nothing here to pick from a list with", usage);
+        return 0;
+    }
+    return 1;
+}
+
 static void do_model(struct session *s, const char *arg)
 {
     const char *chosen = arg;
     if (!chosen || !*chosen) {
+        if (!can_pick("/model <name>"))
+            return;
         int count = 0, initial = 0;
         const struct pick_item *choices = model_choices(s, &count);
         if (!count) {
@@ -303,6 +258,8 @@ static void do_effort(struct session *s, const char *arg)
 
     const char *chosen = arg;
     if (!chosen || !*chosen) {
+        if (!can_pick("/effort <level>"))
+            return;
         int count = 0, initial = 0;
         const struct pick_item *choices = effort_choices(s, &count);
         const char *current = session_effort(s);
@@ -384,6 +341,8 @@ static void do_permission(struct session *s, const char *arg)
 
     const char *chosen = arg;
     if (!chosen || !*chosen) {
+        if (!can_pick("/permission <mode>"))
+            return;
         int initial = session_permission_index(session_permission(s));
         int index = pick_run("gate tool calls", choices, count, initial < 0 ? 0 : initial);
         if (index < 0)
@@ -490,8 +449,9 @@ static void do_tools(struct session *s, const char *arg)
     reply_note("tool calls: %s", compact ? "one row each" : "full blocks with output");
 }
 
-static void do_sticky(const char *arg)
+static void do_sticky(struct session *s, const char *arg)
 {
+    (void)s;
     int on = toggle_arg(arg, "on", "off", status_sticky_enabled(), "/sticky");
     if (on < 0)
         return;
@@ -501,8 +461,9 @@ static void do_sticky(const char *arg)
     reply_note("floating prompt %s", on ? "on" : "off");
 }
 
-static void do_image(const char *arg)
+static void do_image(struct session *s, const char *arg)
 {
+    (void)s;
     if (arg && *arg) {
         char *end;
         long rows = strtol(arg, &end, 10);
@@ -575,8 +536,9 @@ int cmd_resume(struct session *s)
     return resumed;
 }
 
-static void do_new(struct session *s)
+static void do_new(struct session *s, const char *arg)
 {
+    (void)arg;
     if (!session_clear(s)) {
         reply_error("could not clear the conversation");
         return;
@@ -632,8 +594,9 @@ static void do_cd(struct session *s, const char *arg)
     ui_flush();
 }
 
-static void do_copy(struct session *s)
+static void do_copy(struct session *s, const char *arg)
 {
+    (void)arg;
     const char *reply = session_last_reply(s);
     if (!reply) {
         ui_note("nothing to copy yet");
@@ -692,47 +655,185 @@ static int split_command(const char *line, char *name, size_t size, const char *
     return 1;
 }
 
-static int fork_target(const char *name, enum fork_where *where)
-{
-    static const struct {
-        const char     *name;
-        enum fork_where where;
-    } TARGETS[] = {
-        {"/fh", FORK_SPLIT_H},
-        {"/fs", FORK_SPLIT_H},
-        {"/fv", FORK_SPLIT_V},
-        {"/fw", FORK_WINDOW},
-    };
+enum {
+    CMD_HIDDEN      = 1u << 0,
+    CMD_QUITS       = 1u << 1,
+    // The command puts its own line in the transcript.
+    CMD_SELF_ECHOES = 1u << 2,
+    // Touches only mux's display, so it may run while a turn is in flight.
+    // The rest reload or talk to the agent CLI, and wait for the turn to end.
+    CMD_LIVE        = 1u << 3,
+};
 
-    for (size_t i = 0; i < sizeof TARGETS / sizeof *TARGETS; i++) {
-        if (strcmp(name, TARGETS[i].name) == 0) {
-            if (where)
-                *where = TARGETS[i].where;
-            return 1;
-        }
-    }
-    return 0;
+struct cmd {
+    const char *name;
+    const char *desc;
+    const char *args;
+    unsigned    flags;
+    void      (*run)(struct session *s, const char *arg);
+};
+
+static void do_help(struct session *s, const char *arg);
+
+static void do_settings(struct session *s, const char *arg)
+{
+    (void)arg;
+    settingsui_run(s);
 }
 
-// What a command may do mid-turn. NOW: touches only mux's display. LATER:
-// reloads or talks to the agent CLI, so it is applied once the turn ends.
-enum live_class { LIVE_NO, LIVE_NOW, LIVE_LATER };
-
-static enum live_class live_class(const char *name)
+static void do_resume(struct session *s, const char *arg)
 {
-    static const char *const NOW[] = {
-        "/help", "/status", "/session", "/copy", "/thinking",
-        "/tools", "/sticky", "/image", "/btw",
-    };
-    static const char *const LATER[] = {"/model", "/effort", "/permission"};
+    (void)arg;
+    cmd_resume(s);
+}
 
-    for (size_t i = 0; i < COUNT(NOW); i++)
-        if (!strcmp(name, NOW[i]))
-            return LIVE_NOW;
-    for (size_t i = 0; i < COUNT(LATER); i++)
-        if (!strcmp(name, LATER[i]))
-            return LIVE_LATER;
-    return fork_target(name, NULL) ? LIVE_NOW : LIVE_NO;
+static void do_sessions(struct session *s, const char *arg)
+{
+    (void)s;
+    (void)arg;
+    sessionswitch_run();
+}
+
+static void do_status(struct session *s, const char *arg)
+{
+    (void)arg;
+    hud_print(s);
+}
+
+static void do_session(struct session *s, const char *arg)
+{
+    (void)arg;
+    session_report(s);
+}
+
+static void do_restart(struct session *s, const char *arg)
+{
+    (void)s;
+    (void)arg;
+    restart_request();
+}
+
+static void do_fork_h(struct session *s, const char *arg)
+{
+    (void)arg;
+    sessionfork_run(s, FORK_SPLIT_H);
+}
+
+static void do_fork_v(struct session *s, const char *arg)
+{
+    (void)arg;
+    sessionfork_run(s, FORK_SPLIT_V);
+}
+
+static void do_fork_w(struct session *s, const char *arg)
+{
+    (void)arg;
+    sessionfork_run(s, FORK_WINDOW);
+}
+
+static const struct cmd COMMANDS[] = {
+    {"/new", "start a fresh conversation", NULL, 0, do_new},
+    {"/clear", "alias for /new", NULL, 0, do_new},
+    {"/model", "switch model", "[name]", 0, do_model},
+    {"/effort", "set reasoning/thinking effort", "[level]", 0, do_effort},
+    {"/backend", "continue with another backend", "<name>", 0, do_backend},
+    {"/cd", "work in another directory, starting fresh there", "<path>", 0, do_cd},
+    {"/mux", "ask the whole matrix the same thing", "<prompt>|config|make <what>",
+     0, do_mux},
+    {"/btw", "answer this on the side, without waiting", "<prompt>",
+     CMD_SELF_ECHOES | CMD_LIVE, do_btw},
+    {"/thinking", "show or hide the model's reasoning", "[on|off]", CMD_LIVE,
+     do_thinking},
+    {"/tools", "how much of each tool call to show", "[compact|full]", CMD_LIVE,
+     do_tools},
+    {"/sticky", "float the prompt above the spinner", "[on|off]", CMD_LIVE, do_sticky},
+    {"/image", "tallest an inline image may be drawn", "[rows]", CMD_LIVE, do_image},
+    {"/permission", "how the CLI gates tool calls", "[mode]", 0, do_permission},
+    {"/settings", "show and change every setting", NULL, 0, do_settings},
+    {"/resume", "resume a past conversation", NULL, 0, do_resume},
+    {"/sessions", "every session: this window's, other windows', past ones", NULL,
+     0, do_sessions},
+    {"/fh", "fork into a horizontal tmux split", NULL, CMD_LIVE, do_fork_h},
+    {"/fs", "alias for /fh", NULL, CMD_LIVE, do_fork_h},
+    {"/fv", "fork into a vertical tmux split", NULL, CMD_LIVE, do_fork_v},
+    {"/fw", "fork into a tmux window", NULL, CMD_LIVE, do_fork_w},
+    {"/split", "a shell split here, in this directory", "[h|v|w]", 0, do_split},
+    {"/status", "reprint the status bar", NULL, CMD_LIVE, do_status},
+    {"/session", "show this session's info and totals", NULL, CMD_LIVE, do_session},
+    {"/rename", "name this session, or ask the model to name it again", "[name]",
+     0, do_rename},
+    {"/copy", "copy last response to clipboard", NULL, CMD_LIVE, do_copy},
+    {"/restart", "reload the mux binary, keeping this conversation", NULL, 0,
+     do_restart},
+    {"/help", "show this help", NULL, CMD_LIVE, do_help},
+    {"/quit", "leave", NULL, CMD_QUITS, NULL},
+    {"/exit", "alias for /quit", NULL, CMD_QUITS, NULL},
+};
+
+static const struct cmd *cmd_named(const char *name)
+{
+    for (size_t i = 0; i < COUNT(COMMANDS); i++)
+        if (!strcmp(COMMANDS[i].name, name))
+            return &COMMANDS[i];
+    return NULL;
+}
+
+// The command the line names, if any, with the text after its name.
+static const struct cmd *cmd_for_line(const char *line, const char **arg)
+{
+    char name[32];
+    if (!split_command(line, name, sizeof name, arg))
+        return NULL;
+    return cmd_named(name);
+}
+
+const ReplCommand *cmd_completions(int *count)
+{
+    static ReplCommand table[COUNT(COMMANDS)];
+    static int         n;
+
+    if (!n) {
+        for (size_t i = 0; i < COUNT(COMMANDS); i++) {
+            if (COMMANDS[i].flags & CMD_HIDDEN)
+                continue;
+            table[n].name = COMMANDS[i].name;
+            table[n].desc = COMMANDS[i].desc;
+            table[n].args = COMMANDS[i].args;
+            n++;
+        }
+    }
+    *count = n;
+    return table;
+}
+
+int cmd_is_command(const char *line)
+{
+    const char *arg;
+    return cmd_for_line(line, &arg) != NULL;
+}
+
+int cmd_is_quit(const char *line)
+{
+    const char *arg;
+    const struct cmd *c = cmd_for_line(line, &arg);
+    return c && (c->flags & CMD_QUITS);
+}
+
+// /btw shows the question itself, twice over; the echo would be a third copy.
+int cmd_self_echoes(const char *line)
+{
+    const char *arg;
+    const struct cmd *c = cmd_for_line(line, &arg);
+    return c && (c->flags & CMD_SELF_ECHOES) && arg && *arg;
+}
+
+// Every command but a quit goes through cmd_dispatch_live() while a turn is
+// running: it either runs there and then or waits for the turn to end.
+int cmd_runs_mid_turn(const char *line)
+{
+    const char *arg;
+    const struct cmd *c = cmd_for_line(line, &arg);
+    return c && !(c->flags & CMD_QUITS);
 }
 
 #define DEFERRED_MAX 8
@@ -742,37 +843,15 @@ static struct {
 } deferred[DEFERRED_MAX];
 static int   deferred_count;
 
-// /btw shows the question itself, twice over; the echo would be a third copy.
-int cmd_self_echoes(const char *line)
-{
-    char name[32];
-    const char *arg;
-    if (!split_command(line, name, sizeof name, &arg))
-        return 0;
-    return !strcmp(name, "/btw") && arg && *arg;
-}
-
-int cmd_is_live(const char *line)
-{
-    char name[32];
-    const char *arg;
-    if (!split_command(line, name, sizeof name, &arg))
-        return 0;
-    return live_class(name) != LIVE_NO;
-}
-
-static enum cmd_result run_command(struct session *s, const char *name,
-                                   const char *arg);
-
 void cmd_dispatch_live(struct session *s, const char *line)
 {
-    char name[32];
-    const char *arg;
-    if (!split_command(line, name, sizeof name, &arg))
+    const char       *arg;
+    const struct cmd *c = cmd_for_line(line, &arg);
+    if (!c || (c->flags & CMD_QUITS))
         return;
 
-    if (live_class(name) == LIVE_NOW) {
-        run_command(s, name, arg);
+    if (c->flags & CMD_LIVE) {
+        c->run(s, arg);
         return;
     }
 
@@ -782,13 +861,13 @@ void cmd_dispatch_live(struct session *s, const char *line)
     }
     char *copy = strdup(line);
     if (!copy) {
-        reply_error("could not hold %s until the turn ends", name);
+        reply_error("could not hold %s until the turn ends", c->name);
         return;
     }
     deferred[deferred_count].line = copy;
     deferred[deferred_count].s = s;
     deferred_count++;
-    reply_note("%s applies when this turn ends", name);
+    reply_note("%s applies when this turn ends", c->name);
 }
 
 // Only the ones typed at this session: another tab's turn ending is not the
@@ -812,92 +891,75 @@ void cmd_run_deferred(struct session *s)
     }
 }
 
-int cmd_is_command(const char *line)
+// The session is going away: its held-back commands will never be drained by
+// cmd_run_deferred(), and a later session could land on the same address.
+void cmd_forget_session(struct session *s)
 {
-    char name[32];
-    const char *arg;
-    if (!split_command(line, name, sizeof name, &arg))
-        return 0;
-    for (int i = 0; i < CMD_COUNT; i++)
-        if (!strcmp(CMD_TABLE[i].name, name))
-            return 1;
-    return 0;
-}
-
-int cmd_is_quit(const char *line)
-{
-    char name[32];
-    const char *arg;
-    if (!split_command(line, name, sizeof name, &arg))
-        return 0;
-    return !strcmp(name, "/quit") || !strcmp(name, "/exit");
+    int kept = 0;
+    for (int i = 0; i < deferred_count; i++) {
+        if (deferred[i].s == s)
+            free(deferred[i].line);
+        else
+            deferred[kept++] = deferred[i];
+    }
+    deferred_count = kept;
 }
 
 enum cmd_result cmd_dispatch(struct session *s, const char *line)
 {
-    char name[32];
-    const char *arg;
-    if (!split_command(line, name, sizeof name, &arg))
+    const char       *arg;
+    const struct cmd *c = cmd_for_line(line, &arg);
+    if (!c)
         return CMD_NOT_A_COMMAND;
-    return run_command(s, name, arg);
+    if (c->flags & CMD_QUITS)
+        return CMD_QUIT;
+    c->run(s, arg);
+    return CMD_HANDLED;
 }
 
-static enum cmd_result run_command(struct session *s, const char *name,
-                                   const char *arg)
+static void do_help(struct session *s, const char *arg)
 {
-    enum fork_where where;
+    (void)s;
+    (void)arg;
 
-    if (!strcmp(name, "/help")) {
-        show_help();
-    } else if (!strcmp(name, "/new") || !strcmp(name, "/clear")) {
-        do_new(s);
-    } else if (!strcmp(name, "/model")) {
-        do_model(s, arg);
-    } else if (!strcmp(name, "/effort")) {
-        do_effort(s, arg);
-    } else if (!strcmp(name, "/backend")) {
-        do_backend(s, arg);
-    } else if (!strcmp(name, "/cd")) {
-        do_cd(s, arg);
-    } else if (!strcmp(name, "/settings")) {
-        settingsui_run(s);
-    } else if (!strcmp(name, "/mux")) {
-        do_mux(s, arg);
-    } else if (!strcmp(name, "/btw")) {
-        do_btw(s, arg);
-    } else if (!strcmp(name, "/thinking")) {
-        do_thinking(s, arg);
-    } else if (!strcmp(name, "/image")) {
-        do_image(arg);
-    } else if (!strcmp(name, "/tools")) {
-        do_tools(s, arg);
-    } else if (!strcmp(name, "/sticky")) {
-        do_sticky(arg);
-    } else if (!strcmp(name, "/permission")) {
-        do_permission(s, arg);
-    } else if (!strcmp(name, "/resume")) {
-        cmd_resume(s);
-    } else if (fork_target(name, &where)) {
-        sessionfork_run(s, where);
-    } else if (!strcmp(name, "/sessions")) {
-        sessionswitch_run();
-    } else if (!strcmp(name, "/status")) {
-        hud_print(s);
-    } else if (!strcmp(name, "/split")) {
-        do_split(s, arg);
-    } else if (!strcmp(name, "/rename")) {
-        do_rename(s, arg);
-    } else if (!strcmp(name, "/session")) {
-        session_report(s);
-    } else if (!strcmp(name, "/copy")) {
-        do_copy(s);
-    } else if (!strcmp(name, "/restart")) {
-        restart_request();
-    } else if (!strcmp(name, "/quit") || !strcmp(name, "/exit")) {
-        return CMD_QUIT;
-    } else {
-
-        return CMD_NOT_A_COMMAND;
+    help_heading("commands");
+    for (size_t i = 0; i < COUNT(COMMANDS); i++) {
+        if (COMMANDS[i].flags & CMD_HIDDEN)
+            continue;
+        char label[64];
+        if (COMMANDS[i].args)
+            snprintf(label, sizeof label, "%s %s", COMMANDS[i].name, COMMANDS[i].args);
+        else
+            snprintf(label, sizeof label, "%s", COMMANDS[i].name);
+        help_row(label, COMMANDS[i].desc);
     }
-    return CMD_HANDLED;
+    ui_put("\n");
+    help_heading("shortcuts");
+    help_row("!cmd", "run cmd in $SHELL instead of sending it to the agent");
+    help_row("enter", "submit prompt, or queue it while a turn is running");
+    help_row("enter (empty)", "reprint the status bar");
+    help_row("ctrl-j", "insert a newline");
+    help_row("ctrl-g", "edit the prompt in $EDITOR");
+    help_row("ctrl-v", "paste text, or a clipboard image as a file path");
+    help_row("tab", "accept the completion");
+    help_row("@", "complete a file path from the working directory");
+    help_row("up / down", "browse history");
+    help_row("ctrl-r", "search history");
+    help_row("esc", "interrupt the model or a running tool");
+    help_row("ctrl-c", "clear the prompt line, or interrupt a running turn");
+    help_row("ctrl-d", "close the session (quit on the last one)");
+    help_row("left (empty)", "the list of every session");
+    help_row("ctrl-t", "a shell split here, in this directory");
+    help_row("ctrl-b", "another session like this one, or the idle one already open");
+    help_row("ctrl-n / ctrl-o", "cycle the colours of your input / of reply highlights");
+    help_row("page up/down", "scroll the transcript half a screen");
+    help_row("ctrl-l", "clear the screen");
+    ui_put("\n");
+    help_heading("skills");
+    help_row("", "your skills, CLAUDE.md, MCP servers and agents load by default.");
+    help_row("", "any slash command not listed above goes to the agent CLI, so");
+    help_row("", "/w, /todo and the rest work here. start with -s to run without");
+    help_row("", "them; /session shows what is active.");
+    ui_put("\n");
+    ui_flush();
 }

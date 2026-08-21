@@ -1,5 +1,6 @@
 #include "text.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -93,6 +94,80 @@ char *text_slurp(const char *path, size_t max_bytes, size_t *len_out)
     if (len_out)
         *len_out = got;
     return buf;
+}
+
+int text_fuzzy_score(const char *name, const char *q)
+{
+    int score = 0, ni = 0, streak = 0;
+
+    for (int qi = 0; q[qi]; qi++) {
+        int qc = tolower((unsigned char)q[qi]);
+        int found = 0;
+        while (name[ni]) {
+            char prev = ni ? name[ni - 1] : '/';
+            int  nc = tolower((unsigned char)name[ni]);
+            ni++;
+            if (nc == qc) {
+                streak++;
+                score += 1 + streak;
+                if (prev == '/' || prev == '-' || prev == '_' || prev == '.' || prev == ':')
+                    score += 4;
+                found = 1;
+                break;
+            }
+            streak = 0;
+        }
+        if (!found)
+            return -1;
+    }
+    return score;
+}
+
+size_t text_utf8_encode(uint32_t cp, char out[4])
+{
+    if (cp < 0x80) {
+        out[0] = (char)cp;
+        return 1;
+    }
+    if (cp < 0x800) {
+        out[0] = (char)(0xC0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        out[0] = (char)(0xE0 | (cp >> 12));
+        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    out[0] = (char)(0xF0 | (cp >> 18));
+    out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+int text_shell_quote(const char *s, char *out, size_t size)
+{
+    size_t n = 0;
+    if (size < 3)
+        return 0;
+    out[n++] = '\'';
+    for (; *s; s++) {
+        const char *piece = *s == '\'' ? "'\\''" : NULL;
+        size_t need = piece ? 4 : 1;
+        if (n + need + 2 > size)
+            return 0;
+        if (piece) {
+            memcpy(out + n, piece, need);
+            n += need;
+        } else {
+            out[n++] = *s;
+        }
+    }
+    out[n++] = '\'';
+    out[n] = '\0';
+    return 1;
 }
 
 double now_seconds(void)

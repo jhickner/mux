@@ -22,7 +22,8 @@ int  workspace_index_of(const struct session *s);
 int  workspace_spawn(const char *backend, const char *model, const char *effort,
                      const char *cwd, const char *id);
 
-// Adopts an already-started session as a tab.
+// Adopts an already-started session as a tab. Any tab but the first is shown
+// as it opens, so this switches the tab in front as a side effect.
 int  workspace_open(struct session *s);
 
 void workspace_show(int index);
@@ -59,6 +60,12 @@ void workspace_on_finish(void (*fn)(struct session *s));
 // Idle work for every tab, each rendering into its own screen.
 int  workspace_fds(int *out, int max);
 int  workspace_pump(void);
+
+// The same, for a caller that owns the screen itself — a modal, say. The tabs
+// advance and what they draw joins their own transcript, but nothing reaches
+// the terminal, and a turn that ends waits for the screen back before its
+// deferred commands run.
+int  workspace_pump_quiet(void);
 int  workspace_busy(void);
 
 // working | errored | finished, as the registry spells it.

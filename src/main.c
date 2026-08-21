@@ -76,8 +76,8 @@ static void replay_tab(struct session *s, void *ud)
     sessionload_into(s);
 }
 
-// One line per session, as restart.c wrote them: backend, directory, model,
-// effort, id, screen.
+// One line per session, as restart.c wrote them: the screen it was holding,
+// then the argv that reopens it, tab separated.
 static void restore_tabs(const char *path)
 {
     FILE *f = fopen(path, "r");
@@ -91,18 +91,31 @@ static void restore_tabs(const char *path)
     char line[6144];
     while (fgets(line, sizeof line, f)) {
         line[strcspn(line, "\n")] = '\0';
-        char *rest = line;
-        const char *backend = strsep(&rest, "\t");
-        const char *cwd = strsep(&rest, "\t");
-        const char *model = strsep(&rest, "\t");
-        const char *effort = strsep(&rest, "\t");
-        const char *id = strsep(&rest, "\t");
+        char       *rest = line;
         const char *screen = strsep(&rest, "\t");
-        if (!backend || !*backend || !cwd || !id || !*id)
+        const char *backend = NULL, *cwd = NULL, *model = NULL, *effort = NULL;
+        const char *id = NULL;
+        for (char *arg; (arg = strsep(&rest, "\t"));) {
+            if (arg[0] != '-' || !strcmp(arg, "-s"))
+                continue;
+            char *value = strsep(&rest, "\t");
+            if (!value)
+                break;
+            if (!strcmp(arg, "-b"))
+                backend = value;
+            else if (!strcmp(arg, "-C"))
+                cwd = value;
+            else if (!strcmp(arg, "-m"))
+                model = value;
+            else if (!strcmp(arg, "-e"))
+                effort = value;
+            else if (!strcmp(arg, "--session"))
+                id = value;
+        }
+        if (!backend || !*backend || !id || !*id)
             continue;
 
-        int at = workspace_spawn(backend, model && *model ? model : NULL,
-                                 effort && *effort ? effort : NULL, cwd, id);
+        int at = workspace_spawn(backend, model, effort, cwd, id);
         if (at < 0)
             continue;
         workspace_show(front);
@@ -307,7 +320,7 @@ static void turn_done(struct session *s)
 static int live_command(void *ud, const char *line)
 {
     (void)ud;
-    if (!cmd_is_live(line))
+    if (!cmd_runs_mid_turn(line))
         return 0;
     status_pause();
     if (!cmd_self_echoes(line))
@@ -431,7 +444,7 @@ int main(int argc, char **argv)
         interactive = 0;
 
     if (interactive) {
-        restart_arm(safe_mode);
+        restart_arm();
         if (tty_raw_begin() != 0) {
             fprintf(stderr, APP_NAME ": not a terminal — pass a prompt as arguments instead\n");
             return 1;
@@ -552,7 +565,9 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    struct prompt *prompt = prompt_new(CMD_TABLE, CMD_COUNT);
+    int                cmd_count = 0;
+    const ReplCommand *cmds = cmd_completions(&cmd_count);
+    struct prompt     *prompt = prompt_new(cmds, cmd_count);
     if (!prompt) {
         workspace_end();
         return 1;
@@ -659,8 +674,7 @@ int main(int argc, char **argv)
 
         // A command typed behind a running turn either applies now or waits
         // for it, the way one typed during a turn always has.
-        if (session_turn_running(session) && cmd_is_command(line) &&
-            !cmd_is_quit(line)) {
+        if (session_turn_running(session) && cmd_runs_mid_turn(line)) {
             cmd_dispatch_live(session, line);
             free(line);
             prompt_restart_check(prompt);

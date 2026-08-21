@@ -275,7 +275,7 @@ static int grok_group_dir(const char *cwd, char *out, size_t size)
         char line[4096];
         int match = 0;
         if (fgets(line, sizeof line, f)) {
-            line[strcspn(line, "\n")] = '\0';
+            text_chomp(line);
             match = strcmp(line, cwd) == 0;
         }
         fclose(f);

@@ -6,11 +6,14 @@
 #include <unistd.h>
 
 #include "block.h"
+#include "chrome.h"
+#include "cmd.h"
 #include "gitinfo.h"
 #include "prompt.h"
 #include "session.h"
 #include "settings.h"
 #include "status.h"
+#include "tg.h"
 #include "ui.h"
 #include "viewport.h"
 
@@ -28,13 +31,13 @@ struct tab {
     struct pending         pending[PENDING_MAX];
     int                    npending;
     char                  *sticky;   /* the prompt this tab is showing */
+    int                    finished; /* a turn ended; what follows it is owed */
 };
 
 static struct tab tabs[WORKSPACE_MAX];
 static int        ntabs;
 static int        cur;
 static int        safe;
-static int        borrowed = -1;
 static void     (*on_finish)(struct session *s);
 
 static void follow(const struct session *s);
@@ -201,28 +204,77 @@ static void sticky_set(int index, const char *line)
         status_sticky_prompt(line);
 }
 
-// Drawing for a tab that is not the one on screen: its own screen takes the
-// globals for the duration, so nothing reaches the terminal.
+/* --- who holds the drawing globals ---------------------------------------- */
+
+// One tab at a time owns the viewport globals: the tab on screen, unless
+// something has borrowed them. Borrows nest — a turn finishing inside the pump
+// runs deferred commands, and those reach back into the workspace — so they
+// are a stack rather than a single slot. Every enter() is matched by exactly
+// one leave(), including the ones that swap nothing.
+#define BORROW_MAX 16
+
+struct borrow {
+    int tab;                /* the tab holding the globals at this level */
+    int hold;               /* whether the terminal is kept out of it */
+    struct session *drawn;  /* what the session layer was drawing for */
+};
+
+static struct borrow borrows[BORROW_MAX];
+static int           nborrow;
+
+static struct borrow top(void)
+{
+    int d = nborrow < BORROW_MAX ? nborrow : BORROW_MAX;
+    struct borrow b = {cur, 0, NULL};
+    return d > 0 ? borrows[d - 1] : b;
+}
+
+// `hold` keeps what is drawn off the terminal even when the tab is the one in
+// front: for a caller that owns the screen itself, such as an open modal.
+static void enter_held(int index, int hold)
+{
+    struct borrow was = top();
+    int to = index >= 0 && index < ntabs ? index : was.tab;
+
+    if (nborrow < BORROW_MAX) {
+        if (to != was.tab) {
+            ui_flush();
+            viewport_stash(tabs[was.tab].screen);
+            viewport_adopt(tabs[to].screen);
+        }
+        borrows[nborrow].tab = to;
+        borrows[nborrow].hold = hold || was.hold || to != cur;
+        viewport_hold(borrows[nborrow].hold);
+        // The session layer draws for whoever holds the screen, and for
+        // nobody when this window holds no tabs.
+        borrows[nborrow].drawn =
+            session_set_drawing(to < ntabs ? tabs[to].s : NULL);
+    }
+    nborrow++;
+}
+
 static void enter(int index)
 {
-    if (index == cur || index < 0 || index >= ntabs)
-        return;
-    ui_flush();
-    viewport_hold(1);
-    viewport_stash(tabs[cur].screen);
-    viewport_adopt(tabs[index].screen);
-    borrowed = index;
+    enter_held(index, 0);
 }
 
 static void leave(void)
 {
-    if (borrowed < 0)
+    if (nborrow <= 0)
         return;
-    ui_flush();
-    viewport_stash(tabs[borrowed].screen);
-    viewport_adopt(tabs[cur].screen);
-    viewport_hold(0);
-    borrowed = -1;
+    nborrow--;
+    if (nborrow >= BORROW_MAX)
+        return;
+
+    int from = borrows[nborrow].tab;
+    struct borrow back = top();
+    session_set_drawing(borrows[nborrow].drawn);
+    if (from != back.tab) {
+        ui_flush();
+        viewport_stash(tabs[from].screen);
+        viewport_adopt(tabs[back.tab].screen);
+    }
+    viewport_hold(back.hold);
 }
 
 void workspace_render(int index, void (*fn)(struct session *s, void *ud), void *ud)
@@ -257,16 +309,20 @@ int workspace_dump(int index, const char *path)
     return ok;
 }
 
-static void drop(int index, int free_session)
+static void drop(int index)
 {
+    // Nothing outside the workspace may keep this session: it is either freed
+    // below or handed to the window that asked for it.
+    tg_forget_session(tabs[index].s);
+    cmd_forget_session(tabs[index].s);
+
     // A tab on screen keeps its rows in the globals and an empty stash; one in
     // the background is the other way round.
     if (index == cur)
         viewport_clear();
     viewport_state_free(tabs[index].screen);
 
-    if (free_session)
-        session_free(tabs[index].s);
+    session_free(tabs[index].s);
     for (int i = 0; i < tabs[index].npending; i++) {
         free(tabs[index].pending[i].line);
         free(tabs[index].pending[i].shown);
@@ -301,7 +357,7 @@ int workspace_close(int index)
 {
     if (index < 0 || index >= ntabs)
         return ntabs;
-    drop(index, 1);
+    drop(index);
     return ntabs;
 }
 
@@ -319,37 +375,66 @@ int workspace_fds(int *out, int max)
     return n;
 }
 
-static void send_next(int index);
+static void send_next(int index, int hold);
 
-int workspace_pump(void)
+// What a turn leaves behind once it has ended: the window's business, not the
+// session's. A modal owns the screen while it is up, and a deferred command
+// can open one of its own, so the tail waits for the modal to go rather than
+// nesting inside it.
+static void settle_finished(int index, int hold)
+{
+    if (!tabs[index].finished || chrome_modal_active())
+        return;
+    tabs[index].finished = 0;
+
+    struct session *s = tabs[index].s;
+    enter_held(index, hold);
+    if (on_finish)
+        on_finish(s);
+    leave();
+    send_next(index, hold);
+}
+
+// `hold` is for a caller that owns the screen itself: the tabs still advance
+// and what they draw still lands in their own transcript, but none of it
+// reaches the terminal.
+static int pump(int hold)
 {
     int busy = 0;
     for (int i = 0; i < ntabs; i++) {
         struct session *s = tabs[i].s;
         int running = session_turn_running(s);
 
-        enter(i);
+        enter_held(i, hold);
         if (running)
             busy |= session_turn_pump(s);
         else
             busy |= session_idle_pump(s) ? 1 : 0;
         leave();
 
-        // The turn ended inside the pump: what it leaves behind is the
-        // window's business, not the session's.
-        if (running && !session_turn_running(s)) {
-            enter(i);
-            if (on_finish)
-                on_finish(s);
-            leave();
-            send_next(i);
-        }
+        if (running && !session_turn_running(s))
+            tabs[i].finished = 1;
+        settle_finished(i, hold);
     }
     // A session that names itself while it is behind must not take the note
     // off the one in front.
     if (ntabs)
         status_set_note(session_title(tabs[cur].s));
     spin_follow();
+    return busy;
+}
+
+int workspace_pump(void)
+{
+    return pump(0);
+}
+
+int workspace_pump_quiet(void)
+{
+    int busy = pump(1);
+    // A tab that paused the spinner while the screen was held left the block
+    // erased and never redrawn: the caller's picture goes back.
+    chrome_paint();
     return busy;
 }
 
@@ -361,10 +446,11 @@ void workspace_settle(struct session *s)
 
     enter(at);
     session_turn_wait(s);
+    tabs[at].finished = 0;
     if (on_finish)
         on_finish(s);
     leave();
-    send_next(at);
+    send_next(at, 0);
     spin_follow();
 }
 
@@ -377,7 +463,7 @@ int workspace_busy(void)
 }
 
 // The next thing typed at a tab, once the turn it was typed behind is done.
-static void send_next(int index)
+static void send_next(int index, int hold)
 {
     struct tab *t = &tabs[index];
     if (!t->npending || session_turn_running(t->s))
@@ -388,7 +474,7 @@ static void send_next(int index)
         t->pending[i - 1] = t->pending[i];
     t->npending--;
 
-    enter(index);
+    enter_held(index, hold);
     sticky_set(index, p.shown ? p.shown : p.line);
     // Held back until now, so this is where it joins the transcript.
     prompt_echo_message(p.shown ? p.shown : p.line);

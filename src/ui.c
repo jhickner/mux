@@ -242,17 +242,37 @@ void ui_cursor_restore(void)
 }
 
 // The chrome renders into a buffer, so nothing written here reaches the
-// terminal and output tracking stops.
-static FILE  *sink;
-static char  *sink_buf;
-static size_t sink_len;
-static int    sink_tee;
+// terminal and output tracking stops. Sinks nest: a second front end may hold
+// one open around a whole command while the chrome opens its own per frame.
+#define SINK_MAX 8
 
+struct sink {
+    FILE  *f;
+    char  *buf;
+    size_t len;
+    int    tee;
+};
+
+static struct sink sinks[SINK_MAX];
+static int         sink_depth;
+
+static struct sink *sink_top(void)
+{
+    if (sink_depth == 0 || sink_depth > SINK_MAX)
+        return NULL;
+    return &sinks[sink_depth - 1];
+}
+
+// A tee level passes what it took on outward — to the next sink out, or to the
+// terminal when it is the last one. A plain level stops there.
 static void out(const char *s, size_t n)
 {
-    if (sink) {
-        fwrite(s, 1, n, sink);
-        if (!sink_tee)
+    if (sink_depth > SINK_MAX)
+        return;                         /* nested past the limit: dropped */
+    for (int i = sink_depth - 1; i >= 0; i--) {
+        if (sinks[i].f)
+            fwrite(s, 1, n, sinks[i].f);
+        if (!sinks[i].tee)
             return;
     }
     if (viewport_active()) {
@@ -262,45 +282,58 @@ static void out(const char *s, size_t n)
     fwrite(s, 1, n, stdout);
 }
 
+void ui_sink_begin(void)
+{
+    // Counted past the limit, so begin and end pair up and an overflow cannot
+    // close somebody else's sink.
+    if (sink_depth < SINK_MAX) {
+        struct sink *s = &sinks[sink_depth];
+        s->tee = 0;
+        s->len = 0;
+        free(s->buf);
+        s->buf = NULL;
+        s->f = open_memstream(&s->buf, &s->len);
+    }
+    sink_depth++;
+}
+
 void ui_sink_begin_tee(void)
 {
     ui_sink_begin();
-    sink_tee = 1;
-}
-
-void ui_sink_begin(void)
-{
-    if (sink)
-        return;
-    sink_tee = 0;
-    sink_len = 0;
-    free(sink_buf);
-    sink_buf = NULL;
-    sink = open_memstream(&sink_buf, &sink_len);
+    if (sink_depth <= SINK_MAX)
+        sinks[sink_depth - 1].tee = 1;
 }
 
 int ui_sink_rows(void)
 {
-    if (!sink)
+    struct sink *s = sink_top();
+    if (!s || !s->f)
         return 0;
-    fflush(sink);
+    fflush(s->f);
     int rows = 0;
-    for (size_t i = 0; i < sink_len; i++)
-        if (sink_buf[i] == '\n')
+    for (size_t i = 0; i < s->len; i++)
+        if (s->buf[i] == '\n')
             rows++;
     return rows;
 }
 
 char *ui_sink_end(void)
 {
-    if (!sink)
+    if (sink_depth == 0)
         return NULL;
-    fclose(sink);
-    sink = NULL;
-    sink_tee = 0;
-    char *taken = sink_buf;
-    sink_buf = NULL;
-    sink_len = 0;
+    sink_depth--;
+    if (sink_depth >= SINK_MAX)
+        return NULL;                    /* nested past the limit: nothing kept */
+
+    struct sink *s = &sinks[sink_depth];
+    if (s->f) {
+        fclose(s->f);
+        s->f = NULL;
+    }
+    char *taken = s->buf;
+    s->buf = NULL;
+    s->len = 0;
+    s->tee = 0;
     return taken ? taken : strdup("");
 }
 
@@ -386,7 +419,7 @@ void ui_putn(const char *s, size_t n)
         return;
     }
     // The viewport places every row absolutely, so no carriage return.
-    if (!sink && viewport_active()) {
+    if (!sink_depth && viewport_active()) {
         viewport_write(s, n);
         return;
     }
@@ -461,7 +494,16 @@ int ui_reflow_rows(const int *row_widths, int count, int cols)
     return rows;
 }
 
-void ui_flush(void) { fflush(sink ? sink : stdout); }
+void ui_flush(void)
+{
+    struct sink *s = sink_top();
+    if (sink_depth) {
+        if (s && s->f)
+            fflush(s->f);
+        return;
+    }
+    fflush(stdout);
+}
 
 // The width being rendered for: the innermost capture's, if one is open.
 static int capture_width(void)
@@ -553,26 +595,46 @@ static int opens_string(unsigned char c)
     return c == ']' || c == 'P' || c == '_' || c == '^' || c == 'X';
 }
 
+size_t ui_esc_span(const char *s, size_t n, size_t i, enum ui_esc_kind *kind)
+{
+    enum ui_esc_kind k = UI_ESC_TEXT;
+    size_t j;
+
+    if (s[i] != '\x1b') {
+        j = i + 1;
+        while (j < n && ((unsigned char)s[j] & 0xC0) == 0x80)
+            j++;
+        if (kind)
+            *kind = k;
+        return j;
+    }
+
+    j = i + 1;
+    if (j < n && s[j] == '[') {
+        for (j++; j < n && (s[j] < '@' || s[j] > '~'); j++)
+            ;
+        k = j < n && s[j] == 'm' ? UI_ESC_SGR : UI_ESC_OTHER;
+    } else if (j < n && opens_string((unsigned char)s[j])) {
+        k = s[j] == ']' && j + 1 < n && s[j + 1] == '8' ? UI_ESC_OSC8 : UI_ESC_OTHER;
+        for (j++; j < n && s[j] != '\a' && s[j] != '\x1b'; j++)
+            ;
+        if (j < n && s[j] == '\x1b')
+            j++;
+    } else {
+        k = UI_ESC_OTHER;
+    }
+    if (kind)
+        *kind = k;
+    return j < n ? j + 1 : n;
+}
+
 static size_t step_visible(const char *s, size_t n, size_t i, size_t *cells)
 {
-    if (s[i] == '\x1b') {
-        size_t j = i + 1;
-        if (j < n && s[j] == '[') {
-            for (j++; j < n && (s[j] < '@' || s[j] > '~'); j++)
-                ;
-        } else if (j < n && opens_string((unsigned char)s[j])) {
-            for (j++; j < n && s[j] != '\a' && s[j] != '\x1b'; j++)
-                ;
-            if (j < n && s[j] == '\x1b')
-                j++;
-        }
-        return j < n ? j + 1 : n;
-    }
-    size_t start = i++;
-    while (i < n && ((unsigned char)s[i] & 0xC0) == 0x80)
-        i++;
-    *cells += ui_cells_n(s + start, i - start);
-    return i;
+    enum ui_esc_kind kind;
+    size_t end = ui_esc_span(s, n, i, &kind);
+    if (kind == UI_ESC_TEXT)
+        *cells += ui_cells_n(s + i, end - i);
+    return end;
 }
 
 size_t ui_cells_visible(const char *s, size_t n)

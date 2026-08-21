@@ -31,8 +31,16 @@ int tg_pending(void);
 // Run a line the chat sent, on the thread that owns the session. Takes `line`.
 void tg_run_line(char *line);
 
+// True while a chat line is being dispatched: the front end behind this line
+// has no keyboard, so nothing may wait on one.
+int tg_line_in_flight(void);
+
 // The session the bridge is attached to, or NULL.
 struct session *tg_session(void);
+
+// `s` is about to be freed or handed to another window: drop the cached
+// pointer if it is the one the bridge is holding.
+void tg_forget_session(struct session *s);
 
 // Headless: run the chat's own loop until it is told to stop.
 void tg_run(struct session *s);

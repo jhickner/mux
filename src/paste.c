@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "app.h"
+#include "text.h"
 
 static int paste_dir(char *out, size_t size)
 {
@@ -54,21 +55,35 @@ int paste_image(char *out, size_t size)
     if (!paste_dir(dir, sizeof dir) || !paste_path(out, size, dir))
         return 0;
 
-    if (strchr(out, '\'') || strchr(out, '"') || strchr(out, '\\'))
+    char escaped[2048];
+    size_t e = 0;
+    for (const char *p = out; *p; p++) {
+        if (e + 3 > sizeof escaped)
+            return 0;
+        if (*p == '"' || *p == '\\')
+            escaped[e++] = '\\';
+        escaped[e++] = *p;
+    }
+    escaped[e] = '\0';
+
+    char arg[2100], quoted[8400];
+    if (snprintf(arg, sizeof arg, "set f to POSIX file \"%s\"", escaped) >= (int)sizeof arg)
+        return 0;
+    if (!text_shell_quote(arg, quoted, sizeof quoted))
         return 0;
 
-    char cmd[2048];
+    char cmd[16384];
     int len = snprintf(cmd, sizeof cmd,
                        "osascript"
                        " -e 'set d to (the clipboard as «class PNGf»)'"
-                       " -e 'set f to POSIX file \"%s\"'"
+                       " -e %s"
                        " -e 'set h to open for access f with write permission'"
                        " -e 'try'"
                        " -e 'write d to h'"
                        " -e 'end try'"
                        " -e 'close access h'"
                        " >/dev/null 2>&1",
-                       out);
+                       quoted);
     if (len < 0 || (size_t)len >= sizeof cmd)
         return 0;
     if (system(cmd) != 0)

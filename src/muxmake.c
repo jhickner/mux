@@ -1,6 +1,7 @@
 #include "muxmake.h"
 
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,7 +20,8 @@
 #include "vendor/agents/backend.h"
 #include "vendor/cJSON.h"
 
-#define MAKE_SPEC 8192
+#define MAKE_SPEC       8192
+#define SPEC_MAX_MODELS 40
 
 struct work {
     const char *prompt;
@@ -33,27 +35,48 @@ static atomic_int aborted;
 
 static int make_aborted(void) { return atomic_load(&aborted); }
 
+__attribute__((format(printf, 4, 5)))
+static void spec_add(char *out, size_t cap, size_t *at, const char *fmt, ...)
+{
+    if (*at + 1 >= cap)
+        return;
+
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(out + *at, cap - *at, fmt, ap);
+    va_end(ap);
+
+    if (n < 0)
+        return;
+    *at += (size_t)n < cap - *at ? (size_t)n : cap - *at - 1;
+}
+
 // What the model is allowed to pick from: the installed CLIs, and the models
 // and efforts each of them offers here.
 static void backend_spec(char *out, size_t cap)
 {
-    int at = snprintf(out, cap, "The backends, and what each accepts:\n");
+    size_t at = 0;
 
-    for (const char *const *b = backend_names(); *b && at > 0 && (size_t)at < cap; b++) {
+    spec_add(out, cap, &at, "The backends, and what each accepts:\n");
+
+    for (const char *const *b = backend_names(); *b; b++) {
         const struct pick_item *models = NULL;
         const struct pick_item *efforts = NULL;
         int                     nmodels = models_for(*b, &models);
         int                     nefforts = 0;
+        int                     shown = nmodels < SPEC_MAX_MODELS ? nmodels : SPEC_MAX_MODELS;
 
         efforts = cmd_effort_choices(*b, &nefforts);
 
-        at += snprintf(out + at, cap - (size_t)at, "\n%s\n  models:", *b);
-        for (int i = 0; i < nmodels && (size_t)at < cap; i++)
-            at += snprintf(out + at, cap - (size_t)at, " %s", models[i].label);
-        at += snprintf(out + at, cap - (size_t)at, "\n  efforts:");
-        for (int i = 0; i < nefforts && (size_t)at < cap; i++)
-            at += snprintf(out + at, cap - (size_t)at, " %s", efforts[i].label);
-        at += snprintf(out + at, cap - (size_t)at, "\n");
+        spec_add(out, cap, &at, "\n%s\n  models:", *b);
+        for (int i = 0; i < shown; i++)
+            spec_add(out, cap, &at, " %s", models[i].label);
+        if (shown < nmodels)
+            spec_add(out, cap, &at, " ... and %d more", nmodels - shown);
+        spec_add(out, cap, &at, "\n  efforts:");
+        for (int i = 0; i < nefforts; i++)
+            spec_add(out, cap, &at, " %s", efforts[i].label);
+        spec_add(out, cap, &at, "\n");
     }
 }
 

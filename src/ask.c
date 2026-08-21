@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "chrome.h"
+#include "text.h"
 #include "tty.h"
 #include "ui.h"
 
@@ -59,28 +60,7 @@ static void insert(struct field *f, const char *s, size_t n)
 static void insert_codepoint(struct field *f, uint32_t cp)
 {
     char buf[4];
-    int  n;
-
-    if (cp < 0x80) {
-        buf[0] = (char)cp;
-        n = 1;
-    } else if (cp < 0x800) {
-        buf[0] = (char)(0xC0 | (cp >> 6));
-        buf[1] = (char)(0x80 | (cp & 0x3F));
-        n = 2;
-    } else if (cp < 0x10000) {
-        buf[0] = (char)(0xE0 | (cp >> 12));
-        buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
-        buf[2] = (char)(0x80 | (cp & 0x3F));
-        n = 3;
-    } else {
-        buf[0] = (char)(0xF0 | (cp >> 18));
-        buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
-        buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
-        buf[3] = (char)(0x80 | (cp & 0x3F));
-        n = 4;
-    }
-    insert(f, buf, (size_t)n);
+    insert(f, buf, text_utf8_encode(cp, buf));
 }
 
 // The line scrolls under a fixed caret rather than wrapping: everything here

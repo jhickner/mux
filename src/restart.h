@@ -3,7 +3,7 @@
 
 struct session;
 
-void restart_arm(int safe_mode);
+void restart_arm(void);
 
 void restart_shield_thread(void);
 

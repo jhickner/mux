@@ -458,7 +458,7 @@ static int relist(void *ud)
     // The window is parked in this list, so its own turns only move on if the
     // list pumps them: without this a tab that finishes underneath stays as it
     // was when the list opened.
-    workspace_pump();
+    workspace_pump_quiet();
 
     struct live_session *fresh = NULL;
     int nfresh = livelist_load(&fresh);

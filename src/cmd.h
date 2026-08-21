@@ -12,8 +12,8 @@ struct pick_item;
 const struct pick_item *cmd_model_choices(const char *backend, int *count);
 const struct pick_item *cmd_effort_choices(const char *backend, int *count);
 
-extern const ReplCommand CMD_TABLE[];
-extern const int         CMD_COUNT;
+// The commands offered by tab-completion, minus the hidden ones.
+const ReplCommand *cmd_completions(int *count);
 
 enum cmd_result {
     CMD_NOT_A_COMMAND,
@@ -23,7 +23,9 @@ enum cmd_result {
 
 enum cmd_result cmd_dispatch(struct session *s, const char *line);
 
-int cmd_is_live(const char *line);
+// Whether a line typed behind a running turn belongs to cmd_dispatch_live():
+// every command except the ones that end the window.
+int cmd_runs_mid_turn(const char *line);
 
 // Whether the line names a command at all, and whether that command is one
 // that ends the window.
@@ -38,6 +40,9 @@ void cmd_dispatch_live(struct session *s, const char *line);
 
 // Runs the commands cmd_dispatch_live() held back because a turn was running.
 void cmd_run_deferred(struct session *s);
+
+// Discards the ones held back for `s`, which is about to be freed.
+void cmd_forget_session(struct session *s);
 
 int cmd_resume(struct session *s);
 

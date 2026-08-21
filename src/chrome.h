@@ -30,6 +30,10 @@ int  chrome_rows_left(void);
 typedef void (*chrome_modal_fn)(void *ud);
 void chrome_modal(chrome_modal_fn fn, void *ud);
 
+// Whether one is up. Anything that would open a modal of its own asks first:
+// a second one nested inside the first owns nothing.
+int  chrome_modal_active(void);
+
 // A modal cannot stand in the way of something the window has to answer — a
 // request from elsewhere for one of its sessions, which is being waited on.
 // The modals ask this whenever a read comes up empty, and cancel when it says

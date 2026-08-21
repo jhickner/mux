@@ -1,8 +1,8 @@
 #include "files.h"
 
 #include "restart.h"
+#include "text.h"
 
-#include <ctype.h>
 #include <dirent.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -109,11 +109,16 @@ static void index_sort_unique(struct index *ix)
 
 static int index_from_git(struct index *ix, const char *root)
 {
-    if (strchr(root, '\''))
+    char quoted[4200];
+    if (!text_shell_quote(root, quoted, sizeof quoted))
         return 0;
-    char cmd[4200];
-    snprintf(cmd, sizeof cmd,
-             "git -C '%s' ls-files --cached --others --exclude-standard 2>/dev/null", root);
+
+    char cmd[4300];
+    if (snprintf(cmd, sizeof cmd,
+                 "git -C %s ls-files --cached --others --exclude-standard 2>/dev/null",
+                 quoted) >= (int)sizeof cmd)
+        return 0;
+
     FILE *f = popen(cmd, "r");
     if (!f)
         return 0;
@@ -274,32 +279,6 @@ void files_forget(void)
     pthread_mutex_unlock(&mu);
 }
 
-static int fuzzy(const char *name, const char *q)
-{
-    int score = 0, ni = 0, streak = 0;
-    for (int qi = 0; q[qi]; qi++) {
-        int qc = tolower((unsigned char)q[qi]);
-        int found = 0;
-        while (name[ni]) {
-            char prev = ni ? name[ni - 1] : '/';
-            int nc = tolower((unsigned char)name[ni]);
-            ni++;
-            if (nc == qc) {
-                streak++;
-                score += 1 + streak;
-                if (prev == '/' || prev == '_' || prev == '-' || prev == '.')
-                    score += 4;
-                found = 1;
-                break;
-            }
-            streak = 0;
-        }
-        if (!found)
-            return -1;
-    }
-    return score;
-}
-
 static int basename_at(const char *path)
 {
     int end = (int)strlen(path);
@@ -316,7 +295,7 @@ static int path_score(const char *path, const char *token)
     int         s = -1;
     const char *base = path + basename_at(path);
     if (!strchr(token, '/'))
-        s = fuzzy(base, token);
+        s = text_fuzzy_score(base, token);
     if (s >= 0) {
         s += 20;
 
@@ -327,7 +306,7 @@ static int path_score(const char *path, const char *token)
                 s += 30;
         }
     } else {
-        s = fuzzy(path, token);
+        s = text_fuzzy_score(path, token);
     }
     if (s < 0)
         return -1;
@@ -452,7 +431,7 @@ static int complete_external(const char *token, const char *root, ReplCandidate 
     struct topn top;
     topn_init(&top, max);
     for (int i = 0; i < count; i++) {
-        int sc = base[0] ? fuzzy(names[i], base) : 0;
+        int sc = base[0] ? text_fuzzy_score(names[i], base) : 0;
         if (sc >= 0)
             topn_offer(&top, i, sc);
     }

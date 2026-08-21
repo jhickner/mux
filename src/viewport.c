@@ -34,6 +34,23 @@ static void  *open_ud;
 static void (*open_free)(void *);
 static int    open_wrapped;
 
+// Renderers nest: an md entry can place an image, which opens an item of its
+// own. Only the outermost one owns an entry; the inner ones write into it.
+#define OPEN_MAX 4
+
+struct open_frame {
+    void  *ud;
+    void (*free_ud)(void *);
+};
+
+static struct open_frame open_stack[OPEN_MAX];
+static int open_depth;
+
+// Set while an entry's render callback is on the stack. Renderers are pure
+// with respect to the store: nothing they do may append, drop or move an
+// entry, because measuring and painting hold indices into it.
+static int in_render;
+
 static char **chrome_rows;
 static int    chrome_n, chrome_cap;
 static int    chrome_caret_row, chrome_caret_col = -1;
@@ -104,6 +121,8 @@ void viewport_item_persist(unsigned mark, const char *kind, viewport_encode_fn e
 
 void viewport_item_update(unsigned mark)
 {
+    if (in_render)
+        return;
     struct item *it = item_by_mark(mark);
     if (!it || !it->render)
         return;
@@ -172,6 +191,8 @@ static void rows_set(struct item *it, const char *body, int cols)
 
 static struct item *items_push(void)
 {
+    if (in_render)
+        return NULL;
     if (nitems == items_cap) {
         int cap = items_cap ? items_cap * 2 : 256;
         struct item *grown = realloc(items, (size_t)cap * sizeof *grown);
@@ -232,6 +253,24 @@ static void open_close(int cols)
 
 unsigned viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud)(void *))
 {
+    // Counted past the limit, so begin and end pair up and an overflow cannot
+    // pop somebody else's frame.
+    // A render callback counts as an enclosing frame: it may not open an entry
+    // of its own, so the store cannot move while it is being measured.
+    int depth = open_depth++;
+    if (depth > 0 || in_render) {
+        // Nested: the output belongs to the enclosing entry, which already has
+        // a payload, so this one is dropped at the matching end. No entry of
+        // its own means no mark, and persist on 0 is a no-op.
+        if (depth < OPEN_MAX) {
+            open_stack[depth].ud = ud;
+            open_stack[depth].free_ud = free_ud;
+        } else if (free_ud && ud) {
+            free_ud(ud);
+        }
+        return 0;
+    }
+
     if (viewport_active() && open_len)
         open_close(0);
     open_render = render;
@@ -245,6 +284,20 @@ unsigned viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud
 
 void viewport_item_end(void)
 {
+    if (open_depth == 0)
+        return;
+    int depth = --open_depth;
+    if (depth > 0 || in_render) {
+        if (depth < OPEN_MAX) {
+            struct open_frame *f = &open_stack[depth];
+            if (f->free_ud && f->ud)
+                f->free_ud(f->ud);
+            f->ud = NULL;
+            f->free_ud = NULL;
+        }
+        return;
+    }
+
     if (!open_wrapped) {
         if (open_free && open_ud)
             open_free(open_ud);
@@ -261,6 +314,8 @@ void viewport_item_end(void)
 
 void viewport_write(const char *s, size_t n)
 {
+    if (in_render)
+        return;
     if (open_wrapped) {
         open_append(s, n);
         return;
@@ -288,25 +343,11 @@ void viewport_write(const char *s, size_t n)
 static int row_is_blank(const char *s, size_t n)
 {
     for (size_t i = 0; i < n;) {
-        if (s[i] == 0x1b) {
-            size_t j = i + 1;
-            if (j < n && s[j] == '[') {
-                for (j++; j < n && (s[j] < '@' || s[j] > '~'); j++)
-                    ;
-            } else if (j < n && (s[j] == ']' || s[j] == 'P' || s[j] == '_' ||
-                                 s[j] == '^' || s[j] == 'X')) {
-                for (j++; j < n; j++)
-                    if (s[j] == 0x07 || (s[j] == 0x1b && j + 1 < n && s[j + 1] == '\\'))
-                        break;
-                if (j < n && s[j] == 0x1b)
-                    j++;
-            }
-            i = j < n ? j + 1 : n;
-            continue;
-        }
-        if (s[i] != ' ' && s[i] != '\t' && s[i] != '\r')
+        enum ui_esc_kind kind;
+        size_t end = ui_esc_span(s, n, i, &kind);
+        if (kind == UI_ESC_TEXT && s[i] != ' ' && s[i] != '\t' && s[i] != '\r')
             return 0;
-        i++;
+        i = end;
     }
     return 1;
 }
@@ -464,39 +505,31 @@ static int sgr_is_reset(const char *s, size_t n)
 // One escape or one codepoint at `i`: adds its cells, folds its style into st.
 static size_t step(const char *s, size_t n, size_t i, size_t *cells, struct style *st)
 {
-    if (s[i] != '\x1b') {
-        size_t start = i++;
-        while (i < n && ((unsigned char)s[i] & 0xC0) == 0x80)
-            i++;
-        *cells += ui_cells_visible(s + start, i - start);
-        return i;
-    }
+    enum ui_esc_kind kind;
+    size_t end = ui_esc_span(s, n, i, &kind);
 
-    size_t j = i + 1;
-    if (j < n && s[j] == '[') {
-        for (j++; j < n && (s[j] < '@' || s[j] > '~'); j++)
-            ;
-        size_t end = j < n ? j + 1 : n;
-        if (st && j < n && s[j] == 'm') {
-            if (sgr_is_reset(s + i, end - i))
-                st->len = 0, st->buf[0] = '\0';
-            else
+    switch (kind) {
+    case UI_ESC_TEXT:
+        *cells += ui_cells_n(s + i, end - i);
+        break;
+    case UI_ESC_SGR:
+        if (st) {
+            if (sgr_is_reset(s + i, end - i)) {
+                st->len = 0;
+                st->buf[0] = '\0';
+            } else {
                 style_add(st, s + i, end - i);
+            }
         }
-        return end;
-    }
-    if (j < n && (s[j] == ']' || s[j] == 'P' || s[j] == '_' || s[j] == '^' || s[j] == 'X')) {
-        int osc8 = j + 1 < n && s[j] == ']' && s[j + 1] == '8';
-        for (j++; j < n && s[j] != '\a' && s[j] != '\x1b'; j++)
-            ;
-        if (j < n && s[j] == '\x1b')
-            j++;
-        size_t end = j < n ? j + 1 : n;
-        if (st && osc8)
+        break;
+    case UI_ESC_OSC8:
+        if (st)
             style_add(st, s + i, end - i);
-        return end;
+        break;
+    case UI_ESC_OTHER:
+        break;
     }
-    return j < n ? j + 1 : n;
+    return end;
 }
 
 static int wrap_count(const char *s, int W)
@@ -525,15 +558,25 @@ static void item_rows(struct item *it, int W)
     if (!it->render || it->cols == W)
         return;
     ui_capture_begin(W);
+    in_render++;
     it->render(it->ud, W);
+    in_render--;
     char *painted = ui_capture_end();
     rows_set(it, painted ? painted : "", W);
     free(painted);
 }
 
-static int item_height(struct item *it, int W)
+// By index, not by pointer: `items` is only stable across a render because of
+// the guard above, and nothing here should depend on that twice over.
+static struct item *item_at(int r, struct item *pending)
 {
-    item_rows(it, W);
+    return r == nitems ? pending : &items[r];
+}
+
+static int item_height(int r, struct item *pending, int W)
+{
+    item_rows(item_at(r, pending), W);
+    struct item *it = item_at(r, pending);
     if (it->nrows == 0)
         return it->render ? 0 : 1;
     int used = 0;
@@ -657,37 +700,79 @@ static int window_first(int W, int body, int scroll, struct item *pending, int t
     int first = total;
     int have = 0;
     while (first > 0 && have < want) {
-        struct item *it = (first - 1 == nitems) ? pending : &items[first - 1];
-        have += item_height(it, W);
+        have += item_height(first - 1, pending, W);
         first--;
     }
     *have_out = have;
     return first;
 }
 
-static int body_rows(void)
+// What the next frame will show. The one answer: a query that disagreed with
+// the paint would pin or drop the sticky prompt at the wrong scroll offset.
+struct window {
+    int first;                  /* index of the topmost entry on screen */
+    int skip;                   /* its screen rows that fall above the window */
+    int body;                   /* screen rows the transcript gets */
+    int chrome_shown;
+    int total;
+    int scrolled;               /* clamped at the top of the transcript */
+};
+
+// `pending` must outlive the result: it stands in for unwrapped output and is
+// entry `nitems`.
+static struct window window_geometry(int W, int H, struct item *pending)
 {
-    int H = tty_rows();
+    struct window g = {0};
+
     int ch = chrome_n;
-    if (ch > H - 1)
-        ch = H - 1;
+    if (ch > H)
+        ch = H;
     if (ch < 0)
         ch = 0;
-    return H - ch;
+
+    g.total = nitems + window_pending(pending);
+    g.scrolled = scrolled;
+
+    // The chrome is the end of the stream, not a fixture: it scrolls off, and
+    // only what is left over of the scroll moves the transcript.
+    int chrome_shown = ch - g.scrolled;
+    if (chrome_shown < 0)
+        chrome_shown = 0;
+    int body = H - chrome_shown;
+    int scroll = g.scrolled > ch ? g.scrolled - ch : 0;
+
+    int have = 0;
+    int first = window_first(W, body, scroll, pending, g.total, &have);
+    if (first == 0 && have < body + scroll) {
+        // Past the beginning: the oldest row holds at the top.
+        int most = have + ch - H;
+        g.scrolled = most > 0 ? most : 0;
+        chrome_shown = ch - g.scrolled;
+        if (chrome_shown < 0)
+            chrome_shown = 0;
+        body = H - chrome_shown;
+        scroll = g.scrolled > ch ? g.scrolled - ch : 0;
+    }
+
+    g.first = first;
+    g.body = body;
+    g.chrome_shown = chrome_shown;
+    g.skip = have - body - scroll;
+    if (g.skip < 0)
+        g.skip = 0;
+    return g;
 }
 
 // Recomputed, not read off the last paint, so it is right before the next one.
 int viewport_visible(unsigned mark)
 {
-    int W = tty_screen_columns();
-    if (W < 1 || tty_rows() < 1)
+    int W = tty_screen_columns(), H = tty_rows();
+    if (W < 1 || H < 1)
         return 1;
 
     struct item pending = {0};
-    int total = nitems + window_pending(&pending);
-    int have = 0;
-    int first = window_first(W, body_rows(), scrolled, &pending, total, &have);
-    return first >= nitems ? mark >= next_id : mark >= items[first].id;
+    struct window g = window_geometry(W, H, &pending);
+    return g.first >= nitems ? mark >= next_id : mark >= items[g.first].id;
 }
 
 // How far the frame moved as a whole, so a scroll sends only the rows that
@@ -735,51 +820,25 @@ void viewport_forget(void)
 
 void viewport_paint(void)
 {
-    if (!active || suspended || held)
+    if (!active || suspended || held || in_render)
         return;
 
     int H = tty_rows(), W = tty_screen_columns();
     if (H < 1 || W < 1)
         return;
 
-    int ch = chrome_n;
-    if (ch > H)
-        ch = H;
-    if (ch < 0)
-        ch = 0;
-
     struct item pending = {0};
-    int total = nitems + window_pending(&pending);
+    struct window g = window_geometry(W, H, &pending);
+    scrolled = g.scrolled;
 
-    // The chrome is the end of the stream, not a fixture: it scrolls off.
-    int chrome_shown = ch - scrolled;
-    if (chrome_shown < 0)
-        chrome_shown = 0;
-    int body = H - chrome_shown;
-    int scroll = scrolled > ch ? scrolled - ch : 0;
-
-    int have = 0;
-    int first = window_first(W, body, scroll, &pending, total, &have);
-    if (first == 0 && have < body + scroll) {
-        // Past the beginning: the oldest row holds at the top.
-        int most = have + ch - H;
-        scrolled = most > 0 ? most : 0;
-        chrome_shown = ch - scrolled;
-        if (chrome_shown < 0)
-            chrome_shown = 0;
-        body = H - chrome_shown;
-        scroll = scrolled > ch ? scrolled - ch : 0;
-    }
-
-    // Screen rows of the first entry that fall above the window.
-    int skip = have - body - scroll;
-    if (skip < 0)
-        skip = 0;
+    int chrome_shown = g.chrome_shown;
+    int body = g.body;
+    int skip = g.skip;
 
     struct frame all = {0};
-    for (int r = first; r < total; r++) {
-        struct item *it = (r == nitems) ? &pending : &items[r];
-        item_rows(it, W);
+    for (int r = g.first; r < g.total && r <= nitems; r++) {
+        item_rows(item_at(r, &pending), W);
+        struct item *it = item_at(r, &pending);
         if (it->nrows == 0 && !it->render)
             frame_push(&all, blank_row());
         for (int i = 0; i < it->nrows; i++)

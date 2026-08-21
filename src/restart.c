@@ -21,7 +21,6 @@
 #define RESTART_SIGNAL SIGURG
 
 static volatile sig_atomic_t wanted;
-static int                   safe_mode;
 
 static void on_signal(int sig)
 {
@@ -29,10 +28,8 @@ static void on_signal(int sig)
     wanted = 1;
 }
 
-void restart_arm(int safe)
+void restart_arm(void)
 {
-    safe_mode = safe;
-
     struct sigaction sa = {0};
     sa.sa_handler = on_signal;
     sigemptyset(&sa.sa_mask);
@@ -148,11 +145,6 @@ static int tabs_path(char *out, size_t n)
     return tmp_path(out, n, "tabs", -1);
 }
 
-static const char *plain(const char *value)
-{
-    return value && strcmp(value, "default") ? value : "";
-}
-
 static int tabs_dump(const struct session *front, const char *path)
 {
     int wrote = 0;
@@ -175,9 +167,15 @@ static int tabs_dump(const struct session *front, const char *path)
         if (!tmp_path(screen, sizeof screen, "tab", i) || !workspace_dump(i, screen))
             screen[0] = '\0';
 
-        fprintf(f, "%s\t%s\t%s\t%s\t%s\t%s\n", session_backend(s),
-                session_cwd(s) ? session_cwd(s) : "", plain(session_model(s)),
-                plain(session_effort(s)), id, screen);
+        // The screen, then the argv that reopens it: the same words the
+        // successor would take on its command line, so the two cannot drift.
+        char *args[SESSION_ARGV_MAX];
+        int   n = session_argv(s, args, COUNT(args),
+                               SESSION_ARGV_CWD | SESSION_ARGV_RESUME);
+        fputs(screen, f);
+        for (int a = 0; a < n; a++)
+            fprintf(f, "\t%s", args[a]);
+        fputc('\n', f);
         wrote = 1;
     }
     if (f && fclose(f) != 0)
@@ -194,40 +192,19 @@ int restart_exec(struct session *s)
 
     char *argv[28];
     int   n = 0;
-    argv[n++] = arg_copy(sessionfork_program());
-    argv[n++] = "-b";
-    argv[n++] = arg_copy(session_backend(s));
-
-    const char *cwd = session_cwd(s);
-    if (cwd && *cwd) {
-        argv[n++] = "-C";
-        argv[n++] = arg_copy(cwd);
-    }
-    const char *model = session_model(s);
-    if (strcmp(model, "default") != 0) {
-        argv[n++] = "-m";
-        argv[n++] = arg_copy(model);
-    }
-    const char *effort = session_effort(s);
-    if (strcmp(effort, "default") != 0) {
-        argv[n++] = "-e";
-        argv[n++] = arg_copy(effort);
-    }
-    if (safe_mode)
-        argv[n++] = "-s";
+    argv[n++] = (char *)sessionfork_program();
+    n += session_argv(s, argv + n, SESSION_ARGV_MAX,
+                      SESSION_ARGV_CWD | SESSION_ARGV_RESUME | SESSION_ARGV_SAFE);
+    // The front ends this process was started with: the session cannot know
+    // about them, and they do not belong to a fork of it either.
     for (int i = 0; i < extra_n; i++)
-        argv[n++] = arg_copy(extra[i]);
+        argv[n++] = (char *)extra[i];
 
-    const char *id = session_id(s);
-    if (id && *id && session_can_resume(s)) {
-        argv[n++] = "--session";
-        argv[n++] = arg_copy(id);
-    }
-    argv[n] = NULL;
-
+    // The session is freed before the exec, so nothing may point into it.
     for (int i = 0; i < n; i++)
-        if (!argv[i])
+        if (!(argv[i] = arg_copy(argv[i])))
             return 0;
+    argv[n] = NULL;
 
     // Checked before the teardown: past it there is nothing to return to.
     // A build launched by path can outlive its directory - a worktree that was

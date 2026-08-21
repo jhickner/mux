@@ -147,7 +147,17 @@ static void humanize(long n, char *out, size_t size)
         snprintf(out, size, "%.1fM", (double)n / 1000000.0);
 }
 
+// The session the drawing belongs to. One writer discipline: every setter
+// swaps it and puts back what it found, so a nested pump cannot leave the
+// screen owned by nobody.
 static struct session *live;
+
+struct session *session_set_drawing(struct session *s)
+{
+    struct session *was = live;
+    live = s;
+    return was;
+}
 
 static void remember_model(const struct session *s);
 static int dir_alive(const char *path);
@@ -182,7 +192,7 @@ static void render_event(struct session *s, const backend_event *ev)
     if (s->observer)
         s->observer(s->observer_ud, ev);
 
-    if (s->quiet || s->silent || !live)
+    if (s->quiet || s->silent || live != s)
         return;
 
     int paused = 0;
@@ -433,10 +443,10 @@ int session_idle_pump(struct session *s)
         s->view.after_tool = 0;
         s->view.after_collapse = 0;
     }
-    live = s;
+    struct session *was = session_set_drawing(s);
     image_poll();
     int busy = s->agent->idle_pump(s->agent) ? 1 : 0;
-    live = NULL;
+    session_set_drawing(was);
 
     tab_busy(s, busy);
     return busy;
@@ -1202,10 +1212,16 @@ static int nearest_live_dir(const char *path, char *out, size_t size)
 // whatever container directory happens to survive above it.
 static int main_worktree(const char *near, char *out, size_t size)
 {
-    char cmd[4200];
-    snprintf(cmd, sizeof cmd,
-             "git -C '%s' rev-parse --path-format=absolute --git-common-dir 2>/dev/null",
-             near);
+    char quoted[4200];
+    if (!text_shell_quote(near, quoted, sizeof quoted))
+        return 0;
+
+    char cmd[4300];
+    if (snprintf(cmd, sizeof cmd,
+                 "git -C %s rev-parse --path-format=absolute --git-common-dir 2>/dev/null",
+                 quoted) >= (int)sizeof cmd)
+        return 0;
+
     FILE *f = popen(cmd, "r");
     if (!f)
         return 0;
@@ -1256,10 +1272,9 @@ static void session_warn(struct session *s, const char *fmt, ...)
     va_end(ap);
 
     backend_event ev = {.kind = BACKEND_EV_WARNING, .text = text};
-    struct session *was = live;
-    live = s;
+    struct session *was = session_set_drawing(s);
     on_event(s, &ev);
-    live = was;
+    session_set_drawing(was);
 }
 
 static void shorten(const char *dir, char *out, size_t size)
@@ -1444,7 +1459,7 @@ int session_turn(struct session *s, const char *text)
         return 0;
 
     turn_prepare(s, text);
-    live = s;
+    struct session *was = session_set_drawing(s);
     if (!s->quiet && !s->silent) {
         set_spin_word(s);
         status_begin();
@@ -1454,7 +1469,7 @@ int session_turn(struct session *s, const char *text)
     char *reply = s->agent->ask_ex(s->agent, text, &meta);
     quota_poll(s);
     double elapsed = now_seconds() - s->started;
-    live = NULL;
+    session_set_drawing(was);
     if (!s->quiet && !s->silent)
         status_end();
 
@@ -1552,13 +1567,12 @@ int session_busy(const struct session *s)
 static void drain_events(struct session *s)
 {
     struct evcopy *e;
-    struct session *was = live;
-    live = s;
+    struct session *was = session_set_drawing(s);
     while ((e = dequeue(s))) {
         render_event(s, &e->ev);
         evcopy_free(e);
     }
-    live = was;
+    session_set_drawing(was);
 }
 
 int session_turn_pump(struct session *s)
@@ -1718,6 +1732,43 @@ const char *session_workdir(const struct session *s)
     return s->workdir ? s->workdir : s->cwd;
 }
 const char *session_backend(const struct session *s) { return s->backend; }
+
+static int argv_pair(char **out, int n, int max, const char *flag, const char *value)
+{
+    if (n + 2 > max)
+        return n;
+    out[n++] = (char *)flag;
+    out[n++] = (char *)value;
+    return n;
+}
+
+// The argv that opens this session again, for /restart, /fork and the note on
+// the way out. One builder: the four of them used to disagree.
+int session_argv(const struct session *s, char **out, int max, unsigned what)
+{
+    int n = argv_pair(out, 0, max, "-b", session_backend(s));
+
+    const char *cwd = session_cwd(s);
+    if ((what & SESSION_ARGV_CWD) && cwd && *cwd)
+        n = argv_pair(out, n, max, "-C", cwd);
+
+    const char *model = session_model(s);
+    if (strcmp(model, "default"))
+        n = argv_pair(out, n, max, "-m", model);
+
+    const char *effort = session_effort(s);
+    if (strcmp(effort, "default"))
+        n = argv_pair(out, n, max, "-e", effort);
+
+    if ((what & SESSION_ARGV_SAFE) && !s->customizations && n < max)
+        out[n++] = (char *)"-s";
+
+    const char *id = session_id(s);
+    if ((what & SESSION_ARGV_RESUME) && id && *id && session_can_resume(s))
+        n = argv_pair(out, n, max, "--session", id);
+
+    return n;
+}
 
 int session_last_interrupted(const struct session *s) { return s ? s->interrupted : 0; }
 

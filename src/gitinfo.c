@@ -19,29 +19,6 @@ static double now_ms(void)
     return (double)tv.tv_sec * 1000.0 + (double)tv.tv_usec / 1000.0;
 }
 
-static int shell_quote(const char *s, char *out, size_t size)
-{
-    size_t n = 0;
-    if (size < 3)
-        return 0;
-    out[n++] = '\'';
-    for (; *s; s++) {
-        const char *piece = *s == '\'' ? "'\\''" : NULL;
-        size_t need = piece ? 4 : 1;
-        if (n + need + 2 > size)
-            return 0;
-        if (piece) {
-            memcpy(out + n, piece, need);
-            n += need;
-        } else {
-            out[n++] = *s;
-        }
-    }
-    out[n++] = '\'';
-    out[n] = '\0';
-    return 1;
-}
-
 static void parse_shortstat(const char *line, struct gitinfo *g)
 {
     for (const char *p = line; *p; p++) {
@@ -67,7 +44,7 @@ static void reread(const char *dir, struct gitinfo *g)
     memset(g, 0, sizeof *g);
 
     char quoted[4200];
-    if (!shell_quote(dir, quoted, sizeof quoted))
+    if (!text_shell_quote(dir, quoted, sizeof quoted))
         return;
 
     char cmd[17000];

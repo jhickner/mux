@@ -1,12 +1,12 @@
 #include "pick.h"
 
-#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "chrome.h"
 #include "status.h"
+#include "text.h"
 #include "tty.h"
 #include "ui.h"
 
@@ -27,34 +27,6 @@ struct view {
     int filter;     // typing narrows the list instead of jumping through it
     char query[64];
 };
-
-// The same subsequence score files.c ranks path completions by.
-static int fuzzy(const char *name, const char *q)
-{
-    int score = 0, ni = 0, streak = 0;
-
-    for (int qi = 0; q[qi]; qi++) {
-        int qc = tolower((unsigned char)q[qi]);
-        int found = 0;
-        while (name[ni]) {
-            char prev = ni ? name[ni - 1] : '/';
-            int nc = tolower((unsigned char)name[ni]);
-            ni++;
-            if (nc == qc) {
-                streak++;
-                score += 1 + streak;
-                if (prev == '/' || prev == '-' || prev == '_' || prev == '.' || prev == ':')
-                    score += 4;
-                found = 1;
-                break;
-            }
-            streak = 0;
-        }
-        if (!found)
-            return -1;
-    }
-    return score;
-}
 
 // How often a live list re-reads while nothing on it is spinning.
 #define LIVE_POLL_MS 500
@@ -145,10 +117,10 @@ static void refilter(struct view *v)
         // beneath it -- typing part of a directory keeps that whole group --
         // and one whose group the query emptied goes with it.
         if (item_heading(v, i)) {
-            under = !v->query[0] || fuzzy(v->items[i].label, v->query) >= 0;
+            under = !v->query[0] || text_fuzzy_score(v->items[i].label, v->query) >= 0;
             int has = under;
             for (int j = i + 1; !has && j < v->n && !item_heading(v, j); j++)
-                if (fuzzy(v->items[j].label, v->query) >= 0)
+                if (text_fuzzy_score(v->items[j].label, v->query) >= 0)
                     has = 1;
             if (!has)
                 continue;
@@ -156,7 +128,7 @@ static void refilter(struct view *v)
             v->score[v->count++] = 0;
             continue;
         }
-        int s = v->query[0] ? fuzzy(v->items[i].label, v->query) : 0;
+        int s = v->query[0] ? text_fuzzy_score(v->items[i].label, v->query) : 0;
         if (s < 0 && !under)
             continue;
         int at = v->count++;
@@ -208,6 +180,8 @@ static void paint(void *ud)
         v->top = sel;
     if (sel >= v->top + v->visible)
         v->top = sel - v->visible + 1;
+    if (v->top < 0)
+        v->top = 0;
 
     int columns = ui_columns();
     int rows = 0;
@@ -378,6 +352,11 @@ static int run(const char *title, const struct pick_item *items, int count,
     if (count <= 0)
         return -1;
 
+    // Nothing to pick with: a front end that is not the terminal asked, and
+    // there is no keyboard to answer on. Reads as a cancel.
+    if (!tty_is_raw())
+        return -1;
+
     struct view v = {0};
     v.title = title;
     v.items = items;
@@ -400,10 +379,6 @@ static int run(const char *title, const struct pick_item *items, int count,
         }
     if (v.count)
         settle(&v, 1);
-    // Nothing to pick with: a front end that is not the terminal asked, and
-    // there is no keyboard to answer on. Reads as a cancel.
-    if (!tty_is_raw())
-        return -1;
     chrome_modal(paint, &v);
 
     int result = -1;
@@ -445,10 +420,14 @@ static int run(const char *title, const struct pick_item *items, int count,
             step(&v, 1);
             break;
         case TK_HOME:
+            if (!v.count)
+                break;
             v.sel = 0;
             settle(&v, 1);
             break;
         case TK_END:
+            if (!v.count)
+                break;
             v.sel = v.count - 1;
             settle(&v, -1);
             break;

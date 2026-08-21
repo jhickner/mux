@@ -61,6 +61,11 @@ int chrome_modal_interrupted(void)
     return modal_interrupt ? modal_interrupt() : 0;
 }
 
+int chrome_modal_active(void)
+{
+    return modal != NULL;
+}
+
 void chrome_modal(chrome_modal_fn fn, void *ud)
 {
     modal = fn;
@@ -77,36 +82,55 @@ struct above {
     int queued;
 };
 
+// Their heights, measured once a frame. Measuring is not cheap — the sticky
+// one walks the visible transcript — and dropping a section cannot change what
+// another one measures, so the fit reads these instead of asking again.
+struct heights {
+    int tabs;
+    int side;
+    int sticky;
+    int queued;
+};
+
+static struct heights above_measure(int cols)
+{
+    struct heights h;
+    h.tabs = strip_rows();
+    h.side = sidechannel_rows();
+    h.sticky = status_sticky_measure();
+    h.queued = prompt_queued_rows(bound, cols);
+    return h;
+}
+
 // Each section that draws anything is set off from the one above it.
-static int above_height(const struct above *a, int cols)
+static int above_height(const struct above *a, const struct heights *h)
 {
     int rows = 0;
     int drawn = 0;
-    int n;
 
-    if (a->tabs && (n = strip_rows()) > 0)
-        rows += n + (drawn++ ? 1 : 0);
-    if (a->side && (n = sidechannel_rows()) > 0)
-        rows += n + (drawn++ ? 1 : 0);
-    if (a->sticky && (n = status_sticky_measure()) > 0)
-        rows += n + (drawn++ ? 1 : 0);
-    if (a->queued && (n = prompt_queued_rows(bound, cols)) > 0)
-        rows += n + (drawn++ ? 1 : 0);
+    if (a->tabs && h->tabs > 0)
+        rows += h->tabs + (drawn++ ? 1 : 0);
+    if (a->side && h->side > 0)
+        rows += h->side + (drawn++ ? 1 : 0);
+    if (a->sticky && h->sticky > 0)
+        rows += h->sticky + (drawn++ ? 1 : 0);
+    if (a->queued && h->queued > 0)
+        rows += h->queued + (drawn++ ? 1 : 0);
     return rows ? rows + 1 : 0;
 }
 
-static void fit_above(struct above *a, int cols, int room)
+static void fit_above(struct above *a, const struct heights *h, int room)
 {
-    if (above_height(a, cols) <= room)
+    if (above_height(a, h) <= room)
         return;
     a->queued = 0;
-    if (above_height(a, cols) <= room)
+    if (above_height(a, h) <= room)
         return;
     a->sticky = 0;
-    if (above_height(a, cols) <= room)
+    if (above_height(a, h) <= room)
         return;
     a->side = 0;
-    if (above_height(a, cols) <= room)
+    if (above_height(a, h) <= room)
         return;
     a->tabs = 0;
 }
@@ -141,8 +165,9 @@ void chrome_paint(void)
     int input_rows = prompt_input_rows(bound, cols);
     int gap = status_gap_row();
 
+    struct heights h = above_measure(cols);
     struct above a = {1, 1, 1, 1};
-    fit_above(&a, cols, tty_rows() - 1 - input_rows - spinning - gap);
+    fit_above(&a, &h, tty_rows() - 1 - input_rows - spinning - gap);
 
     block_begin();
     budget = tty_rows() - 1;
@@ -152,23 +177,23 @@ void chrome_paint(void)
         ui_put("\n");
 
     int drawn = 0;
-    if (a.tabs && strip_rows() > 0) {
+    if (a.tabs && h.tabs > 0) {
         tabs_paint();
         drawn = 1;
     }
-    if (a.side && sidechannel_rows() > 0) {
+    if (a.side && h.side > 0) {
         if (drawn)
             ui_put("\n");
         sidechannel_paint(chrome_rows_left());
         drawn = 1;
     }
-    if (a.sticky && status_sticky_measure() > 0) {
+    if (a.sticky && h.sticky > 0) {
         if (drawn)
             ui_put("\n");
         status_paint_sticky();
         drawn = 1;
     }
-    if (a.queued && prompt_queued_rows(bound, cols) > 0) {
+    if (a.queued && h.queued > 0) {
         if (drawn)
             ui_put("\n");
         prompt_paint_queued(bound, chrome_rows_left());

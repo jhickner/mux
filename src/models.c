@@ -195,12 +195,21 @@ static void openrouter_json(struct list *l, const char *text, const char *key)
 // stale catalog for the rest of the window.
 static void refresh_openrouter(const char *path)
 {
-    char cmd[8192];
-    snprintf(cmd, sizeof cmd,
-             "(if curl -fsS --max-time 20 -o '%s.new' "
-             "https://openrouter.ai/api/v1/models >/dev/null 2>&1 && [ -s '%s.new' ]; "
-             "then mv '%s.new' '%s'; else rm -f '%s.new'; fi) >/dev/null 2>&1 &",
-             path, path, path, path, path);
+    char dest[4200], tmp[4300], quoted[4400];
+    if (snprintf(tmp, sizeof tmp, "%s.new", path) >= (int)sizeof tmp)
+        return;
+    if (!text_shell_quote(path, dest, sizeof dest) ||
+        !text_shell_quote(tmp, quoted, sizeof quoted))
+        return;
+
+    char cmd[26000];
+    if (snprintf(cmd, sizeof cmd,
+                 "(if curl -fsS --max-time 20 -o %s "
+                 "https://openrouter.ai/api/v1/models >/dev/null 2>&1 && [ -s %s ]; "
+                 "then mv %s %s; else rm -f %s; fi) >/dev/null 2>&1 &",
+                 quoted, quoted, quoted, dest, quoted) >= (int)sizeof cmd)
+        return;
+
     (void)system(cmd);
 }
 
