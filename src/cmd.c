@@ -128,12 +128,12 @@ static void reply(int error, const char *fmt, ...)
     vsnprintf(text, sizeof text, fmt, ap);
     va_end(ap);
 
+    ui_block_begin(1, 1);
     if (error)
         ui_error("%s", text);
     else
         ui_note("%s", text);
-    ui_put("\n");
-    ui_flush();
+    ui_block_end();
 }
 
 #define reply_note(...)  reply(0, __VA_ARGS__)
@@ -196,10 +196,10 @@ static void note_identity(const struct session *s)
     else if (window > 0)
         snprintf(ctx, sizeof ctx, " \xc2\xb7 %ldK context", window / 1000);
 
+    ui_block_begin(1, 1);
     ui_note("%s \xc2\xb7 %s%s%s", session_backend(s),
             session_model_short(s, session_model_label(s)), effort, ctx);
-    ui_put("\n");
-    ui_flush();
+    ui_block_end();
 }
 
 // A picker is a modal on the keyboard, so there has to be one and it has to be
@@ -478,13 +478,14 @@ static void do_image(struct session *s, const char *arg)
         settings_set_int(SETTING_IMAGE_ROWS, image_rows());
     }
 
-    if (image_available())
+    if (image_available()) {
         reply_note("inline images: up to %d rows tall", image_rows());
-    else
+    } else {
+        ui_block_begin(1, 1);
         ui_note("inline images: up to %d rows tall, but this terminal has no "
                 "graphics support", image_rows());
-    ui_put("\n");
-    ui_flush();
+        ui_block_end();
+    }
 }
 
 int cmd_resume(struct session *s)
@@ -523,8 +524,9 @@ int cmd_resume(struct session *s)
             viewport_clear();
             hud_print(s);
             sessionload_into(s);
+            ui_block_begin(1, 1);
             ui_bar(ui_style(UI_DIM), "resumed \xc2\xb7 %s", list[index].label);
-            ui_put("\n");
+            ui_block_end();
             resumed = 1;
         } else {
             reply_error("could not resume that conversation");
@@ -545,9 +547,9 @@ static void do_new(struct session *s, const char *arg)
     }
 
     status_sticky_prompt(NULL);
+    ui_block_begin(1, 1);
     ui_bar(ui_style(UI_DIM), "new conversation");
-    ui_put("\n");
-    ui_flush();
+    ui_block_end();
 }
 
 static void do_cd(struct session *s, const char *arg)
@@ -589,15 +591,16 @@ static void do_cd(struct session *s, const char *arg)
 
     status_sticky_prompt(NULL);
     path_home_relative(resolved, shown, sizeof shown);
+    ui_block_begin(1, 1);
     ui_bar(ui_style(UI_DIM), "new conversation in %s", shown);
-    ui_put("\n");
-    ui_flush();
+    ui_block_end();
 }
 
 static void do_copy(struct session *s, const char *arg)
 {
     (void)arg;
     const char *reply = session_last_reply(s);
+    ui_block_begin(1, 1);
     if (!reply) {
         ui_note("nothing to copy yet");
     } else if (copy_to_clipboard(reply)) {
@@ -605,8 +608,7 @@ static void do_copy(struct session *s, const char *arg)
     } else {
         ui_error("could not reach the clipboard");
     }
-    ui_put("\n");
-    ui_flush();
+    ui_block_end();
 }
 
 static void do_split(struct session *s, const char *arg)
@@ -621,6 +623,7 @@ static void do_split(struct session *s, const char *arg)
 
 static void do_rename(struct session *s, const char *arg)
 {
+    ui_block_begin(1, 1);
     if (arg && *arg) {
         if (session_rename(s, arg))
             ui_note("renamed to %s", session_title(s));
@@ -631,8 +634,7 @@ static void do_rename(struct session *s, const char *arg)
     } else {
         ui_error("nothing to name it from yet");
     }
-    ui_put("\n");
-    ui_flush();
+    ui_block_end();
 }
 
 static int split_command(const char *line, char *name, size_t size, const char **arg)
@@ -930,6 +932,7 @@ static void do_help(struct session *s, const char *arg)
     (void)s;
     (void)arg;
 
+    ui_block_begin(1, 1);
     help_heading("commands");
     for (size_t i = 0; i < COUNT(COMMANDS); i++) {
         if (COMMANDS[i].flags & CMD_HIDDEN)
@@ -956,6 +959,5 @@ static void do_help(struct session *s, const char *arg)
     help_row("", "any slash command not listed above goes to the agent CLI, so");
     help_row("", "/w, /todo and the rest work here. start with -s to run without");
     help_row("", "them; /session shows what is active.");
-    ui_put("\n");
-    ui_flush();
+    ui_block_end();
 }

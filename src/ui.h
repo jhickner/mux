@@ -166,4 +166,10 @@ __attribute__((format(printf, 2, 3))) void ui_bar(const char *style, const char 
 __attribute__((format(printf, 1, 2))) void ui_note(const char *fmt, ...);
 __attribute__((format(printf, 1, 2))) void ui_error(const char *fmt, ...);
 
+// Output that stands apart from what surrounds it. The rows printed between
+// begin and end are one entry, and the blank rows it wants above and below are
+// declared here rather than printed: see viewport_item_begin().
+void ui_block_begin(int before, int after);
+void ui_block_end(void);
+
 #endif

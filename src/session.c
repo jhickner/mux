@@ -501,9 +501,9 @@ static int adopt_title(struct session *s)
     publish(s, s->idle_busy ? "working" : "finished");
     if (s->announce_title) {
         s->announce_title = 0;
+        ui_block_begin(1, 1);
         ui_note("renamed to %s", s->title);
-        ui_put("\n");
-        ui_flush();
+        ui_block_end();
     }
     return 1;
 }
@@ -686,8 +686,9 @@ void session_replay(struct session *s)
         if (t->assistant && *t->assistant)
             md_render_kept(t->assistant, 0);
         if (t->interrupted) {
+            ui_block_begin(0, 1);
             ui_error("  interrupted");
-            ui_put("\n");
+            ui_block_end();
         }
     }
     ui_flush();
@@ -1403,11 +1404,12 @@ static int turn_finish(struct session *s, char *reply, const backend_result *met
                 fprintf(stderr, "the %s process stopped responding\n", s->backend);
             return 0;
         }
+        ui_block_begin(1, 1);
         if (detail)
             ui_error("%s: %s", s->backend, detail);
         else
             ui_error("the %s process stopped responding", s->backend);
-        ui_put("\n");
+        ui_block_end();
         return 0;
     }
 
@@ -1448,8 +1450,9 @@ static int turn_finish(struct session *s, char *reply, const backend_result *met
     }
     s->interrupted = m.interrupted;
     if (m.interrupted && !s->silent) {
+        ui_block_begin(0, 1);
         ui_error("  interrupted");
-        ui_put("\n");
+        ui_block_end();
     }
 
     if (*reply)
@@ -1869,6 +1872,7 @@ void session_report(const struct session *s)
     humanize(s->context_window, window, sizeof window);
 
     const char *auth = auth_description(s);
+    ui_block_begin(1, 1);
     ui_note("  backend  %s", s->backend);
     ui_note("  model    %s", session_model(s));
     if (session_can_set_effort(s))
@@ -1908,6 +1912,5 @@ void session_report(const struct session *s)
                 auth && strcmp(auth, "subscription login") == 0
                     ? "  (list price; the subscription is not billed per token)"
                     : "");
-    ui_put("\n");
-    ui_flush();
+    ui_block_end();
 }
