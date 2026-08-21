@@ -22,6 +22,7 @@
 #include "sidechannel.h"
 #include "status.h"
 #include "title.h"
+#include "tg.h"
 #include "toolstyle.h"
 #include "transcript.h"
 #include "tty.h"
@@ -55,6 +56,12 @@ struct session {
     long     context_tokens;
     long     context_window;
     int      quiet;
+    int      silent;
+    char    *system_extra;
+    session_event_fn observer;
+    void    *observer_ud;
+    int    (*abort_hook)(void *ud);
+    void    *abort_ud;
     int      skip_naming;
     int      thinking;
     int      compact;
@@ -63,6 +70,7 @@ struct session {
     char    *permission;
     int      idle_busy;
     int      trust_requested;
+    int      interrupted;
 
     struct turnview view;
 };
@@ -139,7 +147,10 @@ static void on_event(void *ud, const backend_event *ev)
     if (ev->kind == BACKEND_EV_ASSISTANT && ev->text && *ev->text)
         replace(&s->last_block, ev->text);
 
-    if (s->quiet || !live)
+    if (s->observer)
+        s->observer(s->observer_ud, ev);
+
+    if (s->quiet || s->silent || !live)
         return;
 
     int paused = 0;
@@ -148,6 +159,7 @@ static void on_event(void *ud, const backend_event *ev)
     case BACKEND_EV_INIT:
     case BACKEND_EV_CWD:
     case BACKEND_EV_TRUST:
+    case BACKEND_EV_TASK:
         break;
 
     case BACKEND_EV_WARNING:
@@ -435,6 +447,8 @@ static int abort_check(void)
         set_spin_word(live);
 
     int interrupt = session_poll_input();
+    if (live && live->abort_hook)
+        interrupt |= live->abort_hook(live->abort_ud);
 
     sidechannel_poll();
     sidechannel_tick();
@@ -501,6 +515,7 @@ void session_free(struct session *s)
     stream_reset(s);
     free(s->prompt);
     free(s->permission);
+    free(s->system_extra);
     view_free(&s->view);
     transcript_free(&s->transcript);
     if (live == s)
@@ -521,15 +536,26 @@ static Backend *agent(struct session *s)
     o.permission_mode = s->permission;
     o.fork_session = s->fork_session;
 
-    if (image_available())
-        o.system =
-            "This conversation is displayed in a terminal that renders images inline. "
-            "To show the user an image, write a markdown image with an absolute local "
-            "path — ![alt](/abs/path.png) — alone on its own line. PNG is drawn "
-            "directly; other formats are converted first. Use this whenever an image "
-            "would answer better than words: a render you just produced, a screenshot, "
-            "a diagram, a photo the user asked about.";
+    const char *note = image_available()
+        ? "This conversation is displayed in a terminal that renders images inline. "
+          "To show the user an image, write a markdown image with an absolute local "
+          "path — ![alt](/abs/path.png) — alone on its own line. PNG is drawn "
+          "directly; other formats are converted first. Use this whenever an image "
+          "would answer better than words: a render you just produced, a screenshot, "
+          "a diagram, a photo the user asked about."
+        : NULL;
+
+    // A front end other than the terminal has its own conventions to teach the
+    // agent, and they are appended to whatever this one already says.
+    char *joined = NULL;
+    if (note && s->system_extra) {
+        size_t n = strlen(note) + strlen(s->system_extra) + 3;
+        if ((joined = malloc(n)))
+            snprintf(joined, n, "%s\n\n%s", note, s->system_extra);
+    }
+    o.system = joined ? joined : s->system_extra ? s->system_extra : note;
     s->agent = backend_open_ex(&o);
+    free(joined);
     if (s->agent) {
         s->agent->set_event_cb(s->agent, on_event, s);
         s->agent->set_abort_check(s->agent, abort_check);
@@ -591,6 +617,25 @@ int session_switch_backend(struct session *s, const char *backend)
 }
 
 void session_set_quiet(struct session *s, int quiet) { s->quiet = quiet; }
+
+void session_set_silent(struct session *s, int silent) { s->silent = silent; }
+
+void session_set_observer(struct session *s, session_event_fn fn, void *ud)
+{
+    s->observer = fn;
+    s->observer_ud = ud;
+}
+
+void session_set_system_extra(struct session *s, const char *text)
+{
+    replace(&s->system_extra, text);
+}
+
+void session_set_abort_hook(struct session *s, int (*fn)(void *ud), void *ud)
+{
+    s->abort_hook = fn;
+    s->abort_ud = ud;
+}
 
 void session_set_naming(struct session *s, int on) { s->skip_naming = !on; }
 
@@ -939,7 +984,7 @@ int session_turn(struct session *s, const char *text)
     double started = now_seconds();
     s->idle_busy = 1;
     agenttabs_working();
-    if (!s->quiet) {
+    if (!s->quiet && !s->silent) {
         set_spin_word(s);
         status_begin();
     }
@@ -949,7 +994,7 @@ int session_turn(struct session *s, const char *text)
     quota_poll(s);
     double elapsed = now_seconds() - started;
     live = NULL;
-    if (!s->quiet)
+    if (!s->quiet && !s->silent)
         status_end();
 
     const char *id = s->agent->session_id(s->agent);
@@ -961,6 +1006,8 @@ int session_turn(struct session *s, const char *text)
         s->idle_busy = 0;
         agenttabs_errored();
         const char *detail = s->agent->last_error(s->agent);
+        if (s->silent)
+            return 0;
         if (detail)
             ui_error("%s: %s", s->backend, detail);
         else
@@ -971,7 +1018,12 @@ int session_turn(struct session *s, const char *text)
 
     int shown = (s->last_block && strcmp(reply, s->last_block) == 0) ||
                 (s->streamed && strcmp(reply, s->streamed) == 0);
-    if (s->quiet) {
+    if (s->silent) {
+        // Nothing is drawn here: the front end that asked for the turn takes
+        // the answer from session_last_reply() and says it its own way.
+        if (!*reply && s->last_block)
+            replace(&reply, s->last_block);
+    } else if (s->quiet) {
         // A turn can end with no closing text — the last thing it said is the
         // answer then, and if it never said anything the caller still needs a
         // reason, which only stderr can carry once stdout is empty.
@@ -993,7 +1045,8 @@ int session_turn(struct session *s, const char *text)
         md_render_kept(reply, 0);
         ui_put("\n");
     }
-    if (meta.interrupted) {
+    s->interrupted = meta.interrupted;
+    if (meta.interrupted && !s->silent) {
         ui_error("  interrupted");
         ui_put("\n");
     }
@@ -1024,7 +1077,7 @@ int session_turn(struct session *s, const char *text)
     update_title(s);
     remember_model(s);
     remember_window(s);
-    if (!s->quiet)
+    if (!s->quiet && !s->silent)
         print_footer(s, elapsed);
     return 1;
 }
@@ -1147,6 +1200,13 @@ const char *session_workdir(const struct session *s)
     return s->workdir ? s->workdir : s->cwd;
 }
 const char *session_backend(const struct session *s) { return s->backend; }
+
+int session_last_interrupted(const struct session *s) { return s ? s->interrupted : 0; }
+
+const char *session_last_error(const struct session *s)
+{
+    return s && s->agent ? s->agent->last_error(s->agent) : NULL;
+}
 const char *session_last_reply(const struct session *s) { return s->last_reply; }
 const char *session_failed_prompt(const struct session *s)
 {
@@ -1201,6 +1261,8 @@ void session_report(const struct session *s)
         ui_note("  tools    %s", session_permission(s));
     }
     ui_note("  calls    %s", s->compact ? "compact (one row each)" : "full blocks");
+    if (tg_label())
+        ui_note("  chat     %s", tg_label());
     if (s->id[0])
         ui_note("  session  %s", s->id);
 

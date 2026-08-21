@@ -129,13 +129,16 @@ typedef enum {
     CLAUDE_EV_TOOL_RESULT, /* text: the tool's output (truncated by the CLI)   */
     CLAUDE_EV_INIT,        /* name: the model the CLI resolved                 */
     CLAUDE_EV_CWD,         /* text: the directory the session works in now     */
+    CLAUDE_EV_TASK,        /* id + name (status) + text: a background task     */
 } claude_event_kind;
 
 typedef struct {
     claude_event_kind kind;
     const char *text;       /* NULL unless the kind documents it */
-    const char *name;       /* tool name, or model name for INIT */
+    const char *name;       /* tool name, model name for INIT, status for TASK */
     const char *input_json; /* tool input as compact JSON, for TOOL */
+    const char *id;         /* TASK: the CLI's task id */
+    const char *arg;        /* TASK: the subagent type, when it reports one */
     int failed;             /* TOOL_RESULT: the tool reported is_error */
 } claude_event;
 
@@ -545,6 +548,7 @@ static const char *cl_kind_label(claude_event_kind k) {
     case CLAUDE_EV_TOOL:        return "tool";
     case CLAUDE_EV_TOOL_RESULT: return "tool-result";
     case CLAUDE_EV_INIT:        return "init";
+    case CLAUDE_EV_TASK:        return "task";
     case CLAUDE_EV_CWD:         return "cwd";
     }
     return "?";
@@ -721,6 +725,25 @@ static int cl_handle_line(claude_client *c, const char *line, char **out) {
              * count rather than adjusting it. */
             cJSON *tasks = cJSON_GetObjectItem(ev, "tasks");
             c->bg_tasks = cJSON_IsArray(tasks) ? cJSON_GetArraySize(tasks) : 0;
+        }
+        /* A background task -- a subagent, or a detached command -- reports its
+         * own life cycle: task_started when it is launched, task_updated as its
+         * status changes, task_notification with the summary it ends on. They
+         * are the only word on work that outlives the turn that started it. */
+        if (sub && !strncmp(sub, "task_", 5)) {
+            cJSON *patch = cJSON_GetObjectItem(ev, "patch");
+            claude_event out = {.kind = CLAUDE_EV_TASK};
+            out.id = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "task_id"));
+            out.name = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "status"));
+            if (!out.name && patch)
+                out.name = cJSON_GetStringValue(cJSON_GetObjectItem(patch, "status"));
+            if (!out.name)
+                out.name = !strcmp(sub, "task_started") ? "running" : "";
+            out.arg = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "subagent_type"));
+            out.text = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "description"));
+            if (!out.text)
+                out.text = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "summary"));
+            if (out.id) cl_sink(c, &out);
         }
         const char *auth = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "apiKeySource"));
         if (auth && *auth)

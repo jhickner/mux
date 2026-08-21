@@ -53,6 +53,9 @@ typedef enum {
                                a worktree                                      */
     BACKEND_EV_TRUST,       /* the current project needs a trust decision       */
     BACKEND_EV_WARNING,     /* text: an actionable backend configuration notice */
+    BACKEND_EV_TASK,        /* id, name (status), text (description or summary),
+                               arg (subagent type): a background task the agent
+                               started, which outlives the turn that started it */
 } backend_event_kind;
 
 typedef struct {
@@ -65,6 +68,7 @@ typedef struct {
                                for the drivers that have no input_json          */
     const char *diff;       /* authoritative unified patch for a tool result;
                                NULL when the driver does not report one         */
+    const char *id;         /* TASK: the backend's own id for the task          */
     int failed;             /* TOOL_RESULT: the tool did not succeed            */
 } backend_event;
 
@@ -96,6 +100,7 @@ typedef struct {
 #define BACKEND_CAP_RESUME      1u /* start() can adopt a prior session id */
 #define BACKEND_CAP_EFFORT      2u /* set_effort() is supported            */
 #define BACKEND_CAP_LIVE_EFFORT 4u /* set_effort() preserves the process   */
+#define BACKEND_CAP_TASKS       8u /* reports BACKEND_EV_TASK per subagent  */
 
 struct Backend {
     unsigned caps;
@@ -324,7 +329,7 @@ typedef struct { backend_state st; claude_client *client; claude_result live; } 
 static void backend_claude_event(void *ud, const claude_event *e) {
     backend_claude *x = ((Backend *)ud)->ctx;
     backend_event ev = { .text = e->text, .name = e->name, .input_json = e->input_json,
-                         .failed = e->failed };
+                         .arg = e->arg, .id = e->id, .failed = e->failed };
     switch (e->kind) {
     case CLAUDE_EV_ASSISTANT:   ev.kind = BACKEND_EV_ASSISTANT;   break;
     case CLAUDE_EV_THINKING:    ev.kind = BACKEND_EV_THINKING;    break;
@@ -332,6 +337,7 @@ static void backend_claude_event(void *ud, const claude_event *e) {
     case CLAUDE_EV_TOOL_RESULT: ev.kind = BACKEND_EV_TOOL_RESULT; break;
     case CLAUDE_EV_INIT:        ev.kind = BACKEND_EV_INIT;        break;
     case CLAUDE_EV_CWD:         ev.kind = BACKEND_EV_CWD;         break;
+    case CLAUDE_EV_TASK:        ev.kind = BACKEND_EV_TASK;        break;
     default: return;
     }
     backend_emit(&x->st, &ev);
@@ -519,7 +525,8 @@ static Backend *backend_claude_open(const backend_opts *o) {
     if (!x || !b) { free(x); free(b); return NULL; }
     backend_state_init(&x->st, o);
     b->ctx = x;
-    b->caps = BACKEND_CAP_RESUME | BACKEND_CAP_EFFORT | BACKEND_CAP_LIVE_EFFORT;
+    b->caps = BACKEND_CAP_RESUME | BACKEND_CAP_EFFORT | BACKEND_CAP_LIVE_EFFORT |
+              BACKEND_CAP_TASKS;
     b->ask = backend_claude_ask;
     b->reset = backend_claude_reset;
     b->close = backend_claude_close;

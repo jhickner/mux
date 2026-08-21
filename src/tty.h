@@ -50,6 +50,9 @@ int  tty_read(tty_event *ev, int timeout_ms);
 // `fds` fills out[] with up to max descriptors to wait on alongside stdin and
 // returns how many it wrote; `ready` runs whenever any of them wakes.
 #define TTY_WATCH_MAX 8
+// Called from a tty_watch handler: end the current wait instead of resuming it.
+void tty_wake(void);
+
 void tty_watch(int (*fds)(void *ud, int *out, int max), void (*ready)(void *ud),
                void *ud);
 

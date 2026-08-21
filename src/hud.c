@@ -7,6 +7,7 @@
 #include "app.h"
 #include "gitinfo.h"
 #include "session.h"
+#include "tg.h"
 #include "ui.h"
 #include "text.h"
 
@@ -48,10 +49,18 @@ static int row_identity(const struct session *s, int cols)
     snprintf(tail, sizeof tail, SEP "%s" SEP "%s%s%s", backend, model,
              effort ? SEP : "", effort ? effort : "");
 
+    // A second front end is attached: what is typed here is not the only way in,
+    // and what the agent does is being relayed. Worth seeing at a glance.
+    const char *chat = tg_label();
+    char attached[128] = "";
+    if (chat)
+        snprintf(attached, sizeof attached, SEP "%s", chat);
+
     struct seg segs[] = {
         {UI_BAR " ", UI_BRAND},
         {APP_NAME,   UI_BOLD},
         {tail,       UI_DIM},
+        {attached,   UI_OK},
     };
     return paint_row(segs, (int)(sizeof segs / sizeof *segs), cols);
 }

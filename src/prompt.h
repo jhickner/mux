@@ -70,6 +70,14 @@ void prompt_set_idle(struct prompt *p, int (*fds)(void *ud, int *out, int max),
 
 char *prompt_take_queued(struct prompt *p);
 
+// A source of lines that were never typed: the Telegram bridge hands the prompt
+// what the chat sent, and it submits as if it had been. Polled whenever the
+// read is woken, so the source must also wake it (tty_wake).
+void prompt_set_external(struct prompt *p, char *(*fn)(void *ud), void *ud);
+
+// Whether the line prompt_read just returned came from that source.
+int  prompt_line_was_external(struct prompt *p);
+
 void prompt_echo_message(const char *text);
 
 // Carried across a restart.
