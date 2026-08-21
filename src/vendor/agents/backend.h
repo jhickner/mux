@@ -888,6 +888,11 @@ static const char *backend_grok_effort(Backend *b) {
     return (env && *env) ? env : NULL;
 }
 
+static const char *backend_grok_error(Backend *b) {
+    backend_grok *x = b->ctx;
+    return x->client ? grok_last_error(x->client) : NULL;
+}
+
 static void backend_grok_close(Backend *b) {
     backend_grok *x = b->ctx;
     if (x->client) grok_stop(x->client);
@@ -916,7 +921,7 @@ static Backend *backend_grok_open(const backend_opts *o) {
     b->model = backend_grok_model;
     b->effort = backend_grok_effort;
     b->auth_source = backend_none;
-    b->last_error = backend_none;
+    b->last_error = backend_grok_error;
     return b;
 }
 

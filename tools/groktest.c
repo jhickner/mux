@@ -89,6 +89,9 @@ static int mock_server(int argc, char **argv)
         int id = cJSON_IsNumber(idj) ? idj->valueint : 0;
 
         if (method && !strcmp(method, "initialize")) {
+            fprintf(stderr, "2026-08-21T17:42:19.713144Z ERROR tool_error: "
+                    "tool_output_error session_id=test tool_name=\"read_file\"\n");
+            fflush(stderr);
             respond(id, "{}");
         } else if (method && !strcmp(method, "session/new")) {
             cJSON *params = cJSON_GetObjectItemCaseSensitive(msg, "params");
@@ -242,6 +245,14 @@ int main(int argc, char **argv)
         return 1;
     }
     free(reply);
+
+    const char *logged = grok_last_error(client);
+    if (!logged || !strstr(logged, "tool_output_error")) {
+        fprintf(stderr, "groktest: CLI stderr was not captured (%s)\n",
+                logged ? logged : "NULL");
+        grok_stop(client);
+        return 1;
+    }
 
     reply = grok_send(client, "path-only edit");
     free(reply);

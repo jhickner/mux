@@ -123,6 +123,11 @@ int grok_interrupt(grok_client *c);
  * until a session exists. */
 void grok_set_abort_check(grok_client *c, int (*cb)(void));
 
+/* The tail of anything the CLI wrote to stderr, or NULL if it has been quiet.
+ * The child's stderr is captured rather than passed through, so a log line
+ * cannot corrupt a caller that is painting its own terminal display. */
+const char *grok_last_error(grok_client *c);
+
 /* Terminate and reap the process, free the client. */
 void grok_stop(grok_client *c);
 
@@ -156,6 +161,7 @@ void grok_stop(grok_client *c);
  * predicate reaches the screen, so it sits below the ~30ms an echo can take
  * without being felt as lag. */
 #define GK_TICK_MS 20
+#define GROK_ERR_MAX 4096
 
 /* One entry of the model line-up the handshake reports, with the reasoning
  * efforts that model accepts. They differ per model: only 4.6 has xhigh. */
@@ -170,6 +176,9 @@ struct grok_client {
     pid_t pid;
     int   in_fd;
     int   out_fd;
+    int   err_fd;             /* read the child's stderr here          */
+    char  err[GROK_ERR_MAX];  /* tail of that stderr, NUL-terminated   */
+    size_t err_len;
     int  (*abort)(void);
     int   verbose;
     void (*on_event)(void *ud, const grok_event *ev);
@@ -211,6 +220,46 @@ void grok_set_event_cb(grok_client *c,
 }
 const char *grok_session_id(grok_client *c) {
     return (c && c->session_id[0]) ? c->session_id : NULL;
+}
+
+/* Read whatever the child has written to stderr, keeping only the tail. Never
+ * blocks: the fd is non-blocking. */
+static void gk_append_error(grok_client *c, const char *text, size_t n) {
+    if (!c || !text || !n) return;
+    if (n >= GROK_ERR_MAX) {
+        memcpy(c->err, text + n - (GROK_ERR_MAX - 1), GROK_ERR_MAX - 1);
+        c->err_len = GROK_ERR_MAX - 1;
+    } else {
+        if (c->err_len + n > GROK_ERR_MAX - 1) {
+            size_t drop = c->err_len + n - (GROK_ERR_MAX - 1);
+            memmove(c->err, c->err + drop, c->err_len - drop);
+            c->err_len -= drop;
+        }
+        memcpy(c->err + c->err_len, text, n);
+        c->err_len += n;
+    }
+    c->err[c->err_len] = '\0';
+}
+
+static void gk_drain_stderr(grok_client *c) {
+    if (!c || c->err_fd < 0) return;
+    char tmp[1024];
+    for (;;) {
+        ssize_t r = read(c->err_fd, tmp, sizeof tmp);
+        if (r <= 0) {
+            if (r < 0 && errno == EINTR) continue;
+            return;
+        }
+        gk_append_error(c, tmp, (size_t)r);
+    }
+}
+
+const char *grok_last_error(grok_client *c) {
+    if (!c) return NULL;
+    gk_drain_stderr(c);
+    while (c->err_len > 0 && (c->err[c->err_len - 1] == '\n' || c->err[c->err_len - 1] == '\r'))
+        c->err[--c->err_len] = '\0';
+    return c->err_len ? c->err : NULL;
 }
 
 static void gk_emit(grok_client *c, const grok_event *ev) {
@@ -846,7 +895,9 @@ static int gk_handle(grok_client *c, cJSON *ev, int want_id, char **acc, int *ok
             if (c->cancelling) {
                 *ok = 1;
             } else if (m) {
-                fprintf(stderr, "grok: rpc error: %s\n", m);
+                char line[512];
+                int n = snprintf(line, sizeof line, "grok: rpc error: %s\n", m);
+                if (n > 0) gk_append_error(c, line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
             }
         }
         if (*ok && res) {
@@ -932,10 +983,13 @@ static int gk_await(grok_client *c, int want_id, char **acc,
             if (c->meta) c->meta->interrupted = 1;
             grok_interrupt(c);
         }
-        struct pollfd pfd = { c->out_fd, POLLIN, 0 };
-        int pr = poll(&pfd, 1, GK_TICK_MS);
+        struct pollfd pfds[2] = {
+            { c->out_fd, POLLIN, 0 }, { c->err_fd, POLLIN, 0 }
+        };
+        int pr = poll(pfds, 2, GK_TICK_MS);
         if (pr < 0) { if (errno == EINTR) continue; c->len = 0; return 0; }
-        if (pr == 0) continue;
+        if (pfds[1].revents) gk_drain_stderr(c);
+        if (!(pfds[0].revents & (POLLIN | POLLHUP))) continue;
         ssize_t r = read(c->out_fd, tmp, sizeof tmp);
         if (r <= 0) { c->len = 0; return 0; }
 
@@ -985,23 +1039,32 @@ grok_client *grok_start(const grok_opts *opts) {
 
     signal(SIGPIPE, SIG_IGN);
 
-    int in_pipe[2], out_pipe[2];
+    int in_pipe[2], out_pipe[2], err_pipe[2];
     if (pipe(in_pipe) != 0) return NULL;
     if (pipe(out_pipe) != 0) { close(in_pipe[0]); close(in_pipe[1]); return NULL; }
+    if (pipe(err_pipe) != 0) {
+        close(in_pipe[0]); close(in_pipe[1]);
+        close(out_pipe[0]); close(out_pipe[1]);
+        return NULL;
+    }
 
     pid_t pid = fork();
     if (pid < 0) {
         close(in_pipe[0]); close(in_pipe[1]);
         close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
         return NULL;
     }
     if (pid == 0) {
         if (dup2(in_pipe[0], STDIN_FILENO) < 0)   _exit(126);
         if (dup2(out_pipe[1], STDOUT_FILENO) < 0) _exit(126);
+        if (dup2(err_pipe[1], STDERR_FILENO) < 0) _exit(126);
         if (in_pipe[0]  != STDIN_FILENO)  close(in_pipe[0]);
         if (in_pipe[1]  != STDIN_FILENO)  close(in_pipe[1]);
         if (out_pipe[0] != STDOUT_FILENO) close(out_pipe[0]);
         if (out_pipe[1] != STDOUT_FILENO) close(out_pipe[1]);
+        if (err_pipe[0] != STDERR_FILENO) close(err_pipe[0]);
+        if (err_pipe[1] != STDERR_FILENO) close(err_pipe[1]);
         if (o.cwd && *o.cwd) { if (chdir(o.cwd) != 0) _exit(126); }
 
         const char *argv[16];
@@ -1019,17 +1082,21 @@ grok_client *grok_start(const grok_opts *opts) {
 
     close(in_pipe[0]);
     close(out_pipe[1]);
+    close(err_pipe[1]);
     fcntl(in_pipe[1], F_SETFD, FD_CLOEXEC);
     fcntl(out_pipe[0], F_SETFD, FD_CLOEXEC);
+    fcntl(err_pipe[0], F_SETFD, FD_CLOEXEC);
     grok_client *c = calloc(1, sizeof *c);
     if (!c) {
-        close(in_pipe[1]); close(out_pipe[0]);
+        close(in_pipe[1]); close(out_pipe[0]); close(err_pipe[0]);
         kill(pid, SIGKILL); waitpid(pid, NULL, 0);
         return NULL;
     }
     c->pid = pid;
     c->in_fd = in_pipe[1];
     c->out_fd = out_pipe[0];
+    c->err_fd = err_pipe[0];
+    fcntl(c->err_fd, F_SETFL, O_NONBLOCK);
     c->next_id = 1;
     c->cwd = (o.cwd && *o.cwd) ? strdup(o.cwd) : NULL;
     c->sys = (o.append_system && *o.append_system) ? strdup(o.append_system) : NULL;
@@ -1174,7 +1241,9 @@ static int gk_apply_model(grok_client *c) {
     cJSON_AddStringToObject(p, "sessionId", c->session_id);
     cJSON_AddStringToObject(p, "modelId", c->model);
     if (!gk_write(c, req) || !gk_await(c, id, NULL, NULL, 0, 0)) {
-        fprintf(stderr, "grok: could not select model %s\n", c->model);
+        char line[256];
+        int n = snprintf(line, sizeof line, "grok: could not select model %s\n", c->model);
+        if (n > 0) gk_append_error(c, line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
         return 0;
     }
     snprintf(c->model_id, sizeof c->model_id, "%s", c->model);
@@ -1281,6 +1350,7 @@ void grok_stop(grok_client *c) {
         }
     }
     if (c->out_fd >= 0) close(c->out_fd);
+    if (c->err_fd >= 0) close(c->err_fd);
     gk_reset_tools(c);
     free(c->cwd);
     free(c->sys);
