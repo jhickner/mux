@@ -325,6 +325,10 @@ int models_for(const char *backend, const struct pick_item **out)
     }
     snprintf(l->backend, sizeof l->backend, "%s", backend);
 
+    char detail[DETAIL_BYTES];
+    snprintf(detail, sizeof detail, "whatever the %s CLI is configured to use", backend);
+    push(l, "default", detail);
+
     if (!strcmp(backend, "claude")) {
         fill_static(l, CLAUDE, (int)(sizeof CLAUDE / sizeof *CLAUDE));
     } else if (!strcmp(backend, "codex")) {
@@ -332,14 +336,11 @@ int models_for(const char *backend, const struct pick_item **out)
     } else if (!strcmp(backend, "pi")) {
         fill_pi(l);
     } else if (!strcmp(backend, "grok")) {
+        int before = l->n;
         fill_grok(l);
-        if (!l->n)
+        if (l->n == before)
             fill_static(l, GROK, (int)(sizeof GROK / sizeof *GROK));
     }
-
-    char detail[DETAIL_BYTES];
-    snprintf(detail, sizeof detail, "whatever the %s CLI is configured to use", backend);
-    push(l, "default", detail);
 
     *out = l->items;
     return l->n;
