@@ -30,6 +30,7 @@
 #define KEY_NEW    0x0e   /* ctrl-n */
 #define KEY_GO     0x07   /* ctrl-g */
 #define KEY_RENAME 0x12   /* ctrl-r */
+#define KEY_ASK    0x10   /* ctrl-p */
 
 #define MAX_ROWS 128
 
@@ -379,6 +380,58 @@ static void open_new(void)
     ui_flush();
 }
 
+// A new session started from the list and left to run: the prompt is typed
+// here, what it runs as is taken from the row it was started off, and the
+// window stays where it was rather than following it in.
+static void ask_new(const struct row *r, const struct live_session *live)
+{
+    const char *backend = NULL, *model = NULL, *cwd = NULL;
+    if (r->kind == ROW_TAB) {
+        const struct session *s = workspace_at(r->at);
+        if (s) {
+            backend = session_backend(s);
+            model = session_model_label(s);
+            cwd = session_cwd(s);
+        }
+    } else if (r->kind == ROW_LIVE && r->at >= 0) {
+        const struct live_session *v = &live[r->at];
+        backend = v->backend;
+        model = v->model;
+        cwd = v->cwd;
+    }
+    if (!backend) {
+        const struct session *here = workspace_current();
+        if (!here)
+            return;
+        backend = session_backend(here);
+        model = session_model_label(here);
+        cwd = session_cwd(here);
+    }
+
+    char *line = ask_run("a new session, with this to get on with", NULL);
+    if (!line)
+        return;
+    if (!*line) {
+        free(line);
+        return;
+    }
+
+    int was = workspace_index();
+    int at = workspace_spawn(backend, model, NULL, cwd, NULL);
+    if (at < 0) {
+        ui_error("could not start the %s CLI", backend);
+        ui_put("\n");
+        ui_flush();
+        free(line);
+        return;
+    }
+    // Back to what the window was showing before the turn is sent, so the new
+    // session's prompt does not take the sticky line off the tab in front.
+    workspace_show(was);
+    workspace_send(at, line, NULL);
+    free(line);
+}
+
 // A session another window is holding is renamed through the shared title
 // file: that window reads the name back the next time it publishes itself.
 static void rename_row(const struct row *r, struct live_session *live)
@@ -562,7 +615,7 @@ static int switch_once(void)
         items[i].detail = rows[i].detail;
     }
 
-    char shortcuts[7] = {KEY_CLOSE, KEY_NEW, KEY_GO, KEY_RENAME, '\n',
+    char shortcuts[8] = {KEY_CLOSE, KEY_NEW, KEY_ASK, KEY_GO, KEY_RENAME, '\n',
                          PICK_KEY_RIGHT, 0};
     int pressed = 0;
     // Going to a session leaves this window for the one holding it, which
@@ -570,7 +623,7 @@ static int switch_once(void)
     char title[256];
     snprintf(title, sizeof title,
              "sessions \xc2\xb7 enter: bring here%s \xc2\xb7 ^n: new "
-             "\xc2\xb7 ^r: rename \xc2\xb7 ^x: close",
+             "\xc2\xb7 ^p: new + prompt \xc2\xb7 ^r: rename \xc2\xb7 ^x: close",
              livelist_tmux_window()[0] ? " \xc2\xb7 shift-enter: go there" : "");
     struct listing listing = {rows, n, spin, marks, &live, &nlive, 0, 0};
     sync_columns(&listing);
@@ -618,6 +671,13 @@ static int switch_once(void)
         free(live);
         open_new();
         return 0;
+    }
+
+    // Started and left running: the list is what the window comes back to.
+    if (pressed == KEY_ASK) {
+        ask_new(&chosen, live);
+        free(live);
+        return 1;
     }
 
     if (pressed == KEY_GO || pressed == '\n') {
