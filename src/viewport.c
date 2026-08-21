@@ -302,8 +302,11 @@ unsigned viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud
     open_free = free_ud;
 
     // With no viewport there is no entry to own the payload; item_end frees it.
+    // No entry means no mark either: an id handed out now would be taken by
+    // whichever entry is opened next, and the caller would be amending
+    // somebody else's payload through it.
     open_wrapped = viewport_active();
-    return next_id;
+    return open_wrapped ? next_id : 0;
 }
 
 void viewport_item_end(void)

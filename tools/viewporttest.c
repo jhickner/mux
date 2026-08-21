@@ -675,6 +675,30 @@ static void check_dump(void)
     free(text);
 }
 
+// A mark is a promise that an entry exists to amend. With the screen handed to
+// a child nothing is kept, so the caller must be told there is no entry rather
+// than an id the next entry will take.
+static void check_suspended_mark(void)
+{
+    viewport_clear();
+    set_size(80, 24);
+
+    viewport_suspend();
+    unsigned muted = viewport_item_begin(width_render, NULL, NULL);
+    width_render(NULL, 80);
+    viewport_item_end();
+    viewport_resume();
+
+    unsigned next = viewport_item_begin(width_render, NULL, NULL);
+    width_render(NULL, 80);
+    viewport_item_end();
+
+    if (muted)
+        fail("an entry opened while the screen is suspended has no mark");
+    if (muted == next)
+        fail("the entry after a suspended one takes its own mark");
+}
+
 int main(void)
 {
     set_size(80, 24);
@@ -714,6 +738,7 @@ int main(void)
     check_resize_strands_nothing(&s);
     check_stash(&s);
     check_dump();
+    check_suspended_mark();
 
     fflush(stdout);
     if (failures)

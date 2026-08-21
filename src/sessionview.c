@@ -529,7 +529,9 @@ void view_cluster_paint(struct turnview *v)
     k->spans = spans;
     k->gap = v->gap;
     v->mark = keep(k);
-    v->onscreen = 1;
+    // No mark means the screen was somebody else's and nothing was kept: the
+    // next paint starts an entry of its own rather than amending one.
+    v->onscreen = v->mark != 0;
 }
 
 #define TOOL_PREVIEW_ROWS 3
