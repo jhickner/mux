@@ -235,7 +235,7 @@ static int group_rows(const struct row *in, int n, struct row *out,
         if (m < max) {
             out[m].kind = ROW_HEAD;
             snprintf(out[m].label, sizeof out[m].label, "%s", group);
-            heading[m] = 1;
+            heading[m] = PICK_HEADING;
             m++;
         }
         for (int i = 0; i < n; i++) {
@@ -598,7 +598,7 @@ static int switch_once(void)
         r->kind = ROW_NEW;
         snprintf(r->label, sizeof r->label, "+ new session");
         snprintf(r->detail, sizeof r->detail, "pick a backend and model");
-        heading[n++] = 0;
+        heading[n++] = PICK_APART;
     }
 
     struct pick_item *items = calloc((size_t)n, sizeof *items);

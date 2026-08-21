@@ -39,7 +39,13 @@ static const char *const SPIN[] = {"\xe2\xa0\x8b", "\xe2\xa0\x99", "\xe2\xa0\xb9
 
 static int item_heading(const struct view *v, int i)
 {
-    return v->heading && v->heading[i];
+    return v->heading && v->heading[i] == PICK_HEADING;
+}
+
+// A row that is still a row, but wants the blank line a heading would get.
+static int item_apart(const struct view *v, int i)
+{
+    return v->heading && v->heading[i] == PICK_APART;
 }
 
 static int item_spins(const struct view *v, int i)
@@ -59,6 +65,11 @@ static int animating(const struct view *v)
 static int row_heading(const struct view *v, int row)
 {
     return item_heading(v, v->order[row]);
+}
+
+static int row_apart(const struct view *v, int row)
+{
+    return item_apart(v, v->order[row]);
 }
 
 // Headings are passed over: the highlight only ever rests on something that
@@ -89,17 +100,17 @@ static void step(struct view *v, int dir)
 }
 
 // As many rows as the window has room for, once the title, the count line and
-// each group's blank line are taken out.
+// every blank line that sets a row off from the one above it are taken out.
 static int visible_cap(const struct view *v)
 {
     int rows = tty_rows() - 3;
     if (v->heading) {
-        int groups = 0;
+        int breaks = 0;
         for (int i = 0; i < v->count; i++)
-            if (row_heading(v, i))
-                groups++;
-        if (groups > 1)
-            rows -= groups - 1;
+            if (row_heading(v, i) || row_apart(v, i))
+                breaks++;
+        if (breaks > 1)
+            rows -= breaks - 1;
     }
     return rows < 5 ? 5 : rows;
 }
@@ -225,6 +236,11 @@ static void paint(void *ud)
             ui_put("\n");
             rows++;
             continue;
+        }
+        // Set off from the group above it without being a heading of its own.
+        if (row_apart(v, row) && row > v->top) {
+            ui_put("\n");
+            rows++;
         }
         int selected = (row == sel);
         ui_esc(ui_style(selected ? UI_ACCENT : UI_RESET));

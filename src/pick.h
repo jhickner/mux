@@ -23,11 +23,17 @@ int pick_run_ex(const char *title, const struct pick_item *items, int count,
 // right arrow; both come back in *pressed the same way.
 #define PICK_KEY_RIGHT '\x1c'
 
+// Values for pick_live.heading below.
+#define PICK_HEADING 1   /* a group header: dim, never selectable, dropped by
+                            a query that empties its group */
+#define PICK_APART   2   /* an ordinary row, set off by a blank line above */
+
 //
 // A list whose rows say what they are doing while it is open.
 struct pick_live {
-    // A nonzero heading[i] makes item i a group header: drawn dim, never
-    // selectable, and dropped while a query narrows the list.
+    // What sets item i apart from the row above it: PICK_HEADING makes it a
+    // group header, PICK_APART leaves it an ordinary row with a blank line
+    // over it. Zero for everything else.
     const unsigned char *heading;
     // A status column at the front of every other row: a turning spinner
     // where spin[i] is set, otherwise the still mark[i], where there is one.
