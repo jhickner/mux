@@ -9,10 +9,6 @@ struct prompt;
 
 void chrome_bind(struct prompt *p);
 
-// The row of tabs above everything else, when the window holds more than one
-// session. Unset draws nothing.
-void chrome_tabs(int (*rows)(void), void (*paint)(void));
-
 void chrome_paint(void);
 
 // Repaints only the spinner row. Zero if the block cannot take a row swap.
