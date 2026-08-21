@@ -272,7 +272,7 @@ static void do_model(struct session *s, const char *arg)
         for (int i = 0; i < count; i++)
             if (strcmp(choices[i].label, current) == 0)
                 initial = i;
-        int index = pick_run("select model", choices, count, initial);
+        int index = pick_run_filter("select model", choices, count, initial);
         if (index < 0)
             return;
         chosen = choices[index].label;

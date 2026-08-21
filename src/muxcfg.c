@@ -269,14 +269,15 @@ void muxcfg_label(const struct mux_spec *m, char *out, size_t cap)
 // "default" is how the pickers spell "leave it to the CLI", which is the empty
 // string in the store.
 static int pick_field(const char *title, const struct pick_item *items, int count,
-                      char *out, size_t cap)
+                      char *out, size_t cap, int filter)
 {
     int initial = 0;
     for (int i = 0; i < count; i++)
         if (!strcmp(items[i].label, *out ? out : "default"))
             initial = i;
 
-    int index = pick_run(title, items, count, initial);
+    int index = filter ? pick_run_filter(title, items, count, initial)
+                       : pick_run(title, items, count, initial);
     if (index < 0)
         return 0;
     snprintf(out, cap, "%s", strcmp(items[index].label, "default") ? items[index].label : "");
@@ -287,14 +288,14 @@ static int pick_model(struct mux_spec *m)
 {
     int                     count = 0;
     const struct pick_item *items = cmd_model_choices(m->backend, &count);
-    return pick_field("model", items, count, m->model, sizeof m->model);
+    return pick_field("model", items, count, m->model, sizeof m->model, 1);
 }
 
 static int pick_effort(struct mux_spec *m)
 {
     int                     count = 0;
     const struct pick_item *items = cmd_effort_choices(m->backend, &count);
-    return pick_field("effort", items, count, m->effort, sizeof m->effort);
+    return pick_field("effort", items, count, m->effort, sizeof m->effort, 0);
 }
 
 static int pick_backend(char *out, size_t cap, const char *current)
