@@ -16,6 +16,8 @@ static const struct pick_item NONE[] = {{"default", NULL}};
 const struct pick_item *cmd_model_choices(const char *backend, int *count);
 const struct pick_item *cmd_effort_choices(const char *backend, int *count);
 int pick_run(const char *title, const struct pick_item *items, int count, int initial);
+int pick_run_filter(const char *title, const struct pick_item *items, int count,
+                    int initial);
 int pick_run_keys(const char *title, const struct pick_item *items, int count,
                   int initial, const char *shortcuts, int *pressed);
 char *ask_run(const char *title, const char *initial);
@@ -40,6 +42,12 @@ const struct pick_item *cmd_effort_choices(const char *backend, int *count)
     return NONE;
 }
 int pick_run(const char *title, const struct pick_item *items, int count, int initial)
+{
+    (void)title, (void)items, (void)count, (void)initial;
+    return -1;
+}
+int pick_run_filter(const char *title, const struct pick_item *items, int count,
+                    int initial)
 {
     (void)title, (void)items, (void)count, (void)initial;
     return -1;
