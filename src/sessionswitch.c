@@ -417,7 +417,8 @@ struct listing {
     const char         **marks;
     struct live_session **live;
     int                 *nlive;
-    int                  ticks;
+    double               read_at;
+    unsigned long        sig;
 };
 
 static void sync_columns(struct listing *l)
@@ -428,13 +429,36 @@ static void sync_columns(struct listing *l)
     }
 }
 
-// Every few spinner frames the records are read again, so a turn starting in
+// What the rows are showing, so a re-read that found nothing new does not
+// cost a repaint.
+static unsigned long listing_sig(const struct listing *l)
+{
+    unsigned long h = 5381;
+    for (int i = 0; i < l->n; i++) {
+        const struct row *r = &l->rows[i];
+        const char *parts[] = {r->label, r->detail, r->mark};
+        for (size_t p = 0; p < sizeof parts / sizeof *parts; p++)
+            for (const char *c = parts[p]; c && *c; c++)
+                h = h * 33 + (unsigned char)*c;
+        h = h * 33 + (unsigned long)(r->spin + 1);
+    }
+    return h;
+}
+
+// A few times a second the records are read again, so a turn starting in
 // another window reaches this list without closing it.
 static int relist(void *ud)
 {
     struct listing *l = ud;
-    if (++l->ticks % 6)
+    double now = now_seconds();
+    if (l->read_at > 0 && now - l->read_at < 0.45)
         return 0;
+    l->read_at = now;
+
+    // The window is parked in this list, so its own turns only move on if the
+    // list pumps them: without this a tab that finishes underneath stays as it
+    // was when the list opened.
+    workspace_pump();
 
     struct live_session *fresh = NULL;
     int nfresh = livelist_load(&fresh);
@@ -473,6 +497,11 @@ static int relist(void *ud)
         }
     }
     sync_columns(l);
+
+    unsigned long sig = listing_sig(l);
+    if (sig == l->sig)
+        return 0;
+    l->sig = sig;
     return 1;
 }
 
@@ -543,8 +572,9 @@ static int switch_once(void)
              "sessions \xc2\xb7 enter: bring here%s \xc2\xb7 ^n: new "
              "\xc2\xb7 ^r: rename \xc2\xb7 ^x: close",
              livelist_tmux_window()[0] ? " \xc2\xb7 shift-enter: go there" : "");
-    struct listing listing = {rows, n, spin, marks, &live, &nlive, 0};
+    struct listing listing = {rows, n, spin, marks, &live, &nlive, 0, 0};
     sync_columns(&listing);
+    listing.sig = listing_sig(&listing);
     struct pick_live shown = {heading, spin, marks, relist, &listing};
     int picked = pick_run_live(title, items, n, initial, &shown, shortcuts, &pressed);
 

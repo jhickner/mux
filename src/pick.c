@@ -56,6 +56,9 @@ static int fuzzy(const char *name, const char *q)
     return score;
 }
 
+// How often a live list re-reads while nothing on it is spinning.
+#define LIVE_POLL_MS 500
+
 static const char *const SPIN[] = {"\xe2\xa0\x8b", "\xe2\xa0\x99", "\xe2\xa0\xb9",
                                   "\xe2\xa0\xb8", "\xe2\xa0\xbc", "\xe2\xa0\xb4",
                                   "\xe2\xa0\xa6", "\xe2\xa0\xa7", "\xe2\xa0\x87",
@@ -407,17 +410,21 @@ static int run(const char *title, const struct pick_item *items, int count,
     for (;;) {
         tty_event ev;
         int turning = animating(&v);
-        if (!tty_read(&ev, turning ? SPIN_FRAME_MS : -1)) {
+        // Nothing is turning, but a list that watches other windows still has
+        // to hear about a session that starts working while it sits idle.
+        int watching = v.live && v.live->tick;
+        int wait = turning ? SPIN_FRAME_MS : (watching ? LIVE_POLL_MS : -1);
+        if (!tty_read(&ev, wait)) {
             if (chrome_modal_interrupted())
                 goto done;
-            if (!turning)
+            if (!turning && !watching)
                 continue;
             // A frame of the spinners, and a chance for the caller to say the
             // rows have moved on.
-            int moved = v.live && v.live->tick && v.live->tick(v.live->ud);
+            int moved = watching && v.live->tick(v.live->ud);
             if (moved)
                 refilter(&v);
-            if (spin_advance(&v.frame, &v.frame_at) || moved)
+            if ((turning && spin_advance(&v.frame, &v.frame_at)) || moved)
                 chrome_paint();
             continue;
         }
