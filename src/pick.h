@@ -13,11 +13,11 @@ int pick_run(const char *title, const struct pick_item *items, int count, int in
 // backspace and ctrl-u walk the query back, escape clears it before leaving.
 int pick_run_filter(const char *title, const struct pick_item *items, int count, int initial);
 
-// As pick_run, but the keys in `shortcuts` also close the list: the highlighted
-// row comes back, with the key that took it in *pressed (0 for enter).
-// Both at once: typing narrows the list and the shortcut keys still close it.
-int pick_run_ex(const char *title, const struct pick_item *items, int count,
-                int initial, const char *shortcuts, int *pressed);
+// How a list is searched, for the ones that can be.
+enum pick_search {
+    PICK_SEARCH_TYPE,   /* every typed letter narrows the list */
+    PICK_SEARCH_SLASH,  /* '/' opens a query; until then letters are shortcuts */
+};
 
 // A shortcuts string may hold '\n' for shift-enter, or PICK_KEY_RIGHT for the
 // right arrow; both come back in *pressed the same way.
@@ -48,10 +48,13 @@ struct pick_live {
     void  *ud;
 };
 
-// As pick_run_ex, with the grouping and the status column above.
+// A live list, grouped, with the status column above. The keys in `shortcuts`
+// close it: the highlighted row comes back, with the key that took it in
+// *pressed (0 for enter). A list whose shortcuts are letters wants
+// PICK_SEARCH_SLASH, so that typing one means the key and not the letter.
 int pick_run_live(const char *title, const struct pick_item *items, int count,
                   int initial, const struct pick_live *live,
-                  const char *shortcuts, int *pressed);
+                  enum pick_search search, const char *shortcuts, int *pressed);
 
 int pick_run_keys(const char *title, const struct pick_item *items, int count,
                   int initial, const char *shortcuts, int *pressed);

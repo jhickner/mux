@@ -26,6 +26,8 @@ struct view {
     int count;      // how many of order are live
     int sel;        // an index into order
     int filter;     // typing narrows the list instead of jumping through it
+    int slash;      // the query waits behind '/', so letters can be shortcuts
+    int searching;  // '/' was pressed and the query is taking letters
     char query[64];
 };
 
@@ -171,7 +173,7 @@ static void refilter(struct view *v)
 
 static int run(const char *title, const struct pick_item *items, int count,
                int initial, const struct pick_live *live, const char *shortcuts,
-               int *pressed, int filter);
+               int *pressed, int filter, int slash);
 
 // A modal section: chrome.c paints it in place of the whole stack.
 static void paint(void *ud)
@@ -181,9 +183,14 @@ static void paint(void *ud)
     int count = v->count, sel = v->sel;
     char title[192];
 
-    if (v->filter && v->query[0])
-        snprintf(title, sizeof title, "%s \xc2\xb7 %s", v->title, v->query);
-    else if (v->filter)
+    if (v->filter && (v->searching || v->query[0])) {
+        // The keys the list offers step aside while it is being searched: what
+        // the query says is the only part that is changing.
+        const char *rest = strstr(v->title, " \xc2\xb7 ");
+        int lead = rest ? (int)(rest - v->title) : (int)strlen(v->title);
+        snprintf(title, sizeof title, "%.*s \xc2\xb7 /%s", lead, v->title, v->query);
+    }
+    else if (v->filter && !v->slash)
         snprintf(title, sizeof title, "%s \xc2\xb7 type to filter", v->title);
     else
         snprintf(title, sizeof title, "%s", v->title);
@@ -317,31 +324,26 @@ static void paint(void *ud)
 
 int pick_run(const char *title, const struct pick_item *items, int count, int initial)
 {
-    return run(title, items, count, initial, NULL, NULL, NULL, 0);
+    return run(title, items, count, initial, NULL, NULL, NULL, 0, 0);
 }
 
 int pick_run_filter(const char *title, const struct pick_item *items, int count, int initial)
 {
-    return run(title, items, count, initial, NULL, NULL, NULL, 1);
-}
-
-int pick_run_ex(const char *title, const struct pick_item *items, int count,
-                int initial, const char *shortcuts, int *pressed)
-{
-    return run(title, items, count, initial, NULL, shortcuts, pressed, 1);
+    return run(title, items, count, initial, NULL, NULL, NULL, 1, 0);
 }
 
 int pick_run_live(const char *title, const struct pick_item *items, int count,
                   int initial, const struct pick_live *live,
-                  const char *shortcuts, int *pressed)
+                  enum pick_search search, const char *shortcuts, int *pressed)
 {
-    return run(title, items, count, initial, live, shortcuts, pressed, 1);
+    return run(title, items, count, initial, live, shortcuts, pressed, 1,
+               search == PICK_SEARCH_SLASH);
 }
 
 int pick_run_keys(const char *title, const struct pick_item *items, int count,
                   int initial, const char *shortcuts, int *pressed)
 {
-    return run(title, items, count, initial, NULL, shortcuts, pressed, 0);
+    return run(title, items, count, initial, NULL, shortcuts, pressed, 0, 0);
 }
 
 // Typed bytes go to the query in filter mode; everywhere else they are
@@ -364,7 +366,7 @@ static int type_into(struct view *v, const char *s, size_t n)
 
 static int run(const char *title, const struct pick_item *items, int count,
                int initial, const struct pick_live *live, const char *shortcuts,
-               int *pressed, int filter)
+               int *pressed, int filter, int slash)
 {
     if (pressed)
         *pressed = 0;
@@ -383,6 +385,7 @@ static int run(const char *title, const struct pick_item *items, int count,
     v.heading = live ? live->heading : NULL;
     v.n = count;
     v.filter = filter;
+    v.slash = slash;
     v.order = calloc((size_t)count, sizeof *v.order);
     v.score = calloc((size_t)count, sizeof *v.score);
     if (!v.order || !v.score) {
@@ -422,8 +425,9 @@ static int run(const char *title, const struct pick_item *items, int count,
                 chrome_paint();
             continue;
         }
+        int typing = filter && (!slash || v.searching);
         if (ev.key == TK_TEXT) {
-            int took = filter && type_into(&v, ev.text, ev.text ? strlen(ev.text) : 0);
+            int took = typing && type_into(&v, ev.text, ev.text ? strlen(ev.text) : 0);
             free(ev.text);
             if (!took)
                 continue;
@@ -451,8 +455,13 @@ static int run(const char *title, const struct pick_item *items, int count,
             settle(&v, -1);
             break;
         case TK_BACKSPACE: {
-            if (!filter || !v.query[0])
+            if (!typing)
                 break;
+            if (!v.query[0]) {
+                // Backspacing out of an empty query leaves the search.
+                v.searching = 0;
+                break;
+            }
             size_t len = strlen(v.query);
             v.query[len - 1] = '\0';
             refilter(&v);
@@ -485,8 +494,9 @@ static int run(const char *title, const struct pick_item *items, int count,
             result = v.order[v.sel];
             goto done;
         case TK_ESCAPE:
-            if (filter && v.query[0]) {
+            if (filter && (v.searching || v.query[0])) {
                 v.query[0] = '\0';
+                v.searching = 0;
                 refilter(&v);
                 break;
             }
@@ -501,8 +511,14 @@ static int run(const char *title, const struct pick_item *items, int count,
                 refilter(&v);
                 break;
             }
+            if (filter && slash && !v.searching && ev.cp == '/') {
+                v.searching = 1;
+                break;
+            }
 
-            if (shortcuts && ev.cp > 0 && ev.cp < 128 &&
+            // While a query is taking letters only the control keys still
+            // reach the shortcuts: a letter means itself.
+            if (shortcuts && ev.cp > 0 && ev.cp < 128 && !(typing && ev.cp >= 0x20) &&
                 strchr(shortcuts, (int)ev.cp)) {
                 if (!v.count || row_heading(&v, v.sel))
                     break;
@@ -512,7 +528,7 @@ static int run(const char *title, const struct pick_item *items, int count,
                 goto done;
             }
 
-            if (filter) {
+            if (typing) {
                 char c = (char)ev.cp;
                 if (ev.cp < 128 && type_into(&v, &c, 1))
                     refilter(&v);

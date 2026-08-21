@@ -26,11 +26,16 @@
 #include "vendor/agents/backend.h"
 #include "workspace.h"
 
-#define KEY_CLOSE  0x18   /* ctrl-x */
-#define KEY_NEW    0x0e   /* ctrl-n */
-#define KEY_GO     0x07   /* ctrl-g */
-#define KEY_RENAME 0x12   /* ctrl-r */
-#define KEY_ASK    0x10   /* ctrl-p */
+// The list holds letters for itself — searching is behind '/' — so the keys
+// are the letters they stand for. The control versions still answer, for the
+// hands that learned them.
+#define KEY_CLOSE  'x'
+#define KEY_NEW    'n'
+#define KEY_GO     'g'
+#define KEY_RENAME 'r'
+#define KEY_ASK    'p'
+
+#define KEY_CTRL(c) ((c) & 0x1f)
 
 #define MAX_ROWS 128
 
@@ -624,26 +629,34 @@ static int switch_once(void)
         items[i].detail = rows[i].detail;
     }
 
-    char shortcuts[8] = {KEY_CLOSE, KEY_NEW, KEY_ASK, KEY_GO, KEY_RENAME, '\n',
-                         PICK_KEY_RIGHT, 0};
+    char shortcuts[16] = {KEY_CLOSE, KEY_NEW, KEY_ASK, KEY_GO, KEY_RENAME,
+                          KEY_CTRL(KEY_CLOSE), KEY_CTRL(KEY_NEW), KEY_CTRL(KEY_ASK),
+                          KEY_CTRL(KEY_GO), KEY_CTRL(KEY_RENAME), '\n',
+                          PICK_KEY_RIGHT, 0};
     int pressed = 0;
     // Going to a session leaves this window for the one holding it, which
     // only tmux can do.
     char title[256];
     snprintf(title, sizeof title,
-             "sessions \xc2\xb7 enter: bring here%s \xc2\xb7 ^n: new "
-             "\xc2\xb7 ^p: new + prompt \xc2\xb7 ^r: rename \xc2\xb7 ^x: close",
+             "sessions \xc2\xb7 enter: bring here%s \xc2\xb7 n: new "
+             "\xc2\xb7 p: new + prompt \xc2\xb7 r: rename \xc2\xb7 x: close "
+             "\xc2\xb7 /: search",
              livelist_tmux_window()[0] ? " \xc2\xb7 shift-enter: go there" : "");
     struct listing listing = {rows, n, spin, marks, &live, &nlive, 0, 0};
     sync_columns(&listing);
     listing.sig = listing_sig(&listing);
     struct pick_live shown = {.heading = heading, .spin = spin, .mark = marks,
                               .tick = relist, .ud = &listing};
-    int picked = pick_run_live(title, items, n, initial, &shown, shortcuts, &pressed);
+    int picked = pick_run_live(title, items, n, initial, &shown, PICK_SEARCH_SLASH,
+                               shortcuts, &pressed);
 
     struct row chosen = {0};
     if (picked >= 0)
         chosen = rows[picked];
+
+    // One action per key, whichever of the two ways it was pressed.
+    if (pressed > 0 && pressed < 0x20 && pressed != '\n' && pressed != PICK_KEY_RIGHT)
+        pressed |= 0x60;
 
     // Right is the way into the row: a session of this window's is switched
     // to, and one another window is holding is gone to, where it already is.
