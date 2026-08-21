@@ -84,6 +84,8 @@ typedef struct {
     long   context_window;
     int    is_error;
     int    interrupted;   /* the abort predicate ended the turn */
+    char   subtype[32];   /* the driver's own word for how the turn ended, when
+                             it reports one: "success", "error_max_turns", ... */
 } backend_result;
 
 /* Subscription rate limit reported by a backend's local protocol. This is
@@ -429,6 +431,7 @@ static char *backend_claude_ask_ex(Backend *b, const char *user, backend_result 
         meta->context_window = cr->context_window;
         meta->is_error = cr->is_error;
         meta->interrupted = cr->interrupted;
+        snprintf(meta->subtype, sizeof meta->subtype, "%s", cr->subtype);
     }
     return reply;
 }

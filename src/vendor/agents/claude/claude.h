@@ -258,6 +258,7 @@ struct claude_client {
     int   bg_tasks;           /* background tasks the CLI last reported open   */
     int   awaiting;           /* a send is out and has not been given its turn */
     int   turn_mine;          /* the open turn answers this client's send      */
+    char  stall[160];         /* why a send came back with no turn of its own  */
     char *buf;                /* line-assembly buffer for out_fd       */
     size_t len, cap;
     pthread_t warm_thread;
@@ -419,7 +420,10 @@ const char *claude_last_error(claude_client *c) {
     /* Trim trailing newlines so callers can print it as one message. */
     while (c->err_len > 0 && (c->err[c->err_len - 1] == '\n' || c->err[c->err_len - 1] == '\r'))
         c->err[--c->err_len] = '\0';
-    return c->err_len ? c->err : NULL;
+    if (c->err_len) return c->err;
+    /* A send that never got a turn says so itself: the CLI wrote nothing to
+     * stderr, so there is nothing else to report it with. */
+    return c->stall[0] ? c->stall : NULL;
 }
 
 const char *claude_auth_source(claude_client *c) {
@@ -1125,6 +1129,7 @@ static char *cl_send(claude_client *c, const char *user_text, int content_block)
     } else {
         cJSON_AddStringToObject(inner, "content", user_text);
     }
+    c->stall[0] = '\0';
     c->awaiting = 1;
     if (!cl_write_json(c, msg)) { c->awaiting = 0; return NULL; }
 
@@ -1155,9 +1160,15 @@ static char *cl_send(claude_client *c, const char *user_text, int content_block)
          * into a turn that was already running — whose result was read past as
          * somebody else's. Nothing more is coming: end the turn on what the
          * stream already showed rather than wait forever. */
+        /* Reported as a failure rather than as an empty answer: the send was
+         * never given a turn, so there is no reply -- which is a different
+         * thing from a turn that ran and said nothing. */
         if (!c->turn_open && ++quiet > CL_STRAY_QUIET_TICKS) {
             c->awaiting = 0;
-            return strdup("");
+            snprintf(c->stall, sizeof c->stall,
+                     "the CLI never opened a turn for this message (%d seconds "
+                     "of silence)", (CL_STRAY_QUIET_TICKS * CL_TICK_MS) / 1000);
+            return NULL;
         }
     }
     c->awaiting = 0;

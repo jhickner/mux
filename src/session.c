@@ -1379,6 +1379,15 @@ static int turn_finish(struct session *s, char *reply, const backend_result *met
         const char *detail = session_last_error(s);
         if (s->silent)
             return 0;
+        // Quiet is a caller reading stdout for the answer: a reason written
+        // there would be taken for one.
+        if (s->quiet) {
+            if (detail)
+                fprintf(stderr, "%s: %s\n", s->backend, detail);
+            else
+                fprintf(stderr, "the %s process stopped responding\n", s->backend);
+            return 0;
+        }
         if (detail)
             ui_error("%s: %s", s->backend, detail);
         else
@@ -1404,11 +1413,20 @@ static int turn_finish(struct session *s, char *reply, const backend_result *met
             ui_put("\n");
         } else {
             const char *detail = s->agent->last_error(s->agent);
+            char why[128];
+            // The driver's own word for how the turn ended, when it has one and
+            // it is not the ordinary one: an empty answer is never expected, so
+            // whatever the backend can say about it is worth carrying out.
+            if (m.subtype[0] && strcmp(m.subtype, "success") != 0)
+                snprintf(why, sizeof why, "the turn ended without a reply (%s)",
+                         m.subtype);
+            else
+                snprintf(why, sizeof why, "the turn ended without a reply");
             fprintf(stderr, "%s\n",
                     detail && *detail ? detail
                     : m.interrupted   ? "the turn was interrupted"
                     : m.is_error      ? "the turn ended in an error"
-                                      : "the turn ended without a reply");
+                                      : why);
         }
     } else if (*reply && !shown) {
         if (s->view.after_activity)
