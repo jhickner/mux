@@ -408,7 +408,7 @@ static void send_notef(const char *fmt, ...)
 // Telegram caps a button's payload at 64 bytes, so what travels is the serial
 // and a row number; what the row means is kept here.
 
-#define MENU_MAX 12
+#define MENU_MAX 16
 
 static struct {
     long serial;                    // 0 when no menu is live
@@ -1569,7 +1569,8 @@ static void send_tabs(void)
     }
     if (n < WORKSPACE_MAX)
         menu_add("+ new conversation", "new");
-    menu_add("resume one from here...", "resume");
+    menu_add("resume past session", "resume");
+    menu_add("cancel", "cancel");
     menu_send("conversations", 1);
 }
 
@@ -1594,16 +1595,18 @@ static void send_resume(void)
         return;
     }
 
+    int room = MENU_MAX - 1;            // the last row is the way back
     menu_begin("resume");
-    for (int i = 0; i < n && i < MENU_MAX; i++) {
+    for (int i = 0; i < n && i < room; i++) {
         char label[80];
         snprintf(label, sizeof label, "%s  %s", past[i].when, past[i].label);
         menu_add(label, past[i].id);
     }
     free(past);
+    menu_add("< back", "back");
     char title[80];
     snprintf(title, sizeof title, "past conversations here%s",
-             n > MENU_MAX ? " (the newest few)" : "");
+             n > room ? " (the newest few)" : "");
     menu_send(title, 1);
 }
 
@@ -1683,20 +1686,31 @@ static char *menu_line(const char *tapped)
             snprintf(line, sizeof line, "/open");
         } else if (!strcmp(payload, "resume")) {
             snprintf(line, sizeof line, "/resume");
+        } else if (!strcmp(payload, "cancel")) {
+            goto nothing;
         } else {
             int at = tab_from_payload(payload);
             if (at < 0) {
                 send_note("that conversation is gone");
-                return NULL;
+                goto nothing;
             }
             snprintf(line, sizeof line, "/tab %d", at + 1);
         }
     } else if (!strcmp(kind, "resume")) {
-        snprintf(line, sizeof line, "/resume %s", payload);
+        if (!strcmp(payload, "back"))
+            snprintf(line, sizeof line, "/tabs");
+        else
+            snprintf(line, sizeof line, "/resume %s", payload);
     } else {
-        return NULL;
+        goto nothing;
     }
     return strdup(line);
+
+nothing:
+    // Nothing to run, so nothing will come along and retire the menu the tap
+    // came from. It has to happen here instead.
+    menu_flush();
+    return NULL;
 }
 
 // ---- running a line -----------------------------------------------------
