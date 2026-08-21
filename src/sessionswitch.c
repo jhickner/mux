@@ -38,6 +38,7 @@ enum row_kind {
     ROW_TAB,
     ROW_LIVE,
     ROW_NEW,
+    ROW_ASK,
     ROW_HEAD,
 };
 
@@ -601,6 +602,14 @@ static int switch_once(void)
         heading[n++] = PICK_APART;
     }
 
+    if (n < MAX_ROWS) {
+        struct row *r = &rows[n];
+        r->kind = ROW_ASK;
+        snprintf(r->label, sizeof r->label, "+ new session, with a prompt");
+        snprintf(r->detail, sizeof r->detail, "started here and left running");
+        heading[n++] = 0;
+    }
+
     struct pick_item *items = calloc((size_t)n, sizeof *items);
     if (!items) {
         free(rows);
@@ -681,10 +690,19 @@ static int switch_once(void)
     }
 
     if (pressed == KEY_GO || pressed == '\n') {
-        if (chosen.kind == ROW_LIVE)
+        if (chosen.kind == ROW_LIVE) {
             jump(&live[chosen.at]);
-        else if (chosen.kind == ROW_TAB)
+        } else if (chosen.kind == ROW_TAB) {
             workspace_show(chosen.at);
+        } else if (chosen.kind == ROW_ASK) {
+            ask_new(&chosen, live);
+            free(live);
+            return 1;
+        } else if (chosen.kind == ROW_NEW) {
+            free(live);
+            open_new();
+            return 0;
+        }
         free(live);
         return 0;
     }
@@ -713,6 +731,10 @@ static int switch_once(void)
         free(live);
         open_new();
         return 0;
+    case ROW_ASK:
+        ask_new(&chosen, live);
+        free(live);
+        return 1;
     case ROW_HEAD:
         break;
     }
