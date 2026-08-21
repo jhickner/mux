@@ -48,6 +48,7 @@ int  workspace_close(int index);
 // prompt says it is; NULL means the line itself.
 int  workspace_send(int index, const char *line, const char *shown);
 int  workspace_queued(int index);
+const char *workspace_queued_at(int index, int i);
 
 // Waits for a tab's turn to end, for a caller that has to run one of its own
 // on this thread. Its output goes to its own screen, as ever.
