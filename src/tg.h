@@ -34,6 +34,11 @@ void tg_run_line(char *line);
 // The session the bridge is attached to, or NULL.
 struct session *tg_session(void);
 
+// Headless: point the bridge at whichever conversation is current now. The
+// chat's own commands do this for themselves; this is for the caller that
+// takes a conversation away.
+void tg_refocus(void);
+
 // `s` is about to be freed or handed to another window: drop the cached
 // pointer if it is the one the bridge is holding.
 void tg_forget_session(struct session *s);

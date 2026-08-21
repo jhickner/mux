@@ -62,7 +62,18 @@ typedef struct {
     char *mime_type;    /* document/photo mime type, else NULL */
     char *media_group_id; /* set (and shared) when several files are sent as one
                              album; NULL for a standalone message */
+    long  message_id;     /* the message this update is about, 0 when unknown */
+    char *callback_data;  /* an inline button was tapped: its payload, else NULL */
+    char *callback_id;    /* the query to answer with tg_answer_callback() */
 } tg_update;
+
+/* One button in an inline keyboard. `data` is what comes back as
+ * tg_update.callback_data when it is tapped: Telegram caps it at 64 bytes, so
+ * it holds a key or an index, never a path. */
+typedef struct {
+    const char *label;
+    const char *data;
+} tg_button;
 
 /* Create/destroy a client. tg_new returns NULL if token is NULL/empty or on
  * allocation/curl-init failure. */
@@ -87,8 +98,8 @@ void       tg_set_log(void (*fn)(const char *msg));
  * tg_update (NULL when 0). Free with tg_updates_free(). Returns -1 on error
  * (message printed to stderr) with *out set to NULL.
  *
- * Only "message" updates are requested; other update types are skipped but
- * still advance the offset so they don't wedge the loop.
+ * Only "message" and "callback_query" updates are requested; other update types
+ * are skipped but still advance the offset so they don't wedge the loop.
  */
 int  tg_get_updates(tg_client *c, long offset, int timeout_s, tg_update **out);
 void tg_updates_free(tg_update *updates, int n);
@@ -102,6 +113,31 @@ int  tg_send_message(tg_client *c, long chat_id, const char *text);
  * Returns 0 when it rendered as markdown, 1 when it fell back to plain text,
  * and -1 when neither send succeeded. */
 int  tg_send_message_md(tg_client *c, long chat_id, const char *text);
+
+/*
+ * Send `text` with a grid of inline buttons under it, `per_row` across. When
+ * `markdown` is nonzero the text is MarkdownV2 (see mdv2.h) and falls back to
+ * plain on rejection, as tg_send_message_md does. Returns the sent message_id,
+ * which tg_edit_message() needs, or -1 on failure.
+ *
+ * A keyboard outlives the moment it was sent: a menu scrolled back to weeks
+ * later still fires. Either version the payloads and ignore stale ones, or edit
+ * the markup away once the tap is handled.
+ */
+long tg_send_keyboard(tg_client *c, long chat_id, const char *text, int markdown,
+                      const tg_button *buttons, int count, int per_row);
+
+/* Replace a sent message's text and buttons in place. `count` of 0 drops the
+ * keyboard, which is how a menu is retired once it has been used. Returns 0 on
+ * success, -1 on failure. */
+int  tg_edit_message(tg_client *c, long chat_id, long message_id, const char *text,
+                     int markdown, const tg_button *buttons, int count, int per_row);
+
+/* Acknowledge a tap. Until this lands the button spins on the sender's phone,
+ * so answer as soon as the update is taken, not when the work it asked for is
+ * done. `toast` is a brief note shown at the top of the chat, or NULL for
+ * nothing. Returns 0 on success, -1 on failure. */
+int  tg_answer_callback(tg_client *c, const char *callback_id, const char *toast);
 
 /* Show a chat action (e.g. "typing") in the chat. Telegram displays it for ~5s
  * or until the next message. Returns 0 on success, -1 on failure. */
@@ -320,6 +356,28 @@ static void tg_parse_message(const cJSON *msg, tg_update *u) {
     }
 }
 
+/* A tapped inline button. The chat and sender come off the message the
+ * keyboard hangs from, so a callback answers in the same place a message does
+ * and passes the same allow-list check. */
+static void tg_parse_callback(const cJSON *cb, tg_update *u) {
+    u->callback_id   = tg_strdup_or_null(
+        cJSON_GetObjectItemCaseSensitive(cb, "id"));
+    u->callback_data = tg_strdup_or_null(
+        cJSON_GetObjectItemCaseSensitive(cb, "data"));
+
+    cJSON *from = cJSON_GetObjectItemCaseSensitive(cb, "from");
+    cJSON *from_id = from ? cJSON_GetObjectItemCaseSensitive(from, "id") : NULL;
+    if (cJSON_IsNumber(from_id)) u->from_id = (long)from_id->valuedouble;
+
+    cJSON *msg = cJSON_GetObjectItemCaseSensitive(cb, "message");
+    if (!msg) return;
+    cJSON *chat = cJSON_GetObjectItemCaseSensitive(msg, "chat");
+    cJSON *chat_id = chat ? cJSON_GetObjectItemCaseSensitive(chat, "id") : NULL;
+    if (cJSON_IsNumber(chat_id)) u->chat_id = (long)chat_id->valuedouble;
+    cJSON *mid = cJSON_GetObjectItemCaseSensitive(msg, "message_id");
+    if (cJSON_IsNumber(mid)) u->message_id = (long)mid->valuedouble;
+}
+
 int tg_get_updates(tg_client *c, long offset, int timeout_s, tg_update **out) {
     *out = NULL;
     if (!c) return -1;
@@ -329,6 +387,7 @@ int tg_get_updates(tg_client *c, long offset, int timeout_s, tg_update **out) {
     cJSON_AddNumberToObject(req, "timeout", timeout_s);
     cJSON *allowed = cJSON_AddArrayToObject(req, "allowed_updates");
     cJSON_AddItemToArray(allowed, cJSON_CreateString("message"));
+    cJSON_AddItemToArray(allowed, cJSON_CreateString("callback_query"));
     char *body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     if (!body) return -1;
@@ -352,9 +411,16 @@ int tg_get_updates(tg_client *c, long offset, int timeout_s, tg_update **out) {
         tg_update *u = &arr[n];
         u->update_id = (long)uid->valuedouble;
         cJSON *msg = cJSON_GetObjectItemCaseSensitive(upd, "message");
-        /* Non-message updates were filtered by allowed_updates, but keep the
+        cJSON *cb  = cJSON_GetObjectItemCaseSensitive(upd, "callback_query");
+        /* Other update types were filtered by allowed_updates, but keep the
          * update_id so the caller still advances the offset past them. */
-        if (msg) tg_parse_message(msg, u);
+        if (msg) {
+            tg_parse_message(msg, u);
+            cJSON *mid = cJSON_GetObjectItemCaseSensitive(msg, "message_id");
+            if (cJSON_IsNumber(mid)) u->message_id = (long)mid->valuedouble;
+        } else if (cb) {
+            tg_parse_callback(cb, u);
+        }
         n++;
     }
 
@@ -371,55 +437,141 @@ void tg_updates_free(tg_update *updates, int n) {
         free(updates[i].file_name);
         free(updates[i].mime_type);
         free(updates[i].media_group_id);
+        free(updates[i].callback_data);
+        free(updates[i].callback_id);
     }
     free(updates);
 }
 
-int tg_send_message(tg_client *c, long chat_id, const char *text) {
-    if (!c || !text) return -1;
-    cJSON *req = cJSON_CreateObject();
-    cJSON_AddNumberToObject(req, "chat_id", (double)chat_id);
-    cJSON_AddStringToObject(req, "text", text);
-    char *body = cJSON_PrintUnformatted(req);
-    cJSON_Delete(req);
-    if (!body) return -1;
-
-    cJSON *root = tg_post(c, "sendMessage", body);
-    free(body);
-    if (!root) return -1;
-    cJSON_Delete(root);
-    return 0;
+/* Rows of buttons, `per_row` across, in the shape reply_markup wants. NULL when
+ * there are none, which leaves the message plain. */
+static cJSON *tg_keyboard_json(const tg_button *buttons, int count, int per_row) {
+    if (!buttons || count <= 0) return NULL;
+    if (per_row < 1) per_row = 1;
+    cJSON *markup = cJSON_CreateObject();
+    cJSON *rows = cJSON_AddArrayToObject(markup, "inline_keyboard");
+    cJSON *row = NULL;
+    for (int i = 0; i < count; i++) {
+        if (i % per_row == 0) {
+            row = cJSON_CreateArray();
+            cJSON_AddItemToArray(rows, row);
+        }
+        cJSON *b = cJSON_CreateObject();
+        cJSON_AddStringToObject(b, "text", buttons[i].label ? buttons[i].label : "");
+        cJSON_AddStringToObject(b, "callback_data",
+                                buttons[i].data ? buttons[i].data : "");
+        cJSON_AddItemToArray(row, b);
+    }
+    return markup;
 }
 
-int tg_send_message_md(tg_client *c, long chat_id, const char *text) {
-    if (!c || !text) return -1;
+/* The one place a message is sent or edited. `markup` is consumed either way.
+ * Returns the message_id, 0 when the method reported none, -1 on failure. */
+static long tg_send_impl(tg_client *c, const char *method, long chat_id,
+                         long message_id, const char *text, int markdown,
+                         cJSON *markup) {
     cJSON *req = cJSON_CreateObject();
     cJSON_AddNumberToObject(req, "chat_id", (double)chat_id);
+    if (message_id) cJSON_AddNumberToObject(req, "message_id", (double)message_id);
     cJSON_AddStringToObject(req, "text", text);
-    cJSON_AddStringToObject(req, "parse_mode", "MarkdownV2");
+    if (markdown) cJSON_AddStringToObject(req, "parse_mode", "MarkdownV2");
+    if (markup) cJSON_AddItemToObject(req, "reply_markup", markup);
     char *body = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     if (!body) return -1;
 
-    cJSON *root = tg_post(c, "sendMessage", body);
+    cJSON *root = tg_post(c, method, body);
     free(body);
-    if (root) { cJSON_Delete(root); return 0; }
+    if (!root) return -1;
 
-    /* Rejected: strip the MarkdownV2 escapes and send it as-is so the content
-     * still reaches the chat. */
+    long id = 0;
+    cJSON *result = cJSON_GetObjectItemCaseSensitive(root, "result");
+    cJSON *mid = result ? cJSON_GetObjectItemCaseSensitive(result, "message_id")
+                        : NULL;
+    if (cJSON_IsNumber(mid)) id = (long)mid->valuedouble;
+    cJSON_Delete(root);
+    return id;
+}
+
+/* Undo mdv2.h's escaping, for the retry after Telegram rejects the entities. */
+static char *tg_unescape_md(const char *text) {
     size_t n = strlen(text);
     char *plain = malloc(n + 1);
-    if (!plain) return -1;
+    if (!plain) return NULL;
     size_t j = 0;
     for (size_t i = 0; i < n; i++) {
-        if (text[i] == '\\' && i + 1 < n && strchr("_*[]()~`>#+-=|{}.!\\", text[i + 1]))
+        if (text[i] == '\\' && i + 1 < n &&
+            strchr("_*[]()~`>#+-=|{}.!\\", text[i + 1]))
             i++;
         plain[j++] = text[i];
     }
     plain[j] = '\0';
+    return plain;
+}
+
+int tg_send_message(tg_client *c, long chat_id, const char *text) {
+    if (!c || !text) return -1;
+    return tg_send_impl(c, "sendMessage", chat_id, 0, text, 0, NULL) < 0 ? -1 : 0;
+}
+
+int tg_send_message_md(tg_client *c, long chat_id, const char *text) {
+    if (!c || !text) return -1;
+    if (tg_send_impl(c, "sendMessage", chat_id, 0, text, 1, NULL) >= 0)
+        return 0;
+
+    /* Rejected: strip the MarkdownV2 escapes and send it as-is so the content
+     * still reaches the chat. */
+    char *plain = tg_unescape_md(text);
+    if (!plain) return -1;
     int rc = tg_send_message(c, chat_id, plain);
     free(plain);
     return rc == 0 ? 1 : -1;
+}
+
+long tg_send_keyboard(tg_client *c, long chat_id, const char *text, int markdown,
+                      const tg_button *buttons, int count, int per_row) {
+    if (!c || !text) return -1;
+    long id = tg_send_impl(c, "sendMessage", chat_id, 0, text, markdown,
+                           tg_keyboard_json(buttons, count, per_row));
+    if (id >= 0 || !markdown) return id;
+
+    char *plain = tg_unescape_md(text);
+    if (!plain) return -1;
+    id = tg_send_impl(c, "sendMessage", chat_id, 0, plain, 0,
+                      tg_keyboard_json(buttons, count, per_row));
+    free(plain);
+    return id;
+}
+
+int tg_edit_message(tg_client *c, long chat_id, long message_id, const char *text,
+                    int markdown, const tg_button *buttons, int count, int per_row) {
+    if (!c || !text || !message_id) return -1;
+    long id = tg_send_impl(c, "editMessageText", chat_id, message_id, text, markdown,
+                           tg_keyboard_json(buttons, count, per_row));
+    if (id < 0 && markdown) {
+        char *plain = tg_unescape_md(text);
+        if (!plain) return -1;
+        id = tg_send_impl(c, "editMessageText", chat_id, message_id, plain, 0,
+                          tg_keyboard_json(buttons, count, per_row));
+        free(plain);
+    }
+    return id < 0 ? -1 : 0;
+}
+
+int tg_answer_callback(tg_client *c, const char *callback_id, const char *toast) {
+    if (!c || !callback_id) return -1;
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "callback_query_id", callback_id);
+    if (toast && *toast) cJSON_AddStringToObject(req, "text", toast);
+    char *body = cJSON_PrintUnformatted(req);
+    cJSON_Delete(req);
+    if (!body) return -1;
+
+    cJSON *root = tg_post(c, "answerCallbackQuery", body);
+    free(body);
+    if (!root) return -1;
+    cJSON_Delete(root);
+    return 0;
 }
 
 int tg_send_chat_action(tg_client *c, long chat_id, const char *action) {

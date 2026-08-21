@@ -8,6 +8,7 @@
 #include "agenttabs.h"
 #include "app.h"
 #include "bash.h"
+#include "chattabs.h"
 #include "chrome.h"
 #include "cmd.h"
 #include "confirm.h"
@@ -523,27 +524,32 @@ int main(int argc, char **argv)
 
     if (chat_only) {
         session_set_naming(session, 0);
+        chattabs_begin(session);
         for (;;) {
-            tg_run(session);
+            tg_run(chattabs_current());
 
-            // A window asked for this conversation. With no terminal here
-            // there is no screen to send with it — only the conversation, and
-            // the agent holding it, which has to be let go first.
+            // A window asked for one of these conversations. With no terminal
+            // here there is no screen to send with it — only the conversation,
+            // and the agent holding it, which has to be let go first.
             char id[128];
             if (!handoff_take_request(id, sizeof id))
                 break;
-            const char *mine = session_id(session);
-            if (!mine || strcmp(mine, id) != 0) {
+            int at = chattabs_find_id(id);
+            if (at < 0) {
                 handoff_refuse(id);
                 continue;
             }
-            tg_stop();
-            session_free(session);
+            int last = chattabs_count() == 1;
+            if (last)
+                tg_stop();
+            chattabs_close(at);
             handoff_publish(id);
-            return 0;
+            if (last)
+                return 0;
+            tg_refocus();       // the chat is left holding one of the others
         }
         tg_stop();
-        session_free(session);
+        chattabs_end();
         return 0;
     }
 

@@ -195,6 +195,9 @@ void workspace_show(int index)
     follow(tabs[cur].s);
     spin_follow();
     viewport_forget();
+    // A chat attached to this window is a second screen onto it, not a second
+    // tab: it follows whatever the window is showing.
+    tg_refocus();
 }
 
 // What the sticky prompt says, kept per tab so it comes back with the tab.
@@ -353,6 +356,7 @@ static void drop(int index)
         follow(tabs[cur].s);
         spin_follow();
         viewport_forget();
+        tg_refocus();
     }
 }
 
