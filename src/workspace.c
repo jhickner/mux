@@ -428,14 +428,6 @@ int workspace_queued(int index)
     return index >= 0 && index < ntabs ? tabs[index].npending : 0;
 }
 
-const char *workspace_queued_at(int index, int i)
-{
-    if (index < 0 || index >= ntabs || i < 0 || i >= tabs[index].npending)
-        return NULL;
-    const struct pending *p = &tabs[index].pending[i];
-    return p->shown ? p->shown : p->line;
-}
-
 const char *workspace_status(const struct session *s)
 {
     if (!s)

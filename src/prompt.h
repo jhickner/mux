@@ -33,13 +33,6 @@ void prompt_paint_input(struct prompt *p, int rows, int *caret_row, int *caret_c
 
 int  prompt_queued_rows(struct prompt *p, int cols);
 void prompt_paint_queued(struct prompt *p, int room);
-
-// Lines waiting somewhere else — the ones a tab holds behind its running turn.
-// They are drawn in the same list as the prompt's own.
-typedef int (*prompt_queue_count_fn)(void *ud);
-typedef const char *(*prompt_queue_at_fn)(void *ud, int i);
-void prompt_set_queue_view(struct prompt *p, prompt_queue_count_fn count,
-                           prompt_queue_at_fn at, void *ud);
 int  prompt_busy(struct prompt *p);
 
 

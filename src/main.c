@@ -270,19 +270,6 @@ static void turn_done(struct session *s)
     cmd_run_deferred(s);
 }
 
-// What this tab is holding behind its running turn, for the chrome to show.
-static int queued_count(void *ud)
-{
-    (void)ud;
-    return workspace_queued(workspace_index());
-}
-
-static const char *queued_at(void *ud, int i)
-{
-    (void)ud;
-    return workspace_queued_at(workspace_index(), i);
-}
-
 static int live_command(void *ud, const char *line)
 {
     (void)ud;
@@ -548,7 +535,6 @@ int main(int argc, char **argv)
     chrome_tabs(workspace_strip_rows, workspace_strip_paint);
     chrome_modal_interrupt(handoff_wanted);
     prompt_set_live_command(prompt, live_command, NULL);
-    prompt_set_queue_view(prompt, queued_count, queued_at, NULL);
     prompt_set_echo_filter(prompt, echo_filter, NULL);
     prompt_set_idle(prompt, idle_fds, idle_render, idle_busy, NULL);
     prompt_set_restart(prompt, restart_pending, idle_restart, NULL);

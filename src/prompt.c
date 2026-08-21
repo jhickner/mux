@@ -51,9 +51,6 @@ struct prompt {
     char       **queued;
     int          queued_count;
     int          queued_cap;
-    prompt_queue_count_fn qview_count;
-    prompt_queue_at_fn    qview_at;
-    void        *qview_ud;
     char        *file_root;
     char      *(*external)(void *ud);
     void        *external_ud;
@@ -263,58 +260,25 @@ int prompt_busy(struct prompt *p)
     return p && p->idle_busy && p->idle_busy(p->idle_ud);
 }
 
-void prompt_set_queue_view(struct prompt *p, prompt_queue_count_fn count,
-                           prompt_queue_at_fn at, void *ud)
-{
-    if (!p)
-        return;
-    p->qview_count = count;
-    p->qview_at = at;
-    p->qview_ud = ud;
-}
-
-// The prompt's own queue first, then whatever the window is holding elsewhere.
-static int shown_count(struct prompt *p)
-{
-    int n = p->queued_count;
-    if (p->qview_count)
-        n += p->qview_count(p->qview_ud);
-    return n;
-}
-
-static const char *shown_at(struct prompt *p, int i)
-{
-    if (i < p->queued_count)
-        return p->queued[i];
-    return p->qview_at(p->qview_ud, i - p->queued_count);
-}
-
 int prompt_queued_rows(struct prompt *p, int cols)
 {
-    if (!p)
-        return 0;
-    int count = shown_count(p);
-    if (count == 0)
+    if (!p || p->queued_count == 0)
         return 0;
     size_t budget = queued_budget(cols);
-    int rows = count - 1;                /* the blank between each pair */
-    for (int i = 0; i < count; i++)
-        rows += painted_rows(shown_at(p, i), budget, QUEUED_LINES, NULL);
+    int rows = p->queued_count - 1;      /* the blank between each pair */
+    for (int i = 0; i < p->queued_count; i++)
+        rows += painted_rows(p->queued[i], budget, QUEUED_LINES, NULL);
     return rows;
 }
 
 void prompt_paint_queued(struct prompt *p, int room)
 {
-    if (!p)
-        return;
-    int count = shown_count(p);
-    if (count == 0)
+    if (!p || p->queued_count == 0)
         return;
     size_t budget = queued_budget(ui_columns());
     int used = 0;
-    for (int i = 0; i < count; i++) {
-        const char *text = shown_at(p, i);
-        int need = painted_rows(text, budget, QUEUED_LINES, NULL);
+    for (int i = 0; i < p->queued_count; i++) {
+        int need = painted_rows(p->queued[i], budget, QUEUED_LINES, NULL);
         if (i)
             need++;                      /* the blank above this one */
         if (used + need > room)
@@ -322,7 +286,7 @@ void prompt_paint_queued(struct prompt *p, int room)
         used += need;
         if (i)
             ui_put("\n");
-        paint_bars(text, budget, UI_DIM, QUEUED_LINES, NULL);
+        paint_bars(p->queued[i], budget, UI_DIM, QUEUED_LINES, NULL);
     }
 }
 
@@ -951,7 +915,7 @@ static void idle_ready_hook(void *ud)
 // is sticky and waits for a moment with neither.
 static void restart_check(struct prompt *p)
 {
-    if (!p->restart || p->repl.len || shown_count(p))
+    if (!p->restart || p->repl.len || p->queued_count)
         return;
     if (!p->restart_pending(p->restart_ud))
         return;
