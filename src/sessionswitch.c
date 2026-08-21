@@ -102,7 +102,7 @@ static void tab_rows(struct row *rows, int *n)
         // The directory is the row's group, printed once above it.
         path_home_relative(session_cwd(s), r->cwd, sizeof r->cwd);
         snprintf(r->label, sizeof r->label, "%s %s%s",
-                 i == workspace_index() ? "\xe2\x96\xb8" : " ",
+                 i == workspace_index() ? "\xe2\x96\xb8" : "\xc2\xb7",
                  title && *title ? title : "untitled",
                  i == workspace_index() ? " (here)" : "");
         snprintf(r->id, sizeof r->id, "%s", session_id(s) ? session_id(s) : "");
@@ -182,10 +182,11 @@ static void fill_live(struct row *r, const struct live_session *v)
     if (in_tmux && !near && wname && *wname)
         snprintf(where, sizeof where, "%s \xc2\xb7 ", wname);
 
-    // The arrow says another mux is holding this one: choosing it takes it
-    // over here, where the rows without an arrow only switch.
+    // The arrow says another mux is holding this one: a dot is this window's
+    // own, which only switches. Of the two arrows, one is a pane in sight in
+    // this same tmux window and the other is off in a window elsewhere.
     snprintf(r->label, sizeof r->label, "%s %s",
-             near ? "\xe2\x87\xa2" : "\xe2\x87\x84",
+             near ? "\xe2\x86\x92" : "\xe2\x87\x84",
              v->title[0] ? v->title : "untitled");
     snprintf(r->detail, sizeof r->detail, "%s %s \xc2\xb7 %s%s",
              v->backend,
