@@ -32,7 +32,6 @@
 
 #include "app.h"
 #include "bash.h"
-#include "chattabs.h"
 #include "cmd.h"
 #include "frontend.h"
 #include "gitinfo.h"
@@ -58,10 +57,8 @@ static struct session *sess;
 static tg_client      *rx;              // poller thread's client
 static tg_client      *tx;              // main thread's client
 static long            chat_id;
-static int             headless_mode;
 static int             mirror = MIRROR_ALL;
 static int             running;
-static volatile int    quit_wanted;
 static volatile int    stop_wanted;     // "stop": abandon the turn in flight
 static volatile int    poller_stop;
 static pthread_t       poller;
@@ -724,7 +721,6 @@ static struct subagent agents[SUBAGENT_MAX];
 static int agent_count;
 static int task_events;     // the backend reports a task life cycle
 static int repeat_task;     // an already-finished task re-notified
-static int nudge_queued;
 
 // "launched" counts as done for the running tally: a backend that never reports
 // completion must not leave the user reading a count that only grows.
@@ -915,24 +911,6 @@ static void send_agents(void)
     send_pre(msg);
 }
 
-// Backends other than claude stream a finished subagent's work but will not say
-// anything about it unprompted, so the bridge asks. Queued as an ordinary line:
-// it waits behind whatever the user has already sent.
-static void nudge_for_subagents(void)
-{
-    if (nudge_queued || !chat_id)
-        return;
-    char *text = strdup(
-        "Background work you started has just finished. Collect its output and "
-        "report to the user now: what it was, what it found or changed, and "
-        "anything that needs them. This message is from the daemon, not from "
-        "them — your reply goes straight to the chat. If nothing has actually "
-        "come back yet, or the result needs no telling, reply with nothing at "
-        "all rather than filler.");
-    if (text && inbox_push(text, 1))
-        nudge_queued = 1;
-}
-
 // ---- the observer -------------------------------------------------------
 
 // Whether what the agent is doing right now belongs in the chat.
@@ -1038,15 +1016,11 @@ static int on_abort(void *ud)
     return 0;
 }
 
-// The client's own diagnostics, which come off the polling thread. With a
-// terminal they are kept rather than printed: writing there from another thread
-// lands in the middle of whatever is drawn. /tg reports the last one.
+// The client's own diagnostics, which come off the polling thread. They are
+// kept rather than printed: writing to the terminal from another thread lands
+// in the middle of whatever is drawn. /tg reports the last one.
 static void on_log(const char *msg)
 {
-    if (headless_mode) {
-        fprintf(stderr, "telegram: %s\n", msg);
-        return;
-    }
     pthread_mutex_lock(&log_lock);
     if (!strcmp(last_log, msg)) {
         log_repeats++;
@@ -1057,9 +1031,9 @@ static void on_log(const char *msg)
     pthread_mutex_unlock(&log_lock);
 }
 
-// Something worth knowing as the bridge comes up. With no terminal that is the
-// log; with one it has to go through the ui, or it lands on the screen as raw
-// bytes the viewport does not know about and the hud paints over.
+// Something worth knowing as the bridge comes up. It has to go through the ui,
+// or it lands on the screen as raw bytes the viewport does not know about and
+// the hud paints over.
 __attribute__((format(printf, 1, 2)))
 static void note_up(const char *fmt, ...)
 {
@@ -1069,10 +1043,6 @@ static void note_up(const char *fmt, ...)
     vsnprintf(line, sizeof line, fmt, ap);
     va_end(ap);
 
-    if (headless_mode) {
-        fprintf(stderr, APP_NAME ": %s\n", line);
-        return;
-    }
     viewport_item_begin(VIEWPORT_ROWS(1, 1));
     ui_note("%s", line);
     viewport_item_end();
@@ -1210,12 +1180,9 @@ const char *tg_system_note(void)
     size_t n = 0;
 
     appendf(note, sizeof note, &n,
-        headless_mode
-        ? "## You are being reached over Telegram\n\n"
-          "This conversation reaches the user as chat messages on their phone. "
-        : "## This conversation is also on Telegram\n\n"
-          "The user is at a terminal, but the same session is reachable from "
-          "their phone and what you say may be relayed there as chat messages. "
+        "## This conversation is also on Telegram\n\n"
+        "The user is at a terminal, but the same session is reachable from "
+        "their phone and what you say may be relayed there as chat messages. "
         "Markdown renders; wide tables and long code listings do not. Keep "
         "answers short and say the answer first. To show them a picture — a "
         "render, a screenshot, a photo — write it as a markdown image with an "
@@ -1272,42 +1239,6 @@ const char *tg_system_note(void)
         "first, do NOT auto-create it and do NOT just acknowledge the statement.\n",
         reminders_path());
 
-    // Only when the chat is the only way in: at a terminal the user is watching
-    // the turn, and telling the session to hand everything to a subagent would
-    // change how it works there.
-    if (headless_mode)
-        appendf(note, sizeof note, &n,
-        "\n## Stay responsive: delegate\n\n"
-        "You are reached over a chat, and you are the user's ONLY point of "
-        "contact there: while a turn is running they cannot ask you anything "
-        "else, and every message they send waits in a queue behind it. So keep "
-        "turns SHORT and hand the long work to subagents.\n"
-        "The rule: if answering needs more than about one or two tool calls -- "
-        "any code change, investigation, build, test run, search across files, "
-        "or anything you expect to take more than ~30 seconds -- spawn a "
-        "BACKGROUND subagent and end your turn with a one-line acknowledgement "
-        "of what you started. Do NOT wait for it, and do NOT narrate the plan "
-        "at length. Trivia you can answer from context, a single file read, a "
-        "one-line question -- answer those directly; do not delegate a "
-        "one-liner.\n"
-        "Launch independent subagents in parallel rather than chaining them. "
-        "Give each a specific, self-contained brief -- it does not see this "
-        "conversation -- and a `description` the user will recognise in a status "
-        "list, because that is what /agents shows them.\n"
-        "Keep the fan-out FLAT and SMALL: at most 3 subagents per turn, and one "
-        "level deep. On Claude Code use `subagent_type: \"worker\"` -- it has no "
-        "Agent tool and runs on a cheaper model. Do NOT use general-purpose for "
-        "delegated work; it can spawn its own agents, and a tree of them will "
-        "burn the session limit in minutes.\n"
-        "Nothing you are reading now reaches a subagent, so on any backend "
-        "without that agent type, say it in the brief instead -- end every one "
-        "with: \"Do this work yourself. Do not spawn subagents, and do not "
-        "sleep-poll -- if something is blocked or rate-limited, report it as a "
-        "gap and finish.\"\n"
-        "Collecting the results: whenever you get a turn and background work is "
-        "outstanding, CHECK on it before you answer, and report anything that "
-        "has landed. Relay what matters in plain prose -- the user has not seen "
-        "the subagent's work, only its description.\n");
 
     return note;
 }
@@ -1346,16 +1277,6 @@ static void fire_due_reminders(void)
 // ---- the poller ---------------------------------------------------------
 
 static int poller_aborting(void) { return poller_stop; }
-
-// The daemon case: nothing else is listening for the signal, and the agent CLI
-// is a child that would otherwise be orphaned holding the session.
-static void on_signal(int sig)
-{
-    (void)sig;
-    quit_wanted = 1;
-    poller_stop = 1;
-    wake_up();
-}
 
 static const char *ext_for(const tg_update *u)
 {
@@ -1530,43 +1451,19 @@ static void *poller_thread(void *ud)
 
 // ---- the chat's tabs ----------------------------------------------------
 
-// The conversations the chat can reach. Headless they are its own, held by
-// chattabs; with a terminal they are the window's, held by the workspace.
-//
-// Either way there is one current tab, not one per front end: switching from
-// the phone switches the terminal, and switching at the terminal is what the
-// phone is then talking to. The chat is a second screen onto the window, so
-// what it does has to be what the window did.
+// The conversations the chat can reach are the window's own tabs. There is one
+// current tab, not one per front end: switching from the phone switches the
+// terminal, and switching at the terminal is what the phone is then talking
+// to. The chat is a second screen onto the window, so what it does has to be
+// what the window did.
 
-static int tab_count(void)
-{
-    return headless_mode ? chattabs_count() : workspace_count();
-}
-
-static struct session *tab_at(int i)
-{
-    return headless_mode ? chattabs_at(i) : workspace_at(i);
-}
-
-static int tab_index(void)
-{
-    return headless_mode ? chattabs_index() : workspace_index();
-}
-
-static int tab_find_id(const char *id)
-{
-    return headless_mode ? chattabs_find_id(id) : workspace_find_id(id);
-}
-
-// The observer follows the chat: what another tab does is its own business
-// until it finishes.
+// The observer follows the chat: what another tab does is its own business.
 static void focus(struct session *s)
 {
     if (sess == s)
         return;
-    // The tab left behind goes back to being nobody's business here: it keeps
-    // working, and keeps its own screen, but what it does stops being
-    // relayed.
+    // The tab left behind keeps working, and keeps its own screen, but what it
+    // does stops being relayed.
     if (sess)
         session_set_observer(sess, NULL, NULL);
     sess = s;
@@ -1578,23 +1475,16 @@ static void focus(struct session *s)
 
 static int tab_switch(int i)
 {
-    if (i < 0 || i >= tab_count())
+    if (i < 0 || i >= workspace_count())
         return 0;
-    if (headless_mode)
-        chattabs_show(i);
-    else
-        workspace_show(i);      // the terminal comes along; it is the same tab
-    focus(tab_at(i));
+    workspace_show(i);          // the terminal comes along; it is the same tab
+    focus(workspace_at(i));
     return 1;
 }
 
-// Starts one and points the chat at it, without moving what the terminal
-// shows.
+// Starts one the way the tab in front was started, and points the chat at it.
 static int tab_open(const char *cwd, const char *id)
 {
-    if (headless_mode)
-        return chattabs_open(cwd, id);
-
     struct session *from = workspace_current();
     if (!from)
         return -1;
@@ -1603,14 +1493,6 @@ static int tab_open(const char *cwd, const char *id)
     return workspace_spawn(session_backend(from), session_model(from),
                            session_effort(from),
                            cwd && *cwd ? cwd : session_cwd(from), id);
-}
-
-static int tab_drop(int i)
-{
-    if (headless_mode)
-        return chattabs_close(i);
-    workspace_close(i);
-    return workspace_count();
 }
 
 // The last part of a path, which is what a directory is called in practice.
@@ -1625,12 +1507,12 @@ static const char *dir_name(const char *path)
 // How a tab reads in a list: where it is, and what it is doing.
 static void tab_label(int i, char *out, size_t size)
 {
-    struct session *s = tab_at(i);
+    struct session *s = workspace_at(i);
     const char *title = session_title(s);
     if (!title || !*title)
         title = dir_name(session_cwd(s));
 
-    const char *mark = i == tab_index()  ? "> "
+    const char *mark = i == workspace_index()  ? "> "
                      : session_unseen(s) ? "* "
                                          : "  ";
     const char *what = session_turn_running(s) ? "  (working)" : "";
@@ -1641,7 +1523,7 @@ static void tab_label(int i, char *out, size_t size)
 // backend has named it, and where it sits when it has not yet.
 static void tab_payload(int i, char *out, size_t size)
 {
-    const char *id = session_id(tab_at(i));
+    const char *id = session_id(workspace_at(i));
     if (id && *id)
         snprintf(out, size, "%s", id);
     else
@@ -1654,9 +1536,9 @@ static int tab_from_payload(const char *payload)
         return -1;
     if (*payload == '#') {
         int at = atoi(payload + 1);
-        return at >= 0 && at < tab_count() ? at : -1;
+        return at >= 0 && at < workspace_count() ? at : -1;
     }
-    return tab_find_id(payload);
+    return workspace_find_id(payload);
 }
 
 // Says which conversation the chat is now talking to. Worth saying on every
@@ -1667,13 +1549,13 @@ static void send_here(void)
     if (!s)
         return;
     const char *title = session_title(s);
-    send_notef("%d/%d  %s  in %s", tab_index() + 1, tab_count(),
+    send_notef("%d/%d  %s  in %s", workspace_index() + 1, workspace_count(),
                title && *title ? title : "untitled", dir_name(session_cwd(s)));
 }
 
 static void send_tabs(void)
 {
-    int n = tab_count();
+    int n = workspace_count();
     if (n <= 0) {
         send_note("no conversations here");
         return;
@@ -1685,7 +1567,7 @@ static void send_tabs(void)
         tab_payload(i, payload, sizeof payload);
         menu_add(label, payload);
     }
-    if (n < (headless_mode ? CHATTABS_MAX : WORKSPACE_MAX))
+    if (n < WORKSPACE_MAX)
         menu_add("+ new conversation", "new");
     menu_add("resume one from here...", "resume");
     menu_send("conversations", 1);
@@ -1728,9 +1610,9 @@ static void send_resume(void)
 // Opens one, in `cwd` when it is named, and points the chat at it.
 static void open_tab(const char *cwd, const char *id)
 {
-    int max = headless_mode ? CHATTABS_MAX : WORKSPACE_MAX;
-    if (tab_count() >= max) {
-        send_notef("that is all %d conversations; close one first", max);
+    if (workspace_count() >= WORKSPACE_MAX) {
+        send_notef("that is all %d conversations; close one first",
+                   WORKSPACE_MAX);
         return;
     }
     char *expanded = cwd && *cwd ? path_expand_home(cwd) : NULL;
@@ -1751,25 +1633,23 @@ static void open_tab(const char *cwd, const char *id)
         send_note("could not start another conversation");
         return;
     }
-    focus(tab_at(at));
+    focus(workspace_at(at));
     send_here();
 }
 
 static void close_tab(int at)
 {
-    if (at < 0 || at >= tab_count()) {
+    if (at < 0 || at >= workspace_count()) {
         send_note("no such conversation");
         return;
     }
-    if (tab_count() == 1) {
+    if (workspace_count() == 1) {
         send_note("that is the only conversation; /quit to stop instead");
         return;
     }
-    int mine = at == tab_index();
-    tab_drop(at);
-    // Dropping the chat's own tab leaves it standing nowhere.
-    if (mine || !sess)
-        focus(headless_mode ? chattabs_current() : workspace_current());
+    workspace_close(at);
+    // The window closes tabs by way of tg_refocus(), so the chat is already
+    // standing wherever it left it.
     send_here();
 }
 
@@ -1786,17 +1666,7 @@ void tg_refocus(void)
 {
     if (!running)
         return;
-    focus(headless_mode ? chattabs_current() : workspace_current());
-}
-
-// A conversation opened from the chat, headless, is set up the way the first
-// one was. The observer is not among these: it goes on whichever tab the chat
-// is pointed at, and open_tab() points it at this one straight after.
-static void prepare_tab(struct session *s)
-{
-    session_set_silent(s, 1);
-    session_set_system_extra(s, tg_system_note());
-    session_set_abort_hook(s, on_abort, s);
+    focus(workspace_current());
 }
 
 // A tapped row as the line it stands for. Everything else reaches the bridge
@@ -1839,11 +1709,9 @@ static void send_bridge_status(void)
     appendf(msg, sizeof msg, &n, "%-10s %ld\n", "chat", chat_id);
     appendf(msg, sizeof msg, &n, "%-10s %s\n", "mirror",
             mirror == MIRROR_OFF ? "off" : mirror == MIRROR_REMOTE ? "remote" : "all");
-    appendf(msg, sizeof msg, &n, "%-10s %s\n", "front end",
-            headless_mode ? "chat only" : "shared with a terminal");
-    if (tab_count() > 1)
+    if (workspace_count() > 1)
         appendf(msg, sizeof msg, &n, "%-10s %d of %d\n", "tab",
-                tab_index() + 1, tab_count());
+                workspace_index() + 1, workspace_count());
     appendf(msg, sizeof msg, &n, "%-10s %ds\n", "poll", poll_seconds);
     appendf(msg, sizeof msg, &n, "%-10s %s\n", "artifacts",
             server ? art_base : "not running");
@@ -1879,19 +1747,6 @@ static const char *HELP =
     "/tg          the bridge's own settings, and this\n\n"
     "Settings live in ~/.config/mux/telegram.";
 
-// Commands that need a terminal, and are refused rather than left to hang.
-static int needs_terminal(const char *line)
-{
-    static const char *const local[] = { "/fh", "/fs", "/fv", "/fw", "/mux",
-                                         "/settings", "/copy", NULL };
-    for (int i = 0; local[i]; i++) {
-        size_t n = strlen(local[i]);
-        if (!strncmp(line, local[i], n) && (!line[n] || line[n] == ' '))
-            return 1;
-    }
-    return 0;
-}
-
 // The bridge's own commands, which the terminal has no use for.
 // The word after the command, or NULL. Also answers whether `line` is that
 // command at all.
@@ -1925,14 +1780,14 @@ static int bridge_command(const char *line)
         return 1;
     }
     if ((arg = arg_of(line, "/close")) != NULL) {
-        close_tab(*arg ? atoi(arg) - 1 : tab_index());
+        close_tab(*arg ? atoi(arg) - 1 : workspace_index());
         return 1;
     }
     if ((arg = arg_of(line, "/resume")) != NULL) {
         // With an id behind it the row of a menu was tapped; on its own it is
         // the ask for that menu.
         if (*arg) {
-            int at = tab_find_id(arg);
+            int at = workspace_find_id(arg);
             if (at >= 0)
                 switch_tab(at);         // already open here
             else
@@ -1989,37 +1844,6 @@ static void send_turn_reply(int ok, int quiet)
         send_notef("context %d%% of %ldk", pct, window / 1000);
 }
 
-// The turn the chat asked for. With other conversations open it cannot simply
-// be waited on: they have turns of their own to advance, and a tab left
-// working while the chat looks elsewhere is the reason they exist. So the turn
-// runs on its own thread and this pumps every tab until it ends.
-static int run_turn(const char *line)
-{
-    if (!headless_mode || chattabs_count() < 2)
-        return session_turn(sess, line);
-
-    struct session *s = sess;
-    if (!session_turn_begin(s, line))
-        return 0;
-
-    while (session_turn_running(s)) {
-        int fds[CHATTABS_MAX + 1];
-        int n = chattabs_fds(fds, CHATTABS_MAX);
-        int max = -1;
-        fd_set set;
-        FD_ZERO(&set);
-        for (int i = 0; i < n; i++) {
-            FD_SET(fds[i], &set);
-            if (fds[i] > max)
-                max = fds[i];
-        }
-        struct timeval tv = {0, 100 * 1000};
-        select(max + 1, max >= 0 ? &set : NULL, NULL, NULL, &tv);
-        chattabs_pump();
-    }
-    return session_failed_prompt(s) == NULL;
-}
-
 // One line from the chat, run exactly as the prompt would run it: a bash
 // escape, a mux command, or a turn.
 static void run_line(char *line, int quiet)
@@ -2029,7 +1853,6 @@ static void run_line(char *line, int quiet)
     last_said = NULL;
     from_chat = 1;
     frontend_push(0);   // the chat has no keyboard behind it
-    nudge_queued = 0;
     repeat_task = 0;
     stop_wanted = 0;    // a stop sent before this line was meant for the last
 
@@ -2038,38 +1861,30 @@ static void run_line(char *line, int quiet)
 
     // The tab the chat was standing in has been closed at the terminal. There
     // is usually another to stand in.
-    if (!sess && !headless_mode)
+    if (!sess)
         focus(workspace_current());
     if (!sess) {
         send_note("that session is gone — start a new one at the terminal");
         goto done;
     }
 
-    if (headless_mode && needs_terminal(line)) {
-        send_notef("%s needs the terminal; not available over the chat", line);
-        goto done;
-    }
-
-    // A bash escape needs a keyboard: the command writes to the terminal and may
-    // want to be answered. Over the chat alone the line is just text, and the
-    // agent runs what it needs with its own tools.
-    if (!headless_mode && bash_is_command(line)) {
+    // A bash escape writes to the terminal and may want to be answered there,
+    // which is why it runs at all: the chat is a second screen onto a window
+    // that has a keyboard.
+    if (bash_is_command(line)) {
         bash_run(line);
         gitinfo_forget();
         char *context = bash_take_context();
         if (context) {
             send_pre(context);
-            send_turn_reply(run_turn(context), 0);
+            send_turn_reply(session_turn(sess, context), 0);
             cmd_run_deferred(sess);
             free(context);
         }
         goto done;
     }
 
-    if (headless_mode)
-        ui_sink_begin();
-    else
-        ui_sink_begin_tee();
+    ui_sink_begin_tee();
     enum cmd_result r = cmd_dispatch(sess, line);
     char *shown = ui_sink_end();
     if (r != CMD_NOT_A_COMMAND) {
@@ -2082,18 +1897,12 @@ static void run_line(char *line, int quiet)
     free(shown);
 
     if (r == CMD_QUIT) {
-        if (headless_mode) {
-            send_note("stopping");
-            quit_wanted = 1;
-        } else {
-            send_note("the terminal owns this session; /quit there");
-        }
+        send_note("the terminal owns this session; /quit there");
         goto done;
     }
     if (r == CMD_NOT_A_COMMAND) {
-        if (!headless_mode)
-            status_sticky_prompt(line);
-        send_turn_reply(run_turn(line), quiet);
+        status_sticky_prompt(line);
+        send_turn_reply(session_turn(sess, line), quiet);
         cmd_run_deferred(sess);
     }
 
@@ -2118,7 +1927,7 @@ static const char *bot_token(void)
     return cfg_get("token", NULL);
 }
 
-int tg_start(struct session *s, int headless)
+int tg_start(struct session *s)
 {
     const char *token = bot_token();
     if (!token || !*token) {
@@ -2142,7 +1951,7 @@ int tg_start(struct session *s, int headless)
     // At the terminal the phone is a second screen, not the only one, and every
     // mirrored event is an HTTP round trip in the middle of the turn. So the
     // default there is to mirror only what the chat itself asked for.
-    const char *m = headless ? "all" : cfg_get("mirror", "remote");
+    const char *m = cfg_get("mirror", "remote");
     mirror = !strcmp(m, "off") ? MIRROR_OFF : !strcmp(m, "remote") ? MIRROR_REMOTE
                                                                   : MIRROR_ALL;
 
@@ -2173,15 +1982,10 @@ int tg_start(struct session *s, int headless)
     fcntl(wake[1], F_SETFL, O_NONBLOCK);
 
     sess = s;
-    headless_mode = headless;
     artifacts_init();
     session_set_system_extra(s, tg_system_note());
     session_set_observer(s, on_event, NULL);
     session_set_abort_hook(s, on_abort, s);
-    if (headless) {
-        session_set_silent(s, 1);
-        chattabs_on_open(prepare_tab);
-    }
 
     tg_set_abort_check(poller_aborting);
     tg_set_log(on_log);
@@ -2189,10 +1993,6 @@ int tg_start(struct session *s, int headless)
     // front ends attached to it: without this a rebuilt window comes back with
     // no bridge, and the chat goes quiet with nothing to say why.
     restart_flag("--telegram");
-    if (headless) {
-        signal(SIGINT, on_signal);
-        signal(SIGTERM, on_signal);
-    }
     signal(SIGPIPE, SIG_IGN);
     running = 1;
     if (pthread_create(&poller, NULL, poller_thread, NULL) != 0) {
@@ -2277,81 +2077,4 @@ void tg_forget_session(struct session *s)
 void tg_run_line(char *line)
 {
     run_line(line, 0);
-}
-
-// A conversation the chat was not watching has finished. Which one it was has
-// to come first: without it the answer reads as if it came from the tab in
-// front.
-static void on_background(struct session *s, int index)
-{
-    char label[80];
-    tab_label(index, label, sizeof label);
-    send_notef("%s finished", label + 2);        // past the current/unseen mark
-
-    const char *reply = session_last_reply(s);
-    if (reply && *reply)
-        send_markdown(reply);
-    else if (session_failed_prompt(s))
-        send_note("it failed; /tab it to see");
-}
-
-// Headless: the chat is the only front end, so this loop is the prompt.
-void tg_run(struct session *s)
-{
-    chattabs_on_background(on_background);
-
-    while (!quit_wanted) {
-        // Rebuilt while it was running: hand the conversation to the new
-        // binary, which resumes this session and says so in the chat.
-        if (restart_wanted()) {
-            send_note("restarting...");
-            state_write("restarted", "1");
-            tg_stop();
-            restart_exec(s);        // returns only if the new build won't run
-            send_note("could not restart — staying on this build");
-        }
-
-        // Another window has asked for this conversation. Answering is the
-        // caller's to do: it owns the session this loop is holding.
-        if (handoff_wanted())
-            return;
-
-        int quiet = 0, tap = 0;
-        char *line = inbox_take(&quiet, &tap);
-        if (line) {
-            if (tap) {
-                char *cmd = menu_line(line);
-                free(line);
-                if (cmd)
-                    run_line(cmd, 0);       // takes the line
-            } else {
-                run_line(line, quiet);      // takes the line
-            }
-            continue;
-        }
-
-        // Nothing waiting: read whatever the agents produced on their own. A
-        // background subagent finishing wakes some backends with no send from
-        // here; on the others it streams its work and then waits to be asked.
-        chattabs_pump();
-        if (sess && session_idle_busy(sess))
-            nudge_for_subagents();
-
-        int fds[CHATTABS_MAX + 1];
-        int n = chattabs_fds(fds, CHATTABS_MAX);
-        int max = -1;
-        fd_set set;
-        FD_ZERO(&set);
-        if (wake[0] >= 0) {
-            FD_SET(wake[0], &set);
-            max = wake[0];
-        }
-        for (int i = 0; i < n; i++) {
-            FD_SET(fds[i], &set);
-            if (fds[i] > max)
-                max = fds[i];
-        }
-        struct timeval tv = {0, 250 * 1000};
-        select(max + 1, max >= 0 ? &set : NULL, NULL, NULL, &tv);
-    }
 }

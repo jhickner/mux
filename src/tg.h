@@ -10,9 +10,8 @@ struct session;
 // The bot token comes from $TELEGRAM_TOKEN; everything else lives in
 // ~/.config/mux/telegram (chat_id, mirror, artifacts_*).
 
-// Attach to `s`. `headless` when there is no terminal to share with, which is
-// the daemon case: the chat is then the only front end. Nonzero on success.
-int tg_start(struct session *s, int headless);
+// Attach to `s`, the session the window is showing. Nonzero on success.
+int tg_start(struct session *s);
 void tg_stop(void);
 
 // "telegram @bot" while the bridge is live, NULL when it is not. The hud and
@@ -34,17 +33,13 @@ void tg_run_line(char *line);
 // The session the bridge is attached to, or NULL.
 struct session *tg_session(void);
 
-// Headless: point the bridge at whichever conversation is current now. The
-// chat's own commands do this for themselves; this is for the caller that
-// takes a conversation away.
+// The window is showing another tab now: the chat is a second screen onto it,
+// so what it is talking to follows. Called by the workspace on every switch.
 void tg_refocus(void);
 
 // `s` is about to be freed or handed to another window: drop the cached
 // pointer if it is the one the bridge is holding.
 void tg_forget_session(struct session *s);
-
-// Headless: run the chat's own loop until it is told to stop.
-void tg_run(struct session *s);
 
 // What the agent must be told about this front end: the chat, the artifact
 // links, the reminder store, and that long work belongs in a subagent.

@@ -8,7 +8,6 @@
 #include "agenttabs.h"
 #include "app.h"
 #include "bash.h"
-#include "chattabs.h"
 #include "chrome.h"
 #include "cmd.h"
 #include "confirm.h"
@@ -451,15 +450,10 @@ int main(int argc, char **argv)
 
     int interactive = optind >= argc;
 
-    // With no terminal to share, the chat is the whole front end: no raw mode,
-    // no prompt, nothing drawn.
-    int chat_only = telegram && (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO));
     if (telegram && !interactive) {
         fprintf(stderr, APP_NAME ": --telegram takes no prompt — it is a session\n");
         return 2;
     }
-    if (chat_only)
-        interactive = 0;
 
     if (interactive) {
         restart_arm();
@@ -490,7 +484,7 @@ int main(int argc, char **argv)
     }
 
     agenttabs_begin(backend);
-    if (interactive || chat_only)
+    if (interactive)
         livelist_begin();
     struct session *session = session_new(backend, cwd, model, effort);
     if (session) {
@@ -507,50 +501,14 @@ int main(int argc, char **argv)
 
     // Before the agent starts: the bridge has its own conventions to teach it,
     // and they are part of the system prompt the process is opened with.
-    if (telegram && session && !tg_start(session, chat_only)) {
-        if (chat_only) {
-            session_free(session);
-            return 1;
-        }
+    if (telegram && session && !tg_start(session))
         telegram = 0;
-    }
 
     if (!session || !session_start(session)) {
         tty_raw_end();
         fprintf(stderr, APP_NAME ": could not start the %s CLI — is it on PATH?\n", backend);
         session_free(session);
         return 1;
-    }
-
-    if (chat_only) {
-        session_set_naming(session, 0);
-        chattabs_begin(session);
-        for (;;) {
-            tg_run(chattabs_current());
-
-            // A window asked for one of these conversations. With no terminal
-            // here there is no screen to send with it — only the conversation,
-            // and the agent holding it, which has to be let go first.
-            char id[128];
-            if (!handoff_take_request(id, sizeof id))
-                break;
-            int at = chattabs_find_id(id);
-            if (at < 0) {
-                handoff_refuse(id);
-                continue;
-            }
-            int last = chattabs_count() == 1;
-            if (last)
-                tg_stop();
-            chattabs_close(at);
-            handoff_publish(id);
-            if (last)
-                return 0;
-            tg_refocus();       // the chat is left holding one of the others
-        }
-        tg_stop();
-        chattabs_end();
-        return 0;
     }
 
     if (!interactive) {
