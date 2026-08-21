@@ -816,7 +816,11 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         if (feed(p, REPL_KEY_ENTER, 0, NULL) != REPL_SUBMIT)
             return KEY_OK;
         const char *line = repl_line(&p->repl);
-        return line && *line ? KEY_SUBMIT : KEY_OK;
+        if (!line || !*line)
+            return KEY_OK;
+        // Sending is the one thing that means "show me the end again".
+        viewport_scroll_end();
+        return KEY_SUBMIT;
     }
 
     case TK_PAGE_UP:
