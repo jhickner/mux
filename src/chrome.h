@@ -22,6 +22,10 @@ void chrome_keep_above(void);
 // Screen rows the chrome has not spent yet.
 int  chrome_rows_left(void);
 
+// The blank row the chrome sits on, clear of the transcript. Zero when the
+// transcript already ends in one.
+int  chrome_gap(void);
+
 // A modal owns the whole stack while set. NULL hands it back.
 typedef void (*chrome_modal_fn)(void *ud);
 void chrome_modal(chrome_modal_fn fn, void *ud);

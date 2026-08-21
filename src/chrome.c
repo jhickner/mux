@@ -116,6 +116,13 @@ static void fit_above(struct above *a, const struct heights *h, int room)
     a->side = 0;
 }
 
+// The block sits one blank row clear of the transcript, unless the transcript
+// already ends in one.
+int chrome_gap(void)
+{
+    return viewport_active() && !viewport_ends_blank();
+}
+
 void chrome_paint(void)
 {
     if (ui_too_narrow()) {
@@ -128,6 +135,8 @@ void chrome_paint(void)
         budget = tty_rows() - 1;
         spin_row = -1;
         above_rows = 0;
+        if (chrome_gap())
+            ui_put("\n");
         modal(modal_ud);
         block_end(0, -1);
         return;
@@ -144,9 +153,7 @@ void chrome_paint(void)
     // The input is never dropped, so it is measured first and the rest fitted
     // into what it leaves.
     int input_rows = prompt_input_rows(bound, cols);
-    // The block sits one blank row clear of the transcript, unless the
-    // transcript already ends in one.
-    int gap = viewport_active() && !viewport_ends_blank();
+    int gap = chrome_gap();
 
     struct heights h = above_measure(cols);
     struct above a = {1, 1, 1};

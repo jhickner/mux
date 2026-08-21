@@ -105,7 +105,7 @@ static void step(struct view *v, int dir)
 // every blank line that sets a row off from the one above it are taken out.
 static int visible_cap(const struct view *v)
 {
-    int rows = tty_rows() - 3;
+    int rows = tty_rows() - 3 - chrome_gap();
     if (v->heading) {
         int breaks = 0;
         for (int i = 0; i < v->count; i++)
