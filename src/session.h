@@ -112,6 +112,10 @@ void session_adopt_id(struct session *s, const char *id);
 
 const char *session_title(const struct session *s);
 
+// Names this session. With a name, it is set outright; with none, the model is
+// asked to name it again from the last turn. Nonzero if the rename took.
+int session_rename(struct session *s, const char *name);
+
 const char *session_model(const struct session *s);
 const char *session_id(const struct session *s);
 

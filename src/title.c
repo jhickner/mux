@@ -90,6 +90,21 @@ static void write_cache(const char *id, const char *title)
     close(fd);
 }
 
+int title_set(const char *id, const char *name)
+{
+    if (!id || !*id || !name)
+        return 0;
+    char text[256];
+    snprintf(text, sizeof text, "%s", name);
+    for (char *p = text; *p; p++)
+        if (*p == '\t' || *p == '\n')
+            *p = ' ';
+    if (!tidy(text))
+        return 0;
+    write_cache(id, text);
+    return 1;
+}
+
 static void ask_and_cache(const char *id, const char *backend, const char *model,
                           const char *cwd, const char *prompt, const char *reply)
 {

@@ -54,6 +54,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/fw", "fork into a tmux window", NULL},
     {"/status", "reprint the status bar", NULL},
     {"/session", "show this session's info and totals", NULL},
+    {"/rename", "name this session, or ask the model to name it again", "[name]"},
     {"/copy", "copy last response to clipboard", NULL},
     {"/restart", "reload the mux binary, keeping this conversation", NULL},
     {"/help", "show this help", NULL},
@@ -642,6 +643,22 @@ static void do_copy(struct session *s)
     ui_flush();
 }
 
+static void do_rename(struct session *s, const char *arg)
+{
+    if (arg && *arg) {
+        if (session_rename(s, arg))
+            ui_note("renamed to %s", session_title(s));
+        else
+            ui_error("could not use that name");
+    } else if (session_rename(s, NULL)) {
+        ui_note("naming this session again");
+    } else {
+        ui_error("nothing to name it from yet");
+    }
+    ui_put("\n");
+    ui_flush();
+}
+
 static int split_command(const char *line, char *name, size_t size, const char **arg)
 {
     if (*line != '/')
@@ -853,6 +870,8 @@ static enum cmd_result run_command(struct session *s, const char *name,
         sessionswitch_run();
     } else if (!strcmp(name, "/status")) {
         hud_print(s);
+    } else if (!strcmp(name, "/rename")) {
+        do_rename(s, arg);
     } else if (!strcmp(name, "/session")) {
         session_report(s);
     } else if (!strcmp(name, "/copy")) {

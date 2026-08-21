@@ -48,6 +48,7 @@ struct session {
     char    *resolved;
     char     id[128];
     char     title[128];
+    char     stale_title[128];
     int      retitle;
     int      named;
     double   named_at;
@@ -469,6 +470,21 @@ static void quota_poll(struct session *s)
         agenttabs_usage(limit.used_percent, limit.resets_at, limit.window_minutes);
 }
 
+// Takes the cached name, unless it is the one a rename is replacing.
+static int adopt_title(struct session *s)
+{
+    char found[sizeof s->title];
+    if (!title_lookup(s->id, found, sizeof found))
+        return 0;
+    if (s->stale_title[0] && !strcmp(found, s->stale_title))
+        return 0;
+    s->stale_title[0] = '\0';
+    snprintf(s->title, sizeof s->title, "%s", found);
+    status_set_note(s->title);
+    publish(s, s->idle_busy ? "working" : "finished");
+    return 1;
+}
+
 static void name_poll(struct session *s)
 {
     if (!s || s->title[0] || !s->agent)
@@ -483,11 +499,8 @@ static void name_poll(struct session *s)
             return;
     }
 
-    if (s->skip_naming)
-        return;
-
     if (!s->named) {
-        if (!s->prompt)
+        if (s->skip_naming || !s->prompt)
             return;
         const char *model = s->resolved && *s->resolved ? s->resolved : s->model;
         title_request(s->id, s->backend, model, s->cwd, s->prompt, s->last_reply);
@@ -501,11 +514,38 @@ static void name_poll(struct session *s)
     if (now - s->named_at < 1.0)
         return;
     s->named_at = now;
-    if (title_lookup(s->id, s->title, sizeof s->title)) {
-        status_set_note(s->title);
-        // The name is what the other windows list this session by.
-        publish(s, s->idle_busy ? "working" : "finished");
+    // The name is what the other windows list this session by.
+    adopt_title(s);
+}
+
+int session_rename(struct session *s, const char *name)
+{
+    if (!s || !s->id[0])
+        return 0;
+
+    if (name && *name) {
+        if (!title_set(s->id, name))
+            return 0;
+        s->stale_title[0] = '\0';
+        if (!adopt_title(s))
+            return 0;
+        s->named = 1;
+        s->retitle = 0;
+        return 1;
     }
+
+    if (!s->prompt)
+        return 0;
+
+    const char *model = s->resolved && *s->resolved ? s->resolved : s->model;
+    title_request(s->id, s->backend, model, s->cwd, s->prompt, s->last_reply);
+    snprintf(s->stale_title, sizeof s->stale_title, "%s", s->title);
+    s->title[0] = '\0';
+    s->named = 1;
+    s->retitle = 0;
+    s->named_at = now_seconds();
+    status_set_note(NULL);
+    return 1;
 }
 
 static int effort_is_off(const char *effort)
@@ -809,6 +849,7 @@ static void set_id(struct session *s, const char *id)
     if (changed) {
 
         s->title[0] = '\0';
+        s->stale_title[0] = '\0';
         s->named = 0;
         if (!s->retitle)
             title_lookup(s->id, s->title, sizeof s->title);
@@ -1034,6 +1075,7 @@ int session_set_cwd(struct session *s, const char *path)
     replace(&s->last_block, NULL);
     transcript_clear(&s->transcript);
     s->title[0] = '\0';
+    s->stale_title[0] = '\0';
     s->retitle = 1;
     s->named = 0;
     status_set_note(NULL);
@@ -1060,6 +1102,7 @@ int session_clear(struct session *s)
     transcript_clear(&s->transcript);
 
     s->title[0] = '\0';
+    s->stale_title[0] = '\0';
     s->retitle = 1;
     s->named = 0;
     status_set_note(NULL);
@@ -1080,10 +1123,7 @@ static void update_title(struct session *s)
         name_poll(s);
         return;
     }
-    if (title_lookup(s->id, s->title, sizeof s->title)) {
-        status_set_note(s->title);
-        publish(s, s->idle_busy ? "working" : "finished");
-    }
+    adopt_title(s);
 }
 
 static void print_footer(struct session *s, double elapsed)
