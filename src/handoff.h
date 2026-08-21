@@ -24,7 +24,10 @@ int handoff_screen_path(const char *id, char *out, size_t size);
 int handoff_publish(const char *id);
 
 // Asks the window at `pid` for `id` and waits for it to let go. Fills `screen`
-// with the dump to restore, which the caller unlinks once it has it.
-int handoff_ask(long pid, const char *id, char *screen, size_t size);
+// with the dump to restore, which the caller unlinks once it has it. `tick`,
+// where given, is called every poll with how long the wait has run, so a
+// window that is slow to answer can be said so.
+int handoff_ask(long pid, const char *id, char *screen, size_t size,
+                void (*tick)(int waited_ms, void *ud), void *ud);
 
 #endif

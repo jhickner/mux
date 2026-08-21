@@ -222,6 +222,16 @@ static void leave(void)
     borrowed = -1;
 }
 
+void workspace_render(int index, void (*fn)(struct session *s, void *ud), void *ud)
+{
+    if (!fn || index < 0 || index >= ntabs)
+        return;
+    enter(index);
+    fn(tabs[index].s, ud);
+    ui_flush();
+    leave();
+}
+
 int workspace_find_id(const char *id)
 {
     if (!id || !*id)

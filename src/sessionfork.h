@@ -16,6 +16,10 @@ enum fork_where {
 
 int sessionfork_run(const struct session *s, enum fork_where where);
 
+// A plain shell beside this one, in the directory the session works in.
+// Nothing of the conversation goes with it.
+int sessionfork_shell(const struct session *s, enum fork_where where, int quiet);
+
 void sessionfork_exit_note(const struct session *s);
 
 #endif

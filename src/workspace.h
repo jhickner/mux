@@ -27,6 +27,11 @@ int  workspace_open(struct session *s);
 
 void workspace_show(int index);
 
+// Runs `fn` with `index` holding the screen, so what it draws lands in that
+// tab's own screen rather than on the terminal. The tab in front draws where
+// it always does.
+void workspace_render(int index, void (*fn)(struct session *s, void *ud), void *ud);
+
 // The tab holding a conversation, by the backend's id for it.
 int  workspace_find_id(const char *id);
 

@@ -74,6 +74,8 @@ struct prompt {
     void        *takeover_ud;
     void       (*switcher)(void *ud);
     void        *switcher_ud;
+    void       (*split)(void *ud, int quiet);
+    void        *split_ud;
     int        (*cancel)(void *ud);
     void        *cancel_ud;
     int          stopped;
@@ -755,6 +757,15 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
             edit_in_editor(p, live);
             return KEY_OK;
         }
+        // A shell beside this one, where the session is working. Nothing is
+        // said about it mid-turn: the stream owns the screen then.
+        if (ev->cp == 20) {
+            if (p->split)
+                p->split(p->split_ud, live);
+            if (!live)
+                repaint(p);
+            return KEY_OK;
+        }
         if (ev->cp == 14 || ev->cp == 15) {
             cycle_colors(p, live, ev->cp == 14);
             return KEY_OK;
@@ -932,6 +943,12 @@ void prompt_set_switcher(struct prompt *p, void (*fn)(void *ud), void *ud)
 {
     p->switcher = fn;
     p->switcher_ud = ud;
+}
+
+void prompt_set_split(struct prompt *p, void (*fn)(void *ud, int quiet), void *ud)
+{
+    p->split = fn;
+    p->split_ud = ud;
 }
 
 void prompt_stop(struct prompt *p)

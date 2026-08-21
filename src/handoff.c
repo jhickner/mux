@@ -127,7 +127,8 @@ static void nap(void)
     nanosleep(&ts, NULL);
 }
 
-int handoff_ask(long pid, const char *id, char *screen, size_t size)
+int handoff_ask(long pid, const char *id, char *screen, size_t size,
+                void (*tick)(int waited_ms, void *ud), void *ud)
 {
     char req[4400], state[4400], no[4400];
     if (!id_ok(id) || !request_path(pid, req, sizeof req) ||
@@ -168,6 +169,8 @@ int handoff_ask(long pid, const char *id, char *screen, size_t size)
         }
         if (!livelist_alive(pid))
             break;
+        if (tick)
+            tick(waited, ud);
         nap();
     }
 

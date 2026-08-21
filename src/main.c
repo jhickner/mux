@@ -60,6 +60,59 @@ static void restore_terminal(void)
     tty_raw_end();
 }
 
+// A session the window had before a restart, drawn into its own screen: it is
+// not the tab in front, so what it says goes to its stash rather than the
+// terminal. The screen it had comes back whole where the old build could dump
+// it, and off the transcript where it could not.
+static void replay_tab(struct session *s, void *ud)
+{
+    const char *screen = ud;
+    struct stat st;
+
+    if (screen && *screen && stat(screen, &st) == 0 && st.st_size > 0 &&
+        scrollback_restore(screen))
+        return;
+    hud_print(s);
+    sessionload_into(s);
+}
+
+// One line per session, as restart.c wrote them: backend, directory, model,
+// effort, id, screen.
+static void restore_tabs(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return;
+
+    // Opening a tab puts it in front; the window belongs to the session that
+    // carried the screen, so it goes back there before the replay is drawn.
+    int front = workspace_index();
+
+    char line[6144];
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\n")] = '\0';
+        char *rest = line;
+        const char *backend = strsep(&rest, "\t");
+        const char *cwd = strsep(&rest, "\t");
+        const char *model = strsep(&rest, "\t");
+        const char *effort = strsep(&rest, "\t");
+        const char *id = strsep(&rest, "\t");
+        const char *screen = strsep(&rest, "\t");
+        if (!backend || !*backend || !cwd || !id || !*id)
+            continue;
+
+        int at = workspace_spawn(backend, model && *model ? model : NULL,
+                                 effort && *effort ? effort : NULL, cwd, id);
+        if (at < 0)
+            continue;
+        workspace_show(front);
+        workspace_render(at, replay_tab, (void *)screen);
+        if (screen && *screen)
+            unlink(screen);
+    }
+    fclose(f);
+}
+
 static void usage(void)
 {
     char choices[128];
@@ -78,6 +131,7 @@ static void usage(void)
             "  --session id  resume a specific conversation (used by the fork commands)\n"
             "  --fork     with --session: branch off it instead of writing back to it\n"
             "  --restore f  take over the screen from a restarting mux (used by /restart)\n"
+            "  --tabs f   reopen the sessions a restarting mux was holding (used by /restart)\n"
             "  -h         this help\n"
             "\n"
             "With a prompt on the command line, answer it and exit.\n",
@@ -140,6 +194,11 @@ static int idle_busy(void *ud)   { (void)ud; return workspace_busy(); }
 static void replay(void *ud)      { (void)ud; session_replay(workspace_current()); }
 static void blank_line(void *ud)  { (void)ud; hud_print(workspace_current()); }
 static void switcher(void *ud)    { (void)ud; sessionswitch_run(); }
+static void splitter(void *ud, int quiet)
+{
+    (void)ud;
+    sessionfork_shell(workspace_current(), FORK_SPLIT_H, quiet);
+}
 
 // The same signal carries a restart and a request for one of this window's
 // sessions; which it is depends on whether a request is waiting.
@@ -167,13 +226,10 @@ static int idle_restart(void *ud)
 {
     (void)ud;
     // Returns only when the new build could not be run at all, in which case
-    // this session keeps going on the old one.
+    // this window keeps going on the old one.
     sidechannel_close_all();
-    // Only the session in front travels; the others are closed, and their
-    // conversations are in the list to resume from.
-    for (int i = workspace_count() - 1; i >= 0; i--)
-        if (i != workspace_index())
-            workspace_close(i);
+    // The whole window travels: the session in front carries the screen, and
+    // the rest are named in a file the new build opens a tab from.
     if (!restart_exec(workspace_current())) {
         ui_error("could not restart: no runnable %s at %s or on PATH — "
                  "staying on this build",
@@ -239,6 +295,7 @@ int main(int argc, char **argv)
         {"session", required_argument, NULL, 'S'},
         {"fork",    no_argument,       NULL, 'F'},
         {"restore", required_argument, NULL, 'R'},
+        {"tabs",    required_argument, NULL, 'B'},
         {"telegram", no_argument,      NULL, 'T'},
         {"connect", required_argument, NULL, 'N'},
         {"help",    no_argument,       NULL, 'h'},
@@ -251,6 +308,7 @@ int main(int argc, char **argv)
     const char *dir = NULL;
     const char *session_arg = NULL;
     const char *restore_arg = NULL;
+    const char *tabs_arg = NULL;
     int telegram = 0;
     int fork_session = 0;
     int safe_mode = 0;
@@ -268,6 +326,7 @@ int main(int argc, char **argv)
         case 'S': session_arg = optarg; break;
         case 'F': fork_session = 1; break;
         case 'R': restore_arg = optarg; break;
+        case 'B': tabs_arg = optarg; break;
         case 'T': telegram = 1; break;
         case 'N':
             if (strcmp(optarg, "telegram")) {
@@ -481,6 +540,7 @@ int main(int argc, char **argv)
     prompt_set_restart(prompt, restart_pending, idle_restart, NULL);
     prompt_set_takeover(prompt, takeover_pending, takeover_run, prompt);
     prompt_set_switcher(prompt, switcher, NULL);
+    prompt_set_split(prompt, splitter, NULL);
     prompt_set_cancel(prompt, cancel_turn, NULL);
     workspace_on_finish(turn_done);
     prompt_set_replay(prompt, replay, NULL);
@@ -493,6 +553,11 @@ int main(int argc, char **argv)
 
     if (!resume || !cmd_resume(session))
         hud_print(session);
+
+    if (tabs_arg) {
+        restore_tabs(tabs_arg);
+        unlink(tabs_arg);
+    }
 
     // Started on a conversation that already exists — a fork, or a window
     // opened for one from the command line. What was said in it belongs on the
@@ -511,8 +576,15 @@ int main(int argc, char **argv)
         if (line) {
             if (!cmd_self_echoes(line))
                 prompt_echo_message(line);
-        } else
+        } else {
             line = prompt_read(prompt);
+            // ctrl-d on an empty prompt closes this session; the window only
+            // goes away once it is holding the last one.
+            if (!line && workspace_count() > 1) {
+                workspace_close(workspace_index());
+                continue;
+            }
+        }
         if (!line)
             break;
 

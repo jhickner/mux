@@ -52,6 +52,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/fs", "alias for /fh", NULL},
     {"/fv", "fork into a vertical tmux split", NULL},
     {"/fw", "fork into a tmux window", NULL},
+    {"/split", "a shell split here, in this directory", "[h|v|w]"},
     {"/status", "reprint the status bar", NULL},
     {"/session", "show this session's info and totals", NULL},
     {"/rename", "name this session, or ask the model to name it again", "[name]"},
@@ -219,7 +220,8 @@ static void show_help(void)
     help_row("ctrl-r", "search history");
     help_row("esc", "interrupt the model or a running tool");
     help_row("ctrl-c", "clear the prompt line, or interrupt a running turn");
-    help_row("ctrl-d", "quit (on an empty prompt)");
+    help_row("ctrl-d", "close the session (quit on the last one)");
+    help_row("ctrl-t", "a shell split here, in this directory");
     help_row("ctrl-l", "clear the screen");
     ui_put("\n");
     help_heading("skills");
@@ -643,6 +645,16 @@ static void do_copy(struct session *s)
     ui_flush();
 }
 
+static void do_split(struct session *s, const char *arg)
+{
+    enum fork_where where = FORK_SPLIT_H;
+    if (arg && (*arg == 'v' || *arg == 'V'))
+        where = FORK_SPLIT_V;
+    else if (arg && (*arg == 'w' || *arg == 'W'))
+        where = FORK_WINDOW;
+    sessionfork_shell(s, where, 0);
+}
+
 static void do_rename(struct session *s, const char *arg)
 {
     if (arg && *arg) {
@@ -870,6 +882,8 @@ static enum cmd_result run_command(struct session *s, const char *name,
         sessionswitch_run();
     } else if (!strcmp(name, "/status")) {
         hud_print(s);
+    } else if (!strcmp(name, "/split")) {
+        do_split(s, arg);
     } else if (!strcmp(name, "/rename")) {
         do_rename(s, arg);
     } else if (!strcmp(name, "/session")) {

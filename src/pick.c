@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "chrome.h"
+#include "status.h"
 #include "tty.h"
 #include "ui.h"
 
@@ -14,7 +15,10 @@ struct view {
     int visible;
     const char *title;
     const struct pick_item *items;
+    const struct pick_live *live;
     const unsigned char *heading;
+    int frame;
+    double frame_at;
     int n;          // every item offered
     int *order;     // the ones the query kept, best first
     int *score;
@@ -52,9 +56,28 @@ static int fuzzy(const char *name, const char *q)
     return score;
 }
 
+static const char *const SPIN[] = {"\xe2\xa0\x8b", "\xe2\xa0\x99", "\xe2\xa0\xb9",
+                                  "\xe2\xa0\xb8", "\xe2\xa0\xbc", "\xe2\xa0\xb4",
+                                  "\xe2\xa0\xa6", "\xe2\xa0\xa7", "\xe2\xa0\x87",
+                                  "\xe2\xa0\x8f"};
+
 static int item_heading(const struct view *v, int i)
 {
     return v->heading && v->heading[i];
+}
+
+static int item_spins(const struct view *v, int i)
+{
+    return v->live && v->live->spin && v->live->spin[i];
+}
+
+// Anything turning on screen, so the wait for a key knows to end on a frame.
+static int animating(const struct view *v)
+{
+    for (int i = 0; i < v->count; i++)
+        if (item_spins(v, v->order[i]))
+            return 1;
+    return 0;
 }
 
 static int row_heading(const struct view *v, int row)
@@ -110,16 +133,19 @@ static int visible_cap(const struct view *v)
 static void refilter(struct view *v)
 {
     int keep = (v->count && v->sel < v->count) ? v->order[v->sel] : -1;
+    int under = 0;      // the query names the heading these rows sit under
 
     v->count = 0;
     for (int i = 0; i < v->n; i++) {
         // A grouped list keeps its order, so every row stays under the
-        // heading that says where it lives. A heading whose group the query
-        // emptied goes with it.
+        // heading that says where it lives. A heading matches for everything
+        // beneath it -- typing part of a directory keeps that whole group --
+        // and one whose group the query emptied goes with it.
         if (item_heading(v, i)) {
-            int has = 0;
-            for (int j = i + 1; j < v->n && !item_heading(v, j); j++)
-                if (!v->query[0] || fuzzy(v->items[j].label, v->query) >= 0)
+            under = !v->query[0] || fuzzy(v->items[i].label, v->query) >= 0;
+            int has = under;
+            for (int j = i + 1; !has && j < v->n && !item_heading(v, j); j++)
+                if (fuzzy(v->items[j].label, v->query) >= 0)
                     has = 1;
             if (!has)
                 continue;
@@ -128,7 +154,7 @@ static void refilter(struct view *v)
             continue;
         }
         int s = v->query[0] ? fuzzy(v->items[i].label, v->query) : 0;
-        if (s < 0)
+        if (s < 0 && !under)
             continue;
         int at = v->count++;
         // Ungrouped lists rank the best match first instead.
@@ -138,7 +164,7 @@ static void refilter(struct view *v)
             at--;
         }
         v->order[at] = i;
-        v->score[at] = s;
+        v->score[at] = s < 0 ? 0 : s;
     }
 
     v->sel = 0;
@@ -157,7 +183,7 @@ static void refilter(struct view *v)
 }
 
 static int run(const char *title, const struct pick_item *items, int count,
-               int initial, const unsigned char *heading, const char *shortcuts,
+               int initial, const struct pick_live *live, const char *shortcuts,
                int *pressed, int filter);
 
 // A modal section: chrome.c paints it in place of the whole stack.
@@ -226,14 +252,34 @@ static void paint(void *ud)
         ui_esc(ui_style(selected ? UI_ACCENT : UI_RESET));
         ui_put(selected ? "  \xe2\x86\x92 " : "    ");
 
-        size_t label_budget = columns > 5 ? (size_t)(columns - 5) : 1;
+        // The status column: what the row is doing, ahead of what it is.
+        size_t status = 0;
+        if (v->live && (v->live->spin || v->live->mark)) {
+            const char *mark = v->live->mark ? v->live->mark[i] : NULL;
+            if (item_spins(v, i)) {
+                ui_esc(ui_style(UI_SPIN));
+                ui_put(SPIN[v->frame % (int)(sizeof SPIN / sizeof *SPIN)]);
+                ui_esc(ui_style(selected ? UI_ACCENT : UI_RESET));
+                ui_put(" ");
+            } else if (mark && *mark) {
+                ui_esc(ui_style(UI_ERROR));
+                ui_put(mark);
+                ui_esc(ui_style(selected ? UI_ACCENT : UI_RESET));
+                ui_put(" ");
+            } else {
+                ui_put("  ");
+            }
+            status = 2;
+        }
+
+        size_t label_budget = columns > 5 + (int)status ? (size_t)(columns - 5 - (int)status) : 1;
         size_t label_n = ui_fit_bytes(items[i].label, label_budget);
         ui_putn(items[i].label, label_n);
         if (items[i].label[label_n])
             ui_put("…");
         ui_esc(ui_style(UI_RESET));
 
-        size_t used = 4 + ui_cells_n(items[i].label, label_n) +
+        size_t used = 4 + status + ui_cells_n(items[i].label, label_n) +
                       (items[i].label[label_n] ? 1 : 0);
 
         if (items[i].detail && *items[i].detail) {
@@ -289,11 +335,11 @@ int pick_run_ex(const char *title, const struct pick_item *items, int count,
     return run(title, items, count, initial, NULL, shortcuts, pressed, 1);
 }
 
-int pick_run_groups(const char *title, const struct pick_item *items, int count,
-                    int initial, const unsigned char *heading,
-                    const char *shortcuts, int *pressed)
+int pick_run_live(const char *title, const struct pick_item *items, int count,
+                  int initial, const struct pick_live *live,
+                  const char *shortcuts, int *pressed)
 {
-    return run(title, items, count, initial, heading, shortcuts, pressed, 1);
+    return run(title, items, count, initial, live, shortcuts, pressed, 1);
 }
 
 int pick_run_keys(const char *title, const struct pick_item *items, int count,
@@ -321,7 +367,7 @@ static int type_into(struct view *v, const char *s, size_t n)
 }
 
 static int run(const char *title, const struct pick_item *items, int count,
-               int initial, const unsigned char *heading, const char *shortcuts,
+               int initial, const struct pick_live *live, const char *shortcuts,
                int *pressed, int filter)
 {
     if (pressed)
@@ -332,7 +378,8 @@ static int run(const char *title, const struct pick_item *items, int count,
     struct view v = {0};
     v.title = title;
     v.items = items;
-    v.heading = heading;
+    v.live = live;
+    v.heading = live ? live->heading : NULL;
     v.n = count;
     v.filter = filter;
     v.order = calloc((size_t)count, sizeof *v.order);
@@ -359,9 +406,19 @@ static int run(const char *title, const struct pick_item *items, int count,
     int result = -1;
     for (;;) {
         tty_event ev;
-        if (!tty_read(&ev, -1)) {
+        int turning = animating(&v);
+        if (!tty_read(&ev, turning ? SPIN_FRAME_MS : -1)) {
             if (chrome_modal_interrupted())
                 goto done;
+            if (!turning)
+                continue;
+            // A frame of the spinners, and a chance for the caller to say the
+            // rows have moved on.
+            int moved = v.live && v.live->tick && v.live->tick(v.live->ud);
+            if (moved)
+                refilter(&v);
+            if (spin_advance(&v.frame, &v.frame_at) || moved)
+                chrome_paint();
             continue;
         }
         if (ev.key == TK_TEXT) {
@@ -396,6 +453,27 @@ static int run(const char *title, const struct pick_item *items, int count,
             refilter(&v);
             break;
         }
+        case TK_RIGHT:
+            // The way back in, where left was the way out to this list.
+            if (!shortcuts || !strchr(shortcuts, PICK_KEY_RIGHT))
+                continue;
+            if (!v.count || row_heading(&v, v.sel))
+                break;
+            result = v.order[v.sel];
+            if (pressed)
+                *pressed = PICK_KEY_RIGHT;
+            goto done;
+        case TK_NEWLINE:
+            // Shift-enter, where the terminal reports it. Only a caller that
+            // asked for it hears about it.
+            if (!shortcuts || !strchr(shortcuts, '\n'))
+                continue;
+            if (!v.count || row_heading(&v, v.sel))
+                break;
+            result = v.order[v.sel];
+            if (pressed)
+                *pressed = '\n';
+            goto done;
         case TK_ENTER:
             if (!v.count || row_heading(&v, v.sel))
                 break;

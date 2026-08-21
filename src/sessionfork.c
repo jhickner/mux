@@ -123,6 +123,46 @@ int sessionfork_run(const struct session *s, enum fork_where where)
     return 1;
 }
 
+int sessionfork_shell(const struct session *s, enum fork_where where, int quiet)
+{
+    if (!getenv("TMUX")) {
+        ui_error("splitting needs tmux");
+        ui_put("\n");
+        ui_flush();
+        return 0;
+    }
+
+    char *tmux[8];
+    int n = 0;
+    tmux[n++] = "tmux";
+    if (where == FORK_WINDOW) {
+        tmux[n++] = "new-window";
+    } else {
+        tmux[n++] = "split-window";
+        tmux[n++] = where == FORK_SPLIT_H ? "-h" : "-v";
+    }
+
+    const char *cwd = session_cwd(s);
+    if (cwd && *cwd) {
+        tmux[n++] = "-c";
+        tmux[n++] = (char *)cwd;
+    }
+    tmux[n] = NULL;
+
+    if (run(tmux, NULL) != 0) {
+        ui_error("tmux would not open the %s", where == FORK_WINDOW ? "window" : "split");
+        ui_put("\n");
+        ui_flush();
+        return 0;
+    }
+    if (!quiet) {
+        ui_bar(ui_style(UI_DIM), "split");
+        ui_put("\n");
+        ui_flush();
+    }
+    return 1;
+}
+
 void sessionfork_exit_note(const struct session *s)
 {
     const char *id = session_id(s);

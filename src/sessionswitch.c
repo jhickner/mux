@@ -10,6 +10,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "ask.h"
 #include "cmd.h"
 #include "handoff.h"
 #include "hud.h"
@@ -18,7 +19,9 @@
 #include "scrollback.h"
 #include "sessionload.h"
 #include "session.h"
+#include "status.h"
 #include "text.h"
+#include "title.h"
 #include "ui.h"
 #include "vendor/agents/backend.h"
 #include "workspace.h"
@@ -26,6 +29,7 @@
 #define KEY_CLOSE  0x18   /* ctrl-x */
 #define KEY_NEW    0x0e   /* ctrl-n */
 #define KEY_GO     0x07   /* ctrl-g */
+#define KEY_RENAME 0x12   /* ctrl-r */
 
 #define MAX_ROWS 128
 
@@ -39,6 +43,9 @@ enum row_kind {
 struct row {
     enum row_kind kind;
     int  at;            /* index into whichever list the kind names */
+    int  spin;          /* a turn is running: the status column turns */
+    char mark[4];       /* what the status column says when it does not */
+    char id[128];
     char cwd[512];      /* what the row is grouped under */
     char label[256];
     char detail[512];
@@ -66,13 +73,13 @@ static const char *short_model(const char *backend, const char *model)
     return model;
 }
 
-static const char *status_mark(const char *status)
+// The same states the tmux tabs show: a spinner while a turn runs, a mark
+// when one ended badly, nothing when there is nothing to say.
+static void row_status(struct row *r, const char *status)
 {
-    if (!strcmp(status, "working"))
-        return "\xe2\x97\x8f";   /* a filled dot: a turn is running */
-    if (!strcmp(status, "errored"))
-        return "\xc3\x97";
-    return " ";
+    r->spin = status && !strcmp(status, "working");
+    snprintf(r->mark, sizeof r->mark, "%s",
+             status && !strcmp(status, "errored") ? "e" : "");
 }
 
 static void tab_rows(struct row *rows, int *n)
@@ -91,11 +98,93 @@ static void tab_rows(struct row *rows, int *n)
                  i == workspace_index() ? "\xe2\x96\xb8" : " ",
                  title && *title ? title : "untitled",
                  i == workspace_index() ? " (here)" : "");
-        snprintf(r->detail, sizeof r->detail, "%s %s %s",
+        snprintf(r->id, sizeof r->id, "%s", session_id(s) ? session_id(s) : "");
+        snprintf(r->detail, sizeof r->detail, "%s %s",
                  session_backend(s),
-                 session_model_short(s, session_model_label(s)),
-                 status_mark(status));
+                 session_model_short(s, session_model_label(s)));
+        row_status(r, status);
     }
+}
+
+// Which window each pane sits in, asked once per listing. A record published
+// by a build that did not know its window, or before tmux told it, still says
+// where it is: the pane id it carries is enough to look up.
+#define MAX_PANES 256
+
+static struct {
+    char pane[16];
+    char window[16];
+    char name[64];
+} panes[MAX_PANES];
+static int npanes;
+
+static void panes_load(void)
+{
+    npanes = 0;
+    if (!getenv("TMUX"))
+        return;
+    // A window name can hold spaces, so it comes last and takes the rest.
+    FILE *p = popen("tmux list-panes -a -F "
+                    "'#{pane_id} #{window_id} #{window_index}:#{window_name}' "
+                    "2>/dev/null", "r");
+    if (!p)
+        return;
+    char line[256];
+    while (npanes < MAX_PANES && fgets(line, sizeof line, p)) {
+        char pane[16], window[16];
+        int  at = 0;
+        if (sscanf(line, "%15s %15s %n", pane, window, &at) < 2 || !at)
+            continue;
+        line[strcspn(line, "\n")] = '\0';
+        snprintf(panes[npanes].pane, sizeof panes[npanes].pane, "%s", pane);
+        snprintf(panes[npanes].window, sizeof panes[npanes].window, "%s", window);
+        snprintf(panes[npanes].name, sizeof panes[npanes].name, "%s", line + at);
+        npanes++;
+    }
+    pclose(p);
+}
+
+static int pane_at(const char *pane)
+{
+    for (int i = 0; i < npanes; i++)
+        if (!strcmp(panes[i].pane, pane))
+            return i;
+    return -1;
+}
+
+// What the row says about a session another window is holding. Redone while
+// the list is open, so a turn starting or ending over there shows here.
+static void fill_live(struct row *r, const struct live_session *v)
+{
+    char when[32];
+    relative_time(v->ts, when, sizeof when);
+
+    // Under tmux, a session in this same window is nearer than one in a
+    // window elsewhere: both are taken the same way, but one is in sight.
+    const char *here = livelist_tmux_window();
+    int at = v->pane[0] ? pane_at(v->pane) : -1;
+    // What tmux says now beats what the record said when it was written:
+    // a window can be renamed, and a pane moved, under a session.
+    const char *window = at >= 0 ? panes[at].window : (v->window[0] ? v->window : NULL);
+    const char *wname = at >= 0 ? panes[at].name : (v->wname[0] ? v->wname : NULL);
+    int in_tmux = here[0] != '\0';
+    int near = in_tmux && window && !strcmp(window, here);
+    // The window it is in, unless that is this one: a row with nothing to
+    // say about where it lives is here.
+    char where[96] = "";
+    if (in_tmux && !near && wname && *wname)
+        snprintf(where, sizeof where, "%s \xc2\xb7 ", wname);
+
+    // The arrow says another mux is holding this one: choosing it takes it
+    // over here, where the rows without an arrow only switch.
+    snprintf(r->label, sizeof r->label, "%s %s",
+             near ? "\xe2\x87\xa2" : "\xe2\x87\x84",
+             v->title[0] ? v->title : "untitled");
+    snprintf(r->detail, sizeof r->detail, "%s %s \xc2\xb7 %s%s",
+             v->backend,
+             short_model(v->backend, v->label[0] ? v->label : v->model),
+             where, when);
+    row_status(r, v->status);
 }
 
 static void live_rows(struct row *rows, int *n, const struct live_session *live, int count)
@@ -105,33 +194,12 @@ static void live_rows(struct row *rows, int *n, const struct live_session *live,
         if (v->mine || !v->id[0])
             continue;
 
-        char when[32];
-        relative_time(v->ts, when, sizeof when);
-
-        // Under tmux, a pane of this same window is nearer than a window
-        // elsewhere, and the two are worth telling apart: both are taken the
-        // same way, but one is in sight.
-        const char *here = livelist_tmux_window();
-        int near = here[0] && v->window[0] && !strcmp(v->window, here);
-        char where[96] = "";
-        if (near && v->pane_index[0])
-            snprintf(where, sizeof where, "pane %s \xc2\xb7 ", v->pane_index);
-        else if (v->wname[0])
-            snprintf(where, sizeof where, "%s \xc2\xb7 ", v->wname);
-
         struct row *r = &rows[(*n)++];
         r->kind = ROW_LIVE;
         r->at = i;
+        snprintf(r->id, sizeof r->id, "%s", v->id);
         path_home_relative(v->cwd, r->cwd, sizeof r->cwd);
-        // The arrow says another mux is holding this one: choosing it takes
-        // it over here, where the rows without an arrow only switch.
-        snprintf(r->label, sizeof r->label, "%s %s",
-                 near ? "\xe2\x87\xa2" : "\xe2\x87\x84",
-                 v->title[0] ? v->title : "untitled");
-        snprintf(r->detail, sizeof r->detail, "%s %s \xc2\xb7 %s%s %s",
-                 v->backend,
-                 short_model(v->backend, v->label[0] ? v->label : v->model),
-                 where, when, status_mark(v->status));
+        fill_live(r, v);
     }
 }
 
@@ -176,7 +244,6 @@ static int group_rows(const struct row *in, int n, struct row *out,
             if (m >= max)
                 continue;
             out[m] = in[i];
-            snprintf(out[m].label, sizeof out[m].label, "  %s", in[i].label);
             heading[m] = 0;
             m++;
         }
@@ -226,6 +293,19 @@ static void jump(const struct live_session *v)
 
 // A live record holds everything a window needs to open the same conversation
 // once the window that had it lets go.
+// A window at its prompt answers in a moment; one that is off running a
+// command of its own only answers when it comes back, so the wait says so.
+static void waiting(int waited_ms, void *ud)
+{
+    int *said = ud;
+    if (waited_ms < 1000 || *said)
+        return;
+    *said = 1;
+    ui_bar(ui_style(UI_DIM), "it has not answered yet \xc2\xb7 waiting\xe2\x80\xa6");
+    ui_put("\n");
+    ui_flush();
+}
+
 static void yank(const struct live_session *v)
 {
     ui_bar(ui_style(UI_DIM), "asking %s for it\xe2\x80\xa6", v->pane[0] ? v->pane : "the other window");
@@ -233,7 +313,8 @@ static void yank(const struct live_session *v)
     ui_flush();
 
     char screen[4400];
-    if (!handoff_ask(v->pid, v->id, screen, sizeof screen)) {
+    int said = 0;
+    if (!handoff_ask(v->pid, v->id, screen, sizeof screen, waiting, &said)) {
         ui_error("that window would not let go of it");
         ui_put("\n");
         ui_flush();
@@ -298,7 +379,106 @@ static void open_new(void)
     ui_flush();
 }
 
-void sessionswitch_run(void)
+// A session another window is holding is renamed through the shared title
+// file: that window reads the name back the next time it publishes itself.
+static void rename_row(const struct row *r, struct live_session *live)
+{
+    struct session *tab = r->kind == ROW_TAB ? workspace_at(r->at) : NULL;
+    struct live_session *v = r->kind == ROW_LIVE ? &live[r->at] : NULL;
+    if (!tab && !v)
+        return;
+
+    const char *was = tab ? session_title(tab) : (v->title[0] ? v->title : NULL);
+    char *name = ask_run("rename this session", was);
+    if (!name)
+        return;
+
+    int ok = tab ? session_rename(tab, name) : title_set(v->id, name);
+    if (ok && v)
+        snprintf(v->title, sizeof v->title, "%s", name);
+    // A rename takes the name for the session it was for; the note on screen
+    // belongs to whichever session this window is showing.
+    if (ok && tab && tab != workspace_current())
+        status_set_note(session_title(workspace_current()));
+    if (!ok) {
+        ui_error("could not use that name");
+        ui_put("\n");
+        ui_flush();
+    }
+    free(name);
+}
+
+// What the open list needs to keep saying the truth: the rows, the columns
+// pick draws them with, and the records they were built from.
+struct listing {
+    struct row          *rows;
+    int                  n;
+    unsigned char       *spin;
+    const char         **marks;
+    struct live_session **live;
+    int                 *nlive;
+    int                  ticks;
+};
+
+static void sync_columns(struct listing *l)
+{
+    for (int i = 0; i < l->n; i++) {
+        l->spin[i] = (unsigned char)l->rows[i].spin;
+        l->marks[i] = l->rows[i].mark;
+    }
+}
+
+// Every few spinner frames the records are read again, so a turn starting in
+// another window reaches this list without closing it.
+static int relist(void *ud)
+{
+    struct listing *l = ud;
+    if (++l->ticks % 6)
+        return 0;
+
+    struct live_session *fresh = NULL;
+    int nfresh = livelist_load(&fresh);
+    free(*l->live);
+    *l->live = fresh;
+    *l->nlive = nfresh;
+
+    for (int i = 0; i < l->n; i++) {
+        struct row *r = &l->rows[i];
+        if (r->kind == ROW_TAB) {
+            struct session *s = r->at < workspace_count() ? workspace_at(r->at) : NULL;
+            if (s)
+                row_status(r, workspace_status(s));
+            continue;
+        }
+        if (r->kind != ROW_LIVE)
+            continue;
+        // The row keeps its place; which record it names may have moved.
+        r->at = -1;
+        for (int j = 0; j < nfresh; j++)
+            if (!strcmp(fresh[j].id, r->id)) {
+                r->at = j;
+                break;
+            }
+        if (r->at >= 0) {
+            char label[sizeof r->label];
+            snprintf(label, sizeof label, "%s", r->label);
+            fill_live(r, &fresh[r->at]);
+            // The name is what the query filters on, so it is left alone
+            // while the list is open.
+            snprintf(r->label, sizeof r->label, "%s", label);
+        } else {
+            // Gone while the list was open: nothing to take any more.
+            r->spin = 0;
+            r->mark[0] = '\0';
+        }
+    }
+    sync_columns(l);
+    return 1;
+}
+
+// Returns nonzero when the list should be shown again: a rename leaves the
+// window where it was.
+static int switch_once(void)
 {
     struct live_session *live = NULL;
     int nlive = livelist_load(&live);
@@ -306,15 +486,20 @@ void sessionswitch_run(void)
     struct row *found = calloc(MAX_ROWS, sizeof *found);
     struct row *rows = calloc(MAX_ROWS, sizeof *rows);
     unsigned char *heading = calloc(MAX_ROWS, 1);
-    if (!found || !rows || !heading) {
+    unsigned char *spin = calloc(MAX_ROWS, 1);
+    const char **marks = calloc(MAX_ROWS, sizeof *marks);
+    if (!found || !rows || !heading || !spin || !marks) {
         free(found);
         free(rows);
         free(heading);
+        free(spin);
+        free(marks);
         free(live);
-        return;
+        return 0;
     }
 
     int nfound = 0;
+    panes_load();
     tab_rows(found, &nfound);
     live_rows(found, &nfound, live, nlive);
 
@@ -338,20 +523,34 @@ void sessionswitch_run(void)
     if (!items) {
         free(rows);
         free(heading);
+        free(spin);
+        free(marks);
         free(live);
-        return;
+        return 0;
     }
     for (int i = 0; i < n; i++) {
         items[i].label = rows[i].label;
         items[i].detail = rows[i].detail;
     }
 
-    char shortcuts[4] = {KEY_CLOSE, KEY_NEW, KEY_GO, 0};
+    char shortcuts[7] = {KEY_CLOSE, KEY_NEW, KEY_GO, KEY_RENAME, '\n',
+                         PICK_KEY_RIGHT, 0};
     int pressed = 0;
-    int picked = pick_run_groups("sessions \xc2\xb7 \xe2\x87\xa2 pane \xc2\xb7 "
-                                 "\xe2\x87\x84 window \xc2\xb7 enter takes it "
-                                 "\xc2\xb7 ^g goes to it \xc2\xb7 ^n new \xc2\xb7 ^x close",
-                                 items, n, initial, heading, shortcuts, &pressed);
+    // Going to a session leaves this window for the one holding it, which
+    // only tmux can do.
+    char title[256];
+    snprintf(title, sizeof title,
+             "sessions \xc2\xb7 enter: bring here%s \xc2\xb7 ^n: new "
+             "\xc2\xb7 ^r: rename \xc2\xb7 ^x: close",
+             livelist_tmux_window()[0] ? " \xc2\xb7 shift-enter: go there" : "");
+    struct listing listing = {rows, n, spin, marks, &live, &nlive, 0};
+    sync_columns(&listing);
+    struct pick_live shown = {heading, spin, marks, relist, &listing};
+    int picked = pick_run_live(title, items, n, initial, &shown, shortcuts, &pressed);
+
+    // Right is the way into whatever the row is, the same as enter.
+    if (pressed == PICK_KEY_RIGHT)
+        pressed = 0;
 
     struct row chosen = {0};
     if (picked >= 0)
@@ -360,25 +559,43 @@ void sessionswitch_run(void)
     free(items);
     free(rows);
     free(heading);
+    free(spin);
+    free(marks);
 
     if (picked < 0) {
         free(live);
-        return;
+        return 0;
+    }
+
+    // A row whose session let go while the list was open has nothing behind
+    // it any more.
+    if (chosen.kind == ROW_LIVE && chosen.at < 0) {
+        ui_note("that one is gone");
+        ui_put("\n");
+        ui_flush();
+        free(live);
+        return 0;
+    }
+
+    if (pressed == KEY_RENAME) {
+        rename_row(&chosen, live);
+        free(live);
+        return 1;
     }
 
     if (pressed == KEY_NEW) {
         free(live);
         open_new();
-        return;
+        return 0;
     }
 
-    if (pressed == KEY_GO) {
+    if (pressed == KEY_GO || pressed == '\n') {
         if (chosen.kind == ROW_LIVE)
             jump(&live[chosen.at]);
         else if (chosen.kind == ROW_TAB)
             workspace_show(chosen.at);
         free(live);
-        return;
+        return 0;
     }
 
     if (pressed == KEY_CLOSE) {
@@ -391,7 +608,7 @@ void sessionswitch_run(void)
             ui_flush();
         }
         free(live);
-        return;
+        return 0;
     }
 
     switch (chosen.kind) {
@@ -404,12 +621,19 @@ void sessionswitch_run(void)
     case ROW_NEW:
         free(live);
         open_new();
-        return;
+        return 0;
     case ROW_HEAD:
         break;
     }
 
     free(live);
+    return 0;
+}
+
+void sessionswitch_run(void)
+{
+    while (switch_once())
+        ;
 }
 
 /* --- the other side of a yank -------------------------------------------- */
