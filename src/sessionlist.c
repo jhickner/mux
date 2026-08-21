@@ -200,17 +200,12 @@ static int claude_fill(const char *name, const char *path, const struct stat *st
            transcript_label(path, c->label, sizeof c->label);
 }
 
+static int claude_dir(const char *cwd, char *out, size_t size);
+
 static int load_claude(const char *cwd, const char *skip_id, struct past_session **out)
 {
-    const char *home = getenv("HOME");
-    if (!home || !cwd)
-        return 0;
-
-    char encoded[1024];
-    encode_cwd(cwd, encoded, sizeof encoded);
-
     char dir[2048];
-    if (snprintf(dir, sizeof dir, "%s/.claude/projects/%s", home, encoded) >= (int)sizeof dir)
+    if (!claude_dir(cwd, dir, sizeof dir))
         return 0;
     return scan_dir(dir, skip_id, claude_fill, NULL, out);
 }
@@ -484,6 +479,29 @@ static int load_pi(const char *cwd, const char *skip_id, struct past_session **o
     if (!pi_session_dir(cwd, dir, sizeof dir, &pi.filter_cwd))
         return 0;
     return scan_dir(dir, skip_id, pi_fill, &pi, out);
+}
+
+static int claude_dir(const char *cwd, char *out, size_t size)
+{
+    const char *home = getenv("HOME");
+    if (!home || !cwd)
+        return 0;
+    char encoded[1024];
+    encode_cwd(cwd, encoded, sizeof encoded);
+    return (size_t)snprintf(out, size, "%s/.claude/projects/%s", home, encoded) < size;
+}
+
+int sessionlist_dir(const char *backend, const char *cwd, char *out, size_t size)
+{
+    if (!backend || !strcmp(backend, "claude"))
+        return claude_dir(cwd, out, size);
+    if (!strcmp(backend, "grok"))
+        return grok_group_dir(cwd, out, size);
+    if (!strcmp(backend, "pi")) {
+        int filter_cwd = 0;
+        return pi_session_dir(cwd, out, size, &filter_cwd);
+    }
+    return 0;
 }
 
 int sessionlist_available(const char *backend)

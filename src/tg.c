@@ -35,6 +35,7 @@
 #include "cmd.h"
 #include "gitinfo.h"
 #include "reminders.h"
+#include "handoff.h"
 #include "restart.h"
 #include "session.h"
 #include "status.h"
@@ -1727,6 +1728,11 @@ char *tg_take_line(void)
 }
 
 // The prompt handed a chat line back for the main thread to run. Takes the line.
+struct session *tg_session(void)
+{
+    return sess;
+}
+
 void tg_run_line(char *line)
 {
     run_line(line, 0);
@@ -1745,6 +1751,11 @@ void tg_run(struct session *s)
             restart_exec(s);        // returns only if the new build won't run
             send_note("could not restart — staying on this build");
         }
+
+        // Another window has asked for this conversation. Answering is the
+        // caller's to do: it owns the session this loop is holding.
+        if (handoff_wanted())
+            return;
 
         int quiet = 0;
         char *line = inbox_take(&quiet);

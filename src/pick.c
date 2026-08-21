@@ -194,6 +194,12 @@ int pick_run_filter(const char *title, const struct pick_item *items, int count,
     return run(title, items, count, initial, NULL, NULL, 1);
 }
 
+int pick_run_ex(const char *title, const struct pick_item *items, int count,
+                int initial, const char *shortcuts, int *pressed)
+{
+    return run(title, items, count, initial, shortcuts, pressed, 1);
+}
+
 int pick_run_keys(const char *title, const struct pick_item *items, int count,
                   int initial, const char *shortcuts, int *pressed)
 {
@@ -252,8 +258,11 @@ static int run(const char *title, const struct pick_item *items, int count,
     int result = -1;
     for (;;) {
         tty_event ev;
-        if (!tty_read(&ev, -1))
+        if (!tty_read(&ev, -1)) {
+            if (chrome_modal_interrupted())
+                goto done;
             continue;
+        }
         if (ev.key == TK_TEXT) {
             int took = filter && type_into(&v, ev.text, ev.text ? strlen(ev.text) : 0);
             free(ev.text);

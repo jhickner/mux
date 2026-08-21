@@ -8,6 +8,8 @@
 #include "ui.h"
 
 static struct prompt   *bound;
+static int            (*tabs_rows)(void);
+static void           (*tabs_paint)(void);
 static chrome_modal_fn  modal;
 static void            *modal_ud;
 
@@ -16,6 +18,16 @@ static int spin_row = -1;
 static int above_rows;
 
 void chrome_bind(struct prompt *p) { bound = p; }
+
+// The tab strip, when there is one: chrome draws it without knowing what a
+// session is.
+void chrome_tabs(int (*rows)(void), void (*paint)(void))
+{
+    tabs_rows = rows;
+    tabs_paint = paint;
+}
+
+static int strip_rows(void) { return tabs_rows ? tabs_rows() : 0; }
 
 int chrome_rows_left(void)
 {
@@ -37,6 +49,18 @@ void chrome_keep_above(void)
     above_rows = 0;
 }
 
+static int (*modal_interrupt)(void);
+
+void chrome_modal_interrupt(int (*fn)(void))
+{
+    modal_interrupt = fn;
+}
+
+int chrome_modal_interrupted(void)
+{
+    return modal_interrupt ? modal_interrupt() : 0;
+}
+
 void chrome_modal(chrome_modal_fn fn, void *ud)
 {
     modal = fn;
@@ -47,6 +71,7 @@ void chrome_modal(chrome_modal_fn fn, void *ud)
 // The sections above the input, in draw order. Dropped whole, cheapest first,
 // until what is left fits.
 struct above {
+    int tabs;
     int side;
     int sticky;
     int queued;
@@ -59,6 +84,8 @@ static int above_height(const struct above *a, int cols)
     int drawn = 0;
     int n;
 
+    if (a->tabs && (n = strip_rows()) > 0)
+        rows += n + (drawn++ ? 1 : 0);
     if (a->side && (n = sidechannel_rows()) > 0)
         rows += n + (drawn++ ? 1 : 0);
     if (a->sticky && (n = status_sticky_measure()) > 0)
@@ -79,6 +106,9 @@ static void fit_above(struct above *a, int cols, int room)
     if (above_height(a, cols) <= room)
         return;
     a->side = 0;
+    if (above_height(a, cols) <= room)
+        return;
+    a->tabs = 0;
 }
 
 void chrome_paint(void)
@@ -111,7 +141,7 @@ void chrome_paint(void)
     int input_rows = prompt_input_rows(bound, cols);
     int gap = status_gap_row();
 
-    struct above a = {1, 1, 1};
+    struct above a = {1, 1, 1, 1};
     fit_above(&a, cols, tty_rows() - 1 - input_rows - spinning - gap);
 
     block_begin();
@@ -122,7 +152,13 @@ void chrome_paint(void)
         ui_put("\n");
 
     int drawn = 0;
+    if (a.tabs && strip_rows() > 0) {
+        tabs_paint();
+        drawn = 1;
+    }
     if (a.side && sidechannel_rows() > 0) {
+        if (drawn)
+            ui_put("\n");
         sidechannel_paint(chrome_rows_left());
         drawn = 1;
     }

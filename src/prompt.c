@@ -69,6 +69,14 @@ struct prompt {
     int        (*restart_pending)(void *ud);
     int        (*restart)(void *ud);
     void        *restart_ud;
+    int        (*takeover_pending)(void *ud);
+    void       (*takeover)(void *ud);
+    void        *takeover_ud;
+    void       (*switcher)(void *ud);
+    void        *switcher_ud;
+    int        (*cancel)(void *ud);
+    void        *cancel_ud;
+    int          stopped;
     int          frame_ok;
 };
 
@@ -730,9 +738,15 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
             delete_forward(p);
             return KEY_OK;
         }
-        if (ev->cp == 3 && live && p->repl.len == 0 &&
-            !p->repl.dropdown_open && !p->repl.searching)
-            return KEY_CANCEL;
+        if (ev->cp == 3 && p->repl.len == 0 &&
+            !p->repl.dropdown_open && !p->repl.searching) {
+            if (live)
+                return KEY_CANCEL;
+            // Nothing typed and a turn running behind the prompt: the key
+            // belongs to the turn.
+            if (p->cancel && p->cancel(p->cancel_ud))
+                return KEY_OK;
+        }
         if (ev->cp == 22) {
             paste_clipboard(p, live);
             return KEY_OK;
@@ -771,6 +785,9 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
 
         if (live && !p->repl.dropdown_open)
             return KEY_CANCEL;
+        if (!p->repl.dropdown_open && !p->repl.searching && p->repl.len == 0 &&
+            p->cancel && p->cancel(p->cancel_ud))
+            return KEY_OK;
         feed(p, REPL_KEY_ESCAPE, 0, NULL);
         return KEY_OK;
 
@@ -811,6 +828,15 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
         return KEY_OK;
 
     default: {
+        // Left with nothing typed is not a cursor move: it is the way out of
+        // this conversation into the list of all of them.
+        if (ev->key == TK_LEFT && !live && p->switcher && p->repl.len == 0 &&
+            !p->repl.dropdown_open && !p->repl.searching) {
+            chrome_clear();
+            p->switcher(p->switcher_ud);
+            return KEY_OK;
+        }
+
         static const ReplKey MAP[] = {
             [TK_NEWLINE] = REPL_KEY_NEWLINE,   [TK_BACKSPACE] = REPL_KEY_BACKSPACE,
             [TK_LEFT] = REPL_KEY_LEFT,         [TK_RIGHT] = REPL_KEY_RIGHT,
@@ -888,6 +914,44 @@ static void restart_check(struct prompt *p)
     repaint(p);
 }
 
+void prompt_set_takeover(struct prompt *p, int (*pending)(void *ud), void (*run)(void *ud),
+                         void *ud)
+{
+    p->takeover_pending = pending;
+    p->takeover = run;
+    p->takeover_ud = ud;
+}
+
+void prompt_set_cancel(struct prompt *p, int (*fn)(void *ud), void *ud)
+{
+    p->cancel = fn;
+    p->cancel_ud = ud;
+}
+
+void prompt_set_switcher(struct prompt *p, void (*fn)(void *ud), void *ud)
+{
+    p->switcher = fn;
+    p->switcher_ud = ud;
+}
+
+void prompt_stop(struct prompt *p)
+{
+    if (p)
+        p->stopped = 1;
+}
+
+// Unlike a restart, this cannot wait for a quiet prompt: the window asking for
+// the session is waiting on it.
+static void takeover_check(struct prompt *p)
+{
+    if (!p->takeover || !p->takeover_pending || !p->takeover_pending(p->takeover_ud))
+        return;
+    chrome_clear();
+    ui_flush();
+    p->takeover(p->takeover_ud);
+    repaint(p);
+}
+
 void prompt_restart_check(struct prompt *p)
 {
     if (p)
@@ -899,11 +963,18 @@ static void queue_push(struct prompt *p, char *line);
 static char *read_loop(struct prompt *p)
 {
     repaint(p);
+    takeover_check(p);
     restart_check(p);
 
     int resizing = 0;
     for (;;) {
         tty_event ev;
+
+        if (p->stopped) {
+            p->stopped = 0;
+            chrome_clear();
+            return NULL;
+        }
 
         // A line from somewhere other than the keyboard — the chat bridge. It
         // submits as typed when nothing is half-written, and waits its turn
@@ -940,6 +1011,7 @@ static char *read_loop(struct prompt *p)
                     p->animate_tick(p->animate_ud);
                     repaint(p);
                 }
+                takeover_check(p);
                 restart_check(p);
             }
             continue;
@@ -966,6 +1038,7 @@ static char *read_loop(struct prompt *p)
 
         default:
             repaint(p);
+            takeover_check(p);
             restart_check(p);
             continue;
         }

@@ -9,6 +9,10 @@ struct prompt;
 
 void chrome_bind(struct prompt *p);
 
+// The row of tabs above everything else, when the window holds more than one
+// session. Unset draws nothing.
+void chrome_tabs(int (*rows)(void), void (*paint)(void));
+
 void chrome_paint(void);
 
 // Repaints only the spinner row. Zero if the block cannot take a row swap.
@@ -25,5 +29,12 @@ int  chrome_rows_left(void);
 // A modal owns the whole stack while set. NULL hands it back.
 typedef void (*chrome_modal_fn)(void *ud);
 void chrome_modal(chrome_modal_fn fn, void *ud);
+
+// A modal cannot stand in the way of something the window has to answer — a
+// request from elsewhere for one of its sessions, which is being waited on.
+// The modals ask this whenever a read comes up empty, and cancel when it says
+// so.
+void chrome_modal_interrupt(int (*fn)(void));
+int  chrome_modal_interrupted(void);
 
 #endif

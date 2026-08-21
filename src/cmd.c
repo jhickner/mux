@@ -20,6 +20,9 @@
 #include "image.h"
 #include "sessionfork.h"
 #include "sessionlist.h"
+#include "sessionload.h"
+#include "sessionswitch.h"
+#include "viewport.h"
 #include "sidechannel.h"
 #include "settings.h"
 #include "settingsui.h"
@@ -44,6 +47,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/permission", "how the CLI gates tool calls", "[mode]"},
     {"/settings", "show and change every setting", NULL},
     {"/resume", "resume a past conversation", NULL},
+    {"/sessions", "every session: this window's, other windows', past ones", NULL},
     {"/fh", "fork into a horizontal tmux split", NULL},
     {"/fs", "alias for /fh", NULL},
     {"/fv", "fork into a vertical tmux split", NULL},
@@ -549,6 +553,11 @@ int cmd_resume(struct session *s)
     if (index >= 0) {
         if (session_resume(s, list[index].id)) {
             status_sticky_prompt(NULL);
+            // The screen was the conversation this one replaces; what belongs
+            // here now is what was said in the one being resumed.
+            viewport_clear();
+            hud_print(s);
+            sessionload_into(s);
             ui_bar(ui_style(UI_DIM), "resumed \xc2\xb7 %s", list[index].label);
             ui_put("\n");
             resumed = 1;
@@ -697,7 +706,10 @@ static enum live_class live_class(const char *name)
 }
 
 #define DEFERRED_MAX 8
-static char *deferred[DEFERRED_MAX];
+static struct {
+    char           *line;
+    struct session *s;
+} deferred[DEFERRED_MAX];
 static int   deferred_count;
 
 // /btw shows the question itself, twice over; the echo would be a third copy.
@@ -743,19 +755,52 @@ void cmd_dispatch_live(struct session *s, const char *line)
         reply_error("could not hold %s until the turn ends", name);
         return;
     }
-    deferred[deferred_count++] = copy;
+    deferred[deferred_count].line = copy;
+    deferred[deferred_count].s = s;
+    deferred_count++;
     reply_note("%s applies when this turn ends", name);
 }
 
+// Only the ones typed at this session: another tab's turn ending is not the
+// moment to change this one's model.
 void cmd_run_deferred(struct session *s)
 {
-    int count = deferred_count;
-    deferred_count = 0;
-    for (int i = 0; i < count; i++) {
-        cmd_dispatch(s, deferred[i]);
-        free(deferred[i]);
-        deferred[i] = NULL;
+    char *mine[DEFERRED_MAX];
+    int   n = 0, kept = 0;
+
+    for (int i = 0; i < deferred_count; i++) {
+        if (deferred[i].s == s)
+            mine[n++] = deferred[i].line;
+        else
+            deferred[kept++] = deferred[i];
     }
+    deferred_count = kept;
+
+    for (int i = 0; i < n; i++) {
+        cmd_dispatch(s, mine[i]);
+        free(mine[i]);
+    }
+}
+
+int cmd_is_command(const char *line)
+{
+    char name[32];
+    const char *arg;
+    if (!split_command(line, name, sizeof name, &arg))
+        return 0;
+    for (int i = 0; i < CMD_COUNT; i++)
+        if (!strcmp(CMD_TABLE[i].name, name))
+            return 1;
+    return 0;
+}
+
+int cmd_is_quit(const char *line)
+{
+    char name[32];
+    const char *arg;
+    if (!split_command(line, name, sizeof name, &arg))
+        return 0;
+    return !strcmp(name, "/quit") || !strcmp(name, "/exit");
 }
 
 enum cmd_result cmd_dispatch(struct session *s, const char *line)
@@ -804,6 +849,8 @@ static enum cmd_result run_command(struct session *s, const char *name,
         cmd_resume(s);
     } else if (fork_target(name, &where)) {
         sessionfork_run(s, where);
+    } else if (!strcmp(name, "/sessions")) {
+        sessionswitch_run();
     } else if (!strcmp(name, "/status")) {
         hud_print(s);
     } else if (!strcmp(name, "/session")) {

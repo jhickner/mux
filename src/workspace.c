@@ -1,0 +1,486 @@
+#include "workspace.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "block.h"
+#include "gitinfo.h"
+#include "prompt.h"
+#include "session.h"
+#include "settings.h"
+#include "status.h"
+#include "ui.h"
+#include "viewport.h"
+
+#define PENDING_MAX 8
+
+// A line waiting behind the turn that was running when it was typed.
+struct pending {
+    char *line;
+    char *shown;
+};
+
+struct tab {
+    struct session        *s;
+    struct viewport_state *screen;   /* empty while this tab is the one on screen */
+    struct pending         pending[PENDING_MAX];
+    int                    npending;
+    char                  *sticky;   /* the prompt this tab is showing */
+};
+
+static struct tab tabs[WORKSPACE_MAX];
+static int        ntabs;
+static int        cur;
+static int        safe;
+static int        borrowed = -1;
+static void     (*on_finish)(struct session *s);
+
+static void follow(const struct session *s);
+
+void workspace_on_finish(void (*fn)(struct session *s))
+{
+    on_finish = fn;
+}
+
+// The spinner belongs to the tab in front: a turn running behind it is shown
+// by the tab strip instead.
+static void spin_follow(void)
+{
+    static int spinning;
+    int want = ntabs && session_turn_running(tabs[cur].s);
+    if (want == spinning)
+        return;
+    spinning = want;
+    if (want) {
+        session_spin_word(tabs[cur].s);
+        status_begin();
+    } else {
+        status_end();
+    }
+}
+
+int workspace_count(void) { return ntabs; }
+int workspace_index(void) { return cur; }
+
+struct session *workspace_current(void)
+{
+    return ntabs ? tabs[cur].s : NULL;
+}
+
+struct session *workspace_at(int index)
+{
+    return index >= 0 && index < ntabs ? tabs[index].s : NULL;
+}
+
+int workspace_index_of(const struct session *s)
+{
+    for (int i = 0; i < ntabs; i++)
+        if (tabs[i].s == s)
+            return i;
+    return -1;
+}
+
+int workspace_begin(struct session *first, int safe_mode)
+{
+    safe = safe_mode;
+    ntabs = 0;
+    cur = 0;
+    if (workspace_open(first) != 0)
+        return 0;
+    follow(first);
+    return 1;
+}
+
+void workspace_end(void)
+{
+    for (int i = 0; i < ntabs; i++) {
+        if (i != cur)
+            viewport_state_free(tabs[i].screen);
+        session_free(tabs[i].s);
+        for (int j = 0; j < tabs[i].npending; j++) {
+            free(tabs[i].pending[j].line);
+            free(tabs[i].pending[j].shown);
+        }
+        free(tabs[i].sticky);
+    }
+    memset(tabs, 0, sizeof tabs);
+    ntabs = 0;
+}
+
+int workspace_open(struct session *s)
+{
+    if (!s || ntabs >= WORKSPACE_MAX)
+        return -1;
+    struct viewport_state *screen = viewport_state_new();
+    if (!screen)
+        return -1;
+
+    int at = ntabs++;
+    memset(&tabs[at], 0, sizeof tabs[at]);
+    tabs[at].s = s;
+    tabs[at].screen = screen;
+    if (at != cur)
+        workspace_show(at);
+    return at;
+}
+
+int workspace_spawn(const char *backend, const char *model, const char *effort,
+                    const char *cwd, const char *id)
+{
+    if (ntabs >= WORKSPACE_MAX)
+        return -1;
+    if (!model || !strcmp(model, "default"))
+        model = session_saved_model(backend);
+    if (!effort || !strcmp(effort, "default"))
+        effort = session_saved_effort(backend);
+
+    struct session *s = session_new(backend, cwd, model, effort);
+    if (!s)
+        return -1;
+
+    session_set_customizations(s, !safe);
+    session_set_thinking(s, settings_get_int(SETTING_THINKING, 1));
+    session_set_compact(s, settings_get_int(SETTING_COMPACT, 0));
+    session_set_permission(s, session_permission_name(
+        settings_get_int(SETTING_PERMISSION, session_permission_default())));
+    session_adopt_id(s, id);
+
+    if (!session_start(s)) {
+        session_free(s);
+        return -1;
+    }
+    int at = workspace_open(s);
+    if (at < 0)
+        session_free(s);
+    return at;
+}
+
+// Everything outside the session that is about where it is: the window follows
+// the tab it is showing, the way /cd makes it follow the session.
+static void follow(const struct session *s)
+{
+    const char *dir = session_cwd(s);
+    if (dir && *dir)
+        (void)chdir(dir);
+    status_set_note(session_title(s));
+    prompt_rehome(dir);
+    gitinfo_forget();
+}
+
+// The screen belongs to whichever tab is showing, so swapping tabs is a swap
+// of that one thing. Anything buffered is flushed first, or it lands in the
+// screen it was not written for.
+void workspace_show(int index)
+{
+    if (index < 0 || index >= ntabs || index == cur)
+        return;
+
+    ui_flush();
+    viewport_stash(tabs[cur].screen);
+    viewport_adopt(tabs[index].screen);
+    cur = index;
+
+    block_forget();
+    status_sticky_prompt(tabs[cur].sticky);
+    follow(tabs[cur].s);
+    spin_follow();
+    viewport_forget();
+}
+
+// What the sticky prompt says, kept per tab so it comes back with the tab.
+static void sticky_set(int index, const char *line)
+{
+    free(tabs[index].sticky);
+    tabs[index].sticky = line ? strdup(line) : NULL;
+    if (index == cur)
+        status_sticky_prompt(line);
+}
+
+// Drawing for a tab that is not the one on screen: its own screen takes the
+// globals for the duration, so nothing reaches the terminal.
+static void enter(int index)
+{
+    if (index == cur || index < 0 || index >= ntabs)
+        return;
+    ui_flush();
+    viewport_hold(1);
+    viewport_stash(tabs[cur].screen);
+    viewport_adopt(tabs[index].screen);
+    borrowed = index;
+}
+
+static void leave(void)
+{
+    if (borrowed < 0)
+        return;
+    ui_flush();
+    viewport_stash(tabs[borrowed].screen);
+    viewport_adopt(tabs[cur].screen);
+    viewport_hold(0);
+    borrowed = -1;
+}
+
+int workspace_find_id(const char *id)
+{
+    if (!id || !*id)
+        return -1;
+    for (int i = 0; i < ntabs; i++) {
+        const char *mine = session_id(tabs[i].s);
+        if (mine && !strcmp(mine, id))
+            return i;
+    }
+    return -1;
+}
+
+int workspace_dump(int index, const char *path)
+{
+    if (index < 0 || index >= ntabs)
+        return 0;
+    enter(index);
+    int ok = viewport_dump(path);
+    leave();
+    return ok;
+}
+
+static void drop(int index, int free_session)
+{
+    // A tab on screen keeps its rows in the globals and an empty stash; one in
+    // the background is the other way round.
+    if (index == cur)
+        viewport_clear();
+    viewport_state_free(tabs[index].screen);
+
+    if (free_session)
+        session_free(tabs[index].s);
+    for (int i = 0; i < tabs[index].npending; i++) {
+        free(tabs[index].pending[i].line);
+        free(tabs[index].pending[i].shown);
+    }
+    tabs[index].npending = 0;
+    free(tabs[index].sticky);
+    tabs[index].sticky = NULL;
+
+    for (int i = index; i + 1 < ntabs; i++)
+        tabs[i] = tabs[i + 1];
+    ntabs--;
+    memset(&tabs[ntabs], 0, sizeof tabs[ntabs]);
+
+    if (!ntabs)
+        return;
+
+    if (index < cur) {
+        cur--;
+    } else if (index == cur) {
+        cur = index > 0 ? index - 1 : 0;
+        // The globals were emptied above, so the tab taking over just adopts.
+        viewport_adopt(tabs[cur].screen);
+        block_forget();
+        status_sticky_prompt(tabs[cur].sticky);
+        follow(tabs[cur].s);
+        spin_follow();
+        viewport_forget();
+    }
+}
+
+int workspace_close(int index)
+{
+    if (index < 0 || index >= ntabs)
+        return ntabs;
+    drop(index, 1);
+    return ntabs;
+}
+
+int workspace_fds(int *out, int max)
+{
+    int n = 0;
+    for (int i = 0; i < ntabs && n < max; i++) {
+        // A turn in flight is reading the driver's stream itself; what wakes
+        // the window then is the queue it fills.
+        int fd = session_turn_running(tabs[i].s) ? session_wake_fd(tabs[i].s)
+                                                 : session_idle_fd(tabs[i].s);
+        if (fd >= 0)
+            out[n++] = fd;
+    }
+    return n;
+}
+
+static void send_next(int index);
+
+int workspace_pump(void)
+{
+    int busy = 0;
+    for (int i = 0; i < ntabs; i++) {
+        struct session *s = tabs[i].s;
+        int running = session_turn_running(s);
+
+        enter(i);
+        if (running)
+            busy |= session_turn_pump(s);
+        else
+            busy |= session_idle_pump(s) ? 1 : 0;
+        leave();
+
+        // The turn ended inside the pump: what it leaves behind is the
+        // window's business, not the session's.
+        if (running && !session_turn_running(s)) {
+            enter(i);
+            if (on_finish)
+                on_finish(s);
+            leave();
+            send_next(i);
+        }
+    }
+    // A session that names itself while it is behind must not take the note
+    // off the one in front.
+    if (ntabs)
+        status_set_note(session_title(tabs[cur].s));
+    spin_follow();
+    return busy;
+}
+
+void workspace_settle(struct session *s)
+{
+    int at = workspace_index_of(s);
+    if (at < 0 || !session_turn_running(s))
+        return;
+
+    enter(at);
+    session_turn_wait(s);
+    if (on_finish)
+        on_finish(s);
+    leave();
+    send_next(at);
+    spin_follow();
+}
+
+int workspace_busy(void)
+{
+    for (int i = 0; i < ntabs; i++)
+        if (session_busy(tabs[i].s))
+            return 1;
+    return 0;
+}
+
+// The next thing typed at a tab, once the turn it was typed behind is done.
+static void send_next(int index)
+{
+    struct tab *t = &tabs[index];
+    if (!t->npending || session_turn_running(t->s))
+        return;
+
+    struct pending p = t->pending[0];
+    for (int i = 1; i < t->npending; i++)
+        t->pending[i - 1] = t->pending[i];
+    t->npending--;
+
+    enter(index);
+    sticky_set(index, p.shown ? p.shown : p.line);
+    // Held back until now, so this is where it joins the transcript.
+    prompt_echo_message(p.shown ? p.shown : p.line);
+    session_turn_begin(t->s, p.line);
+    leave();
+    free(p.line);
+    free(p.shown);
+    spin_follow();
+}
+
+int workspace_send(int index, const char *line, const char *shown)
+{
+    if (index < 0 || index >= ntabs || !line || !*line)
+        return 0;
+    struct tab *t = &tabs[index];
+
+    if (session_turn_running(t->s)) {
+        if (t->npending >= PENDING_MAX)
+            return 0;
+        struct pending p = {strdup(line), shown ? strdup(shown) : NULL};
+        if (!p.line || (shown && !p.shown)) {
+            free(p.line);
+            free(p.shown);
+            return 0;
+        }
+        t->pending[t->npending++] = p;
+        return 1;
+    }
+
+    sticky_set(index, shown ? shown : line);
+    enter(index);
+    int ok = session_turn_begin(t->s, line);
+    leave();
+    spin_follow();
+    return ok;
+}
+
+int workspace_queued(int index)
+{
+    return index >= 0 && index < ntabs ? tabs[index].npending : 0;
+}
+
+const char *workspace_status(const struct session *s)
+{
+    if (!s)
+        return "finished";
+    if (session_busy(s))
+        return "working";
+    if (session_failed_prompt(s))
+        return "errored";
+    return "finished";
+}
+
+/* --- the tab strip -------------------------------------------------------- */
+
+static const char *tab_label(const struct session *s)
+{
+    const char *title = session_title(s);
+    return title && *title ? title : session_backend(s);
+}
+
+int workspace_strip_rows(void)
+{
+    return ntabs > 1 ? 1 : 0;
+}
+
+void workspace_strip_paint(void)
+{
+    if (ntabs < 2)
+        return;
+
+    int columns = ui_columns();
+    // Every tab gets an equal share of what is left after the numbers.
+    int share = ntabs ? (columns - 4) / ntabs - 4 : 0;
+    if (share < 4)
+        share = 4;
+
+    ui_esc(ui_style(UI_CHROME));
+    ui_put(UI_BAR);
+    ui_esc(ui_style(UI_RESET));
+
+    size_t budget = (size_t)(columns > 2 ? columns - 2 : 1);
+    for (int i = 0; i < ntabs && budget > 8; i++) {
+        const char *status = workspace_status(tabs[i].s);
+        enum ui_role role = i == cur          ? UI_ACCENT
+                            : !strcmp(status, "working") ? UI_SPIN
+                            : !strcmp(status, "errored") ? UI_ERROR
+                                                         : UI_DIM;
+        char head[16];
+        snprintf(head, sizeof head, " %d ", i + 1);
+        ui_esc(ui_style(role));
+        ui_put(head);
+        budget -= ui_cells_n(head, strlen(head));
+
+        const char *label = tab_label(tabs[i].s);
+        size_t room = budget < (size_t)share ? budget : (size_t)share;
+        size_t n = ui_fit_bytes(label, room);
+        ui_esc(ui_style(i == cur ? UI_TEXT : UI_DIM));
+        ui_putn(label, n);
+        budget -= ui_cells_n(label, n);
+        if (label[n] && budget) {
+            ui_put("\xe2\x80\xa6");
+            budget--;
+        }
+    }
+    ui_esc(ui_style(UI_RESET));
+    ui_put("\n");
+}

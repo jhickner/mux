@@ -76,6 +76,11 @@ int restart_wanted(void)
     return wanted != 0;
 }
 
+void restart_clear(void)
+{
+    wanted = 0;
+}
+
 // The session is freed before the exec, so its strings are copied to a pool.
 static char  pool[8192];
 static size_t pool_used;

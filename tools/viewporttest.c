@@ -542,6 +542,69 @@ static char *no_encode(void *ud)
     return NULL;
 }
 
+// A window with more than one session gives each its own screen and swaps
+// them whole. What comes back has to be exactly what was left, and nothing of
+// the other screen may reach the terminal while it is held aside.
+static void check_stash(struct screen *s)
+{
+    viewport_clear();
+    set_size(80, 24);
+
+    say("FIRST-session");
+    chrome("CHROME-prompt", NULL);
+    refresh(s, 80, 24);
+    if (count_on_screen(s, "FIRST-session") != 1)
+        fail("the first screen is shown");
+
+    struct viewport_state *a = viewport_state_new();
+    struct viewport_state *b = viewport_state_new();
+    if (!a || !b) {
+        fail("a screen can be held aside");
+        return;
+    }
+
+    viewport_stash(a);
+    viewport_adopt(b);
+    viewport_forget();
+    say("SECOND-session");
+    redraw(s);
+    if (count_on_screen(s, "SECOND-session") != 1)
+        fail("the second screen draws");
+    if (count_on_screen(s, "FIRST-session") != 0)
+        fail("the screen held aside is off the terminal");
+
+    // Drawing for a session that is not in front reaches its rows and not the
+    // terminal.
+    viewport_hold(1);
+    viewport_stash(b);
+    viewport_adopt(a);
+    say("BACKGROUND-turn");
+    viewport_paint();
+    viewport_stash(a);
+    viewport_adopt(b);
+    viewport_hold(0);
+    pump(s);
+    if (count_on_screen(s, "BACKGROUND-turn") != 0)
+        fail("a held screen paints nothing");
+    if (count_on_screen(s, "SECOND-session") != 1)
+        fail("the screen in front is untouched by the one behind");
+
+    viewport_stash(b);
+    viewport_adopt(a);
+    viewport_forget();
+    redraw(s);
+    if (count_on_screen(s, "FIRST-session") != 1)
+        fail("the first screen comes back");
+    if (count_on_screen(s, "BACKGROUND-turn") != 1)
+        fail("what was drawn behind is there on return");
+    if (count_on_screen(s, "SECOND-session") != 0)
+        fail("the other screen is gone");
+
+    viewport_state_free(b);
+    viewport_clear();
+    viewport_state_free(a);
+}
+
 static void check_dump(void)
 {
     viewport_clear();
@@ -639,6 +702,7 @@ int main(void)
     check_live_entry(&s);
     check_scroll_is_cheap(&s);
     check_resize_strands_nothing(&s);
+    check_stash(&s);
     check_dump();
 
     fflush(stdout);
