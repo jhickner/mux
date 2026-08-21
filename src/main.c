@@ -194,6 +194,40 @@ static int idle_busy(void *ud)   { (void)ud; return workspace_busy(); }
 static void replay(void *ud)      { (void)ud; session_replay(workspace_current()); }
 static void blank_line(void *ud)  { (void)ud; hud_print(workspace_current()); }
 static void switcher(void *ud)    { (void)ud; sessionswitch_run(); }
+// Ctrl-B: an idle tab if this window already holds one, otherwise a new
+// session started the way the one in front was.
+static void another(void *ud)
+{
+    (void)ud;
+    int n = workspace_count();
+    for (int i = 1; i < n; i++) {
+        int at = (workspace_index() + i) % n;
+        if (session_turn_running(workspace_at(at)) || workspace_queued(at))
+            continue;
+        workspace_show(at);
+        return;
+    }
+
+    struct session *here = workspace_current();
+    if (!here)
+        return;
+    if (n >= WORKSPACE_MAX) {
+        ui_note("this window is already holding as many sessions as it can");
+        ui_put("\n");
+        ui_flush();
+        return;
+    }
+    if (workspace_spawn(session_backend(here), session_model(here), session_effort(here),
+                        session_cwd(here), NULL) < 0) {
+        ui_error("could not start another %s CLI", session_backend(here));
+        ui_put("\n");
+        ui_flush();
+        return;
+    }
+    hud_print(workspace_current());
+    ui_flush();
+}
+
 static void splitter(void *ud, int quiet)
 {
     (void)ud;
@@ -541,6 +575,7 @@ int main(int argc, char **argv)
     prompt_set_takeover(prompt, takeover_pending, takeover_run, prompt);
     prompt_set_switcher(prompt, switcher, NULL);
     prompt_set_split(prompt, splitter, NULL);
+    prompt_set_another(prompt, another, NULL);
     prompt_set_cancel(prompt, cancel_turn, NULL);
     workspace_on_finish(turn_done);
     prompt_set_replay(prompt, replay, NULL);

@@ -76,6 +76,8 @@ struct prompt {
     void        *switcher_ud;
     void       (*split)(void *ud, int quiet);
     void        *split_ud;
+    void       (*another)(void *ud);
+    void        *another_ud;
     int        (*cancel)(void *ud);
     void        *cancel_ud;
     int          stopped;
@@ -766,6 +768,15 @@ static enum key_result feed_key(struct prompt *p, tty_event *ev, int live)
                 repaint(p);
             return KEY_OK;
         }
+        // Another session beside this one. Mid-turn the stream owns the
+        // screen, so the key is ignored then.
+        if (ev->cp == 2) {
+            if (!live && p->another) {
+                chrome_clear();
+                p->another(p->another_ud);
+            }
+            return KEY_OK;
+        }
         if (ev->cp == 14 || ev->cp == 15) {
             cycle_colors(p, live, ev->cp == 14);
             return KEY_OK;
@@ -943,6 +954,12 @@ void prompt_set_switcher(struct prompt *p, void (*fn)(void *ud), void *ud)
 {
     p->switcher = fn;
     p->switcher_ud = ud;
+}
+
+void prompt_set_another(struct prompt *p, void (*fn)(void *ud), void *ud)
+{
+    p->another = fn;
+    p->another_ud = ud;
 }
 
 void prompt_set_split(struct prompt *p, void (*fn)(void *ud, int quiet), void *ud)

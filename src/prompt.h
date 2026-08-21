@@ -64,6 +64,10 @@ void prompt_set_cancel(struct prompt *p, int (*fn)(void *ud), void *ud);
 // Left arrow on an empty line.
 void prompt_set_switcher(struct prompt *p, void (*fn)(void *ud), void *ud);
 
+// Ctrl-B: another session in this window — an idle tab if there is one, else
+// a new one like the current session.
+void prompt_set_another(struct prompt *p, void (*fn)(void *ud), void *ud);
+
 // Ctrl-T: a shell split beside this one. `quiet` while a turn is streaming.
 void prompt_set_split(struct prompt *p, void (*fn)(void *ud, int quiet), void *ud);
 

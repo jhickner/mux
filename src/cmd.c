@@ -222,6 +222,7 @@ static void show_help(void)
     help_row("ctrl-c", "clear the prompt line, or interrupt a running turn");
     help_row("ctrl-d", "close the session (quit on the last one)");
     help_row("ctrl-t", "a shell split here, in this directory");
+    help_row("ctrl-b", "another session like this one, or the idle one already open");
     help_row("ctrl-l", "clear the screen");
     ui_put("\n");
     help_heading("skills");
