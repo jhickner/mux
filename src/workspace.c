@@ -190,6 +190,7 @@ void workspace_show(int index)
 
     block_forget();
     status_sticky_prompt(tabs[cur].sticky);
+    status_sticky_busy(session_busy(tabs[cur].s));
     follow(tabs[cur].s);
     spin_follow();
     viewport_forget();
@@ -347,6 +348,7 @@ static void drop(int index)
         viewport_adopt(tabs[cur].screen);
         block_forget();
         status_sticky_prompt(tabs[cur].sticky);
+        status_sticky_busy(session_busy(tabs[cur].s));
         follow(tabs[cur].s);
         spin_follow();
         viewport_forget();
@@ -418,8 +420,10 @@ static int pump(int hold)
     }
     // A session that names itself while it is behind must not take the note
     // off the one in front.
-    if (ntabs)
+    if (ntabs) {
         status_set_note(session_title(tabs[cur].s));
+        status_sticky_busy(session_busy(tabs[cur].s));
+    }
     spin_follow();
     return busy;
 }
@@ -526,60 +530,4 @@ const char *workspace_status(const struct session *s)
     if (session_failed_prompt(s))
         return "errored";
     return "finished";
-}
-
-/* --- the tab strip -------------------------------------------------------- */
-
-static const char *tab_label(const struct session *s)
-{
-    const char *title = session_title(s);
-    return title && *title ? title : session_backend(s);
-}
-
-int workspace_strip_rows(void)
-{
-    return ntabs > 1 ? 1 : 0;
-}
-
-void workspace_strip_paint(void)
-{
-    if (ntabs < 2)
-        return;
-
-    int columns = ui_columns();
-    // Every tab gets an equal share of what is left after the numbers.
-    int share = ntabs ? (columns - 4) / ntabs - 4 : 0;
-    if (share < 4)
-        share = 4;
-
-    ui_esc(ui_style(UI_CHROME));
-    ui_put(UI_BAR);
-    ui_esc(ui_style(UI_RESET));
-
-    size_t budget = (size_t)(columns > 2 ? columns - 2 : 1);
-    for (int i = 0; i < ntabs && budget > 8; i++) {
-        const char *status = workspace_status(tabs[i].s);
-        enum ui_role role = i == cur          ? UI_ACCENT
-                            : !strcmp(status, "working") ? UI_SPIN
-                            : !strcmp(status, "errored") ? UI_ERROR
-                                                         : UI_DIM;
-        char head[16];
-        snprintf(head, sizeof head, " %d ", i + 1);
-        ui_esc(ui_style(role));
-        ui_put(head);
-        budget -= ui_cells_n(head, strlen(head));
-
-        const char *label = tab_label(tabs[i].s);
-        size_t room = budget < (size_t)share ? budget : (size_t)share;
-        size_t n = ui_fit_bytes(label, room);
-        ui_esc(ui_style(i == cur ? UI_TEXT : UI_DIM));
-        ui_putn(label, n);
-        budget -= ui_cells_n(label, n);
-        if (label[n] && budget) {
-            ui_put("\xe2\x80\xa6");
-            budget--;
-        }
-    }
-    ui_esc(ui_style(UI_RESET));
-    ui_put("\n");
 }

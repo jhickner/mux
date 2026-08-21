@@ -10,6 +10,7 @@
 #include "tg.h"
 #include "ui.h"
 #include "text.h"
+#include "workspace.h"
 
 #define SEP    " \xe2\x80\xba "
 #define BRANCH "\xee\x82\xa0"
@@ -56,10 +57,18 @@ static int row_identity(const struct session *s, int cols)
     if (chat)
         snprintf(attached, sizeof attached, SEP "%s", chat);
 
+    // Which of the window's sessions this is, when there is more than one.
+    char sessions[32] = "";
+    int count = workspace_count();
+    if (count > 1)
+        snprintf(sessions, sizeof sessions, SEP "session %d/%d",
+                 workspace_index() + 1, count);
+
     struct seg segs[] = {
         {UI_BAR " ", UI_BRAND},
         {APP_NAME,   UI_BOLD},
         {tail,       UI_DIM},
+        {sessions,   UI_ACCENT},
         {attached,   UI_OK},
     };
     return paint_row(segs, (int)(sizeof segs / sizeof *segs), cols);

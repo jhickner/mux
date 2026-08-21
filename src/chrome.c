@@ -8,8 +8,6 @@
 #include "ui.h"
 
 static struct prompt   *bound;
-static int            (*tabs_rows)(void);
-static void           (*tabs_paint)(void);
 static chrome_modal_fn  modal;
 static void            *modal_ud;
 
@@ -18,16 +16,6 @@ static int spin_row = -1;
 static int above_rows;
 
 void chrome_bind(struct prompt *p) { bound = p; }
-
-// The tab strip, when there is one: chrome draws it without knowing what a
-// session is.
-void chrome_tabs(int (*rows)(void), void (*paint)(void))
-{
-    tabs_rows = rows;
-    tabs_paint = paint;
-}
-
-static int strip_rows(void) { return tabs_rows ? tabs_rows() : 0; }
 
 int chrome_rows_left(void)
 {
@@ -76,7 +64,6 @@ void chrome_modal(chrome_modal_fn fn, void *ud)
 // The sections above the input, in draw order. Dropped whole, cheapest first,
 // until what is left fits.
 struct above {
-    int tabs;
     int side;
     int sticky;
     int queued;
@@ -86,7 +73,6 @@ struct above {
 // one walks the visible transcript — and dropping a section cannot change what
 // another one measures, so the fit reads these instead of asking again.
 struct heights {
-    int tabs;
     int side;
     int sticky;
     int queued;
@@ -95,7 +81,6 @@ struct heights {
 static struct heights above_measure(int cols)
 {
     struct heights h;
-    h.tabs = strip_rows();
     h.side = sidechannel_rows();
     h.sticky = status_sticky_measure();
     h.queued = prompt_queued_rows(bound, cols);
@@ -108,8 +93,6 @@ static int above_height(const struct above *a, const struct heights *h)
     int rows = 0;
     int drawn = 0;
 
-    if (a->tabs && h->tabs > 0)
-        rows += h->tabs + (drawn++ ? 1 : 0);
     if (a->side && h->side > 0)
         rows += h->side + (drawn++ ? 1 : 0);
     if (a->sticky && h->sticky > 0)
@@ -130,9 +113,6 @@ static void fit_above(struct above *a, const struct heights *h, int room)
     if (above_height(a, h) <= room)
         return;
     a->side = 0;
-    if (above_height(a, h) <= room)
-        return;
-    a->tabs = 0;
 }
 
 void chrome_paint(void)
@@ -166,7 +146,7 @@ void chrome_paint(void)
     int gap = status_gap_row();
 
     struct heights h = above_measure(cols);
-    struct above a = {1, 1, 1, 1};
+    struct above a = {1, 1, 1};
     fit_above(&a, &h, tty_rows() - 1 - input_rows - spinning - gap);
 
     block_begin();
@@ -177,13 +157,7 @@ void chrome_paint(void)
         ui_put("\n");
 
     int drawn = 0;
-    if (a.tabs && h.tabs > 0) {
-        tabs_paint();
-        drawn = 1;
-    }
     if (a.side && h.side > 0) {
-        if (drawn)
-            ui_put("\n");
         sidechannel_paint(chrome_rows_left());
         drawn = 1;
     }

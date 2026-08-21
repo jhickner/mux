@@ -71,8 +71,4 @@ int  workspace_busy(void);
 // working | errored | finished, as the registry spells it.
 const char *workspace_status(const struct session *s);
 
-// The tab strip, painted as chrome once the window holds more than one.
-int  workspace_strip_rows(void);
-void workspace_strip_paint(void);
-
 #endif

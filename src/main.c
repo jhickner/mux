@@ -581,7 +581,6 @@ int main(int argc, char **argv)
 
     session_set_typeahead(prompt_live_key, prompt);
     chrome_bind(prompt);
-    chrome_tabs(workspace_strip_rows, workspace_strip_paint);
     chrome_modal_interrupt(handoff_wanted);
     prompt_set_live_command(prompt, live_command, NULL);
     prompt_set_echo_filter(prompt, echo_filter, NULL);
@@ -696,7 +695,6 @@ int main(int argc, char **argv)
     tg_stop();
     session_set_typeahead(NULL, NULL);
     chrome_bind(NULL);
-    chrome_tabs(NULL, NULL);
     prompt_free(prompt);
     viewport_end();
     for (int i = 0; i < workspace_count(); i++)

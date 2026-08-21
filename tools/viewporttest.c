@@ -180,13 +180,23 @@ static void check_scroll(struct screen *s)
     if (count_on_screen(s, "row 99") != 1)
         fail("scrolling back to the end shows the newest row again");
 
-    // Output arriving while scrolled up follows the tail again.
+    // Output arriving while scrolled up leaves the window where it is.
     viewport_scroll(10);
     pump(s);
     say("newest");
     redraw(s);
-    if (count_on_screen(s, "newest") != 1)
-        fail("new output returns the window to the tail");
+    if (count_on_screen(s, "newest") != 0)
+        fail("new output does not drag the window to the tail");
+    if (count_on_screen(s, "row 89") != 1)
+        fail("new output leaves a scrolled window where it was");
+
+    // At the end it follows the tail, the way it always did.
+    viewport_scroll_end();
+    pump(s);
+    say("newer still");
+    redraw(s);
+    if (count_on_screen(s, "newer still") != 1)
+        fail("output arriving at the tail is followed");
 }
 
 // The prompt and the sticky line are not fixtures on the screen. Scrolling

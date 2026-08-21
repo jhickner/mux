@@ -62,6 +62,13 @@ static int suspended;
 static int scrolled;
 static int dirty;
 
+// Where the window sits when it is scrolled back: the entry pinned at the top
+// and how many of its rows fall above it. The offset from the end is derived
+// from these, so output appended below moves under the window instead of
+// dragging it to the bottom.
+static unsigned anchor_id;
+static int      anchor_skip;
+
 // Button reporting only, so shift-drag still selects text.
 #define MOUSE_ON  "\x1b[?1000h\x1b[?1006h"
 #define MOUSE_OFF "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
@@ -102,6 +109,23 @@ static struct item *item_by_mark(unsigned mark)
             hi = mid - 1;
     }
     return NULL;
+}
+
+static int index_of_mark(unsigned mark)
+{
+    int lo = 0, hi = nitems - 1;
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (items[mid].id == mark)
+            return mid;
+        if (items[mid].id < mark)
+            lo = mid + 1;
+        else
+            hi = mid - 1;
+    }
+    // Dropped off the front, or the entry still being written: hold at the
+    // oldest row, or at the end of the stream.
+    return mark >= next_id ? nitems : 0;
 }
 
 void *viewport_item_data(unsigned mark)
@@ -308,7 +332,6 @@ void viewport_item_end(void)
     }
     open_wrapped = 0;
     open_close(tty_screen_columns());
-    scrolled = 0;
     dirty = 1;
 }
 
@@ -335,7 +358,6 @@ void viewport_write(const char *s, size_t n)
     }
     open_append(s + start, n - start);
 
-    scrolled = 0;
     dirty = 1;
 }
 
@@ -389,6 +411,8 @@ struct viewport_state {
     void (*open_free)(void *);
     int    open_wrapped;
     int    scrolled;
+    unsigned anchor_id;
+    int      anchor_skip;
 };
 
 void viewport_hold(int on)
@@ -429,6 +453,8 @@ void viewport_stash(struct viewport_state *st)
     st->open_free = open_free;
     st->open_wrapped = open_wrapped;
     st->scrolled = scrolled;
+    st->anchor_id = anchor_id;
+    st->anchor_skip = anchor_skip;
 
     items = NULL;
     nitems = items_cap = 0;
@@ -439,6 +465,8 @@ void viewport_stash(struct viewport_state *st)
     open_free = NULL;
     open_wrapped = 0;
     scrolled = 0;
+    anchor_id = 0;
+    anchor_skip = 0;
     dirty = 1;
 }
 
@@ -457,6 +485,8 @@ void viewport_adopt(struct viewport_state *st)
     open_free = st->open_free;
     open_wrapped = st->open_wrapped;
     scrolled = st->scrolled;
+    anchor_id = st->anchor_id;
+    anchor_skip = st->anchor_skip;
     memset(st, 0, sizeof *st);
     dirty = 1;
 }
@@ -468,6 +498,8 @@ void viewport_clear(void)
     nitems = 0;
     open_len = 0;
     scrolled = 0;
+    anchor_id = 0;
+    anchor_skip = 0;
     dirty = 1;
 }
 
@@ -733,6 +765,16 @@ static struct window window_geometry(int W, int H, struct item *pending)
     g.total = nitems + window_pending(pending);
     g.scrolled = scrolled;
 
+    // Scrolled back: the offset is whatever holds the anchor where it was,
+    // counted over the entries from it to the end of the stream.
+    if (anchor_id) {
+        int tail = ch;
+        for (int r = index_of_mark(anchor_id); r < g.total; r++)
+            tail += item_height(r, pending, W);
+        int want = tail - anchor_skip - H;
+        g.scrolled = want > 0 ? want : 0;
+    }
+
     // The chrome is the end of the stream, not a fixture: it scrolls off, and
     // only what is left over of the scroll moves the transcript.
     int chrome_shown = ch - g.scrolled;
@@ -830,6 +872,13 @@ void viewport_paint(void)
     struct item pending = {0};
     struct window g = window_geometry(W, H, &pending);
     scrolled = g.scrolled;
+    if (scrolled > 0) {
+        anchor_id = g.first < nitems ? items[g.first].id : next_id;
+        anchor_skip = g.skip;
+    } else {
+        anchor_id = 0;
+        anchor_skip = 0;
+    }
 
     int chrome_shown = g.chrome_shown;
     int body = g.body;
@@ -985,7 +1034,6 @@ void viewport_chrome_keep(int keep)
         free(chrome_rows[i]);
     chrome_n = 0;
     chrome_caret_col = -1;
-    scrolled = 0;
     dirty = 1;
 }
 
@@ -1002,6 +1050,7 @@ void viewport_chrome_clear(void)
 
 void viewport_scroll(int delta)
 {
+    anchor_id = 0;
     scrolled += delta;
     if (scrolled < 0)
         scrolled = 0;
@@ -1011,6 +1060,7 @@ void viewport_scroll(int delta)
 
 void viewport_scroll_end(void)
 {
+    anchor_id = 0;
     scrolled = 0;
     dirty = 1;
     viewport_paint();

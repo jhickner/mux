@@ -33,7 +33,7 @@ static int   sticky_on;
 static char *sticky_text;
 static int   sticky_drawn;
 static int   sticky_tracking;
-static int   sticky_busy;       /* the turn this prompt asked for is still going */
+static int   sticky_busy;       /* the session this prompt asked is still working */
 static unsigned sticky_mark;
 
 static unsigned resize_epoch;
@@ -298,9 +298,20 @@ void status_sticky_prompt(const char *text)
     sticky_tracking = 1;
     sticky_mark = viewport_mark() - 1;
 
-    // A prompt is pinned as its turn is sent, and marked done when that turn
-    // ends. Reading it off whatever is busy now answers a different question.
+    // Pinned busy as its turn is sent; status_sticky_busy() carries it from
+    // there. Reading it off whatever is busy now answers a different question.
     sticky_busy = 1;
+}
+
+// A prompt stays busy for as long as the session it asked is working — the
+// turn itself, and anything it left running behind it.
+void status_sticky_busy(int on)
+{
+    on = on ? 1 : 0;
+    if (sticky_busy == on)
+        return;
+    sticky_busy = on;
+    dirty = 1;
 }
 
 void status_sticky_erased(void) { sticky_tracking = 0; }
@@ -320,5 +331,4 @@ void status_end(void)
     active = 0;
     started = 0;
     gap = 0;
-    sticky_busy = 0;
 }
