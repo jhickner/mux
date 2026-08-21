@@ -263,10 +263,23 @@ static void takeover_run(void *ud)
         prompt_stop(ud);
 }
 
+// A turn in flight anywhere in the window, or a line waiting behind one: the
+// exec would kill the CLI mid-answer and the successor would resume a
+// conversation that lost its last turn.
+static int window_working(void)
+{
+    if (workspace_busy())
+        return 1;
+    for (int i = 0; i < workspace_count(); i++)
+        if (workspace_queued(i))
+            return 1;
+    return 0;
+}
+
 static int restart_pending(void *ud)
 {
     (void)ud;
-    return restart_wanted() && !handoff_wanted();
+    return restart_wanted() && !handoff_wanted() && !window_working();
 }
 
 static int idle_restart(void *ud)
