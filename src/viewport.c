@@ -47,7 +47,7 @@ static int dirty;
 
 // Button reporting only, so shift-drag still selects text.
 #define MOUSE_ON  "\x1b[?1000h\x1b[?1006h"
-#define MOUSE_OFF "\x1b[?1000l\x1b[?1006l"
+#define MOUSE_OFF "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l"
 
 static void direct(const char *s, size_t n)
 {

@@ -13,6 +13,17 @@
 #define BRACKETED_PASTE_ON  "\x1b[?2004h"
 #define BRACKETED_PASTE_OFF "\x1b[?2004l"
 
+// Async-signal-safe: write(2) from on_fatal. 1002/1003 cover a child or tmux
+// leaving motion tracking on; 1049 leaves the alt screen.
+#define CRASH_RESTORE \
+    "\x1b[?2026l" \
+    "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l" \
+    "\x1b[?2004l" \
+    "\x1b[?25h" \
+    "\x1b[?7h" \
+    "\x1b[?1049l" \
+    "\x1b]112\x07"
+
 #define ESC_GRACE_MS 30
 
 static struct termios entry_mode;
@@ -29,8 +40,7 @@ static void on_winch(int sig) { (void)sig; got_winch = 1; winch_count++; }
 static void on_fatal(int sig)
 {
     if (in_raw) {
-        (void)!write(STDOUT_FILENO, BRACKETED_PASTE_OFF "\x1b[?25h",
-                     sizeof(BRACKETED_PASTE_OFF "\x1b[?25h") - 1);
+        (void)!write(STDOUT_FILENO, CRASH_RESTORE, sizeof CRASH_RESTORE - 1);
         tcsetattr(STDIN_FILENO, TCSAFLUSH, &entry_mode);
         in_raw = 0;
     }
