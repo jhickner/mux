@@ -49,6 +49,7 @@ struct session {
     char     id[128];
     char     title[128];
     char     stale_title[128];
+    int      announce_title;
     int      retitle;
     int      named;
     double   named_at;
@@ -433,9 +434,18 @@ static void tab_busy(struct session *s, int busy)
     publish(s, busy ? "working" : "finished");
 }
 
+static void name_poll(struct session *s);
+
 int session_idle_pump(struct session *s)
 {
-    if (!s || !s->agent || !s->agent->idle_pump || s->quiet)
+    if (!s || !s->agent)
+        return 0;
+
+    // A name asked for at the prompt lands here: nothing else polls for it
+    // between turns.
+    name_poll(s);
+
+    if (!s->agent->idle_pump || s->quiet)
         return 0;
 
     if (!s->idle_busy) {
@@ -493,6 +503,12 @@ static int adopt_title(struct session *s)
     snprintf(s->title, sizeof s->title, "%s", found);
     status_set_note(s->title);
     publish(s, s->idle_busy ? "working" : "finished");
+    if (s->announce_title) {
+        s->announce_title = 0;
+        ui_note("renamed to %s", s->title);
+        ui_put("\n");
+        ui_flush();
+    }
     return 1;
 }
 
@@ -555,6 +571,7 @@ int session_rename(struct session *s, const char *name)
     s->named = 1;
     s->retitle = 0;
     s->named_at = now_seconds();
+    s->announce_title = 1;
     status_set_note(NULL);
     return 1;
 }
@@ -861,6 +878,7 @@ static void set_id(struct session *s, const char *id)
 
         s->title[0] = '\0';
         s->stale_title[0] = '\0';
+        s->announce_title = 0;
         s->named = 0;
         if (!s->retitle)
             title_lookup(s->id, s->title, sizeof s->title);
@@ -1087,6 +1105,7 @@ int session_set_cwd(struct session *s, const char *path)
     transcript_clear(&s->transcript);
     s->title[0] = '\0';
     s->stale_title[0] = '\0';
+    s->announce_title = 0;
     s->retitle = 1;
     s->named = 0;
     status_set_note(NULL);
@@ -1114,6 +1133,7 @@ int session_clear(struct session *s)
 
     s->title[0] = '\0';
     s->stale_title[0] = '\0';
+    s->announce_title = 0;
     s->retitle = 1;
     s->named = 0;
     status_set_note(NULL);
