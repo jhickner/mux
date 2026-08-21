@@ -22,6 +22,7 @@
 #include "sessionlist.h"
 #include "sidechannel.h"
 #include "settings.h"
+#include "settingsui.h"
 #include "text.h"
 #include "status.h"
 #include "ui.h"
@@ -41,6 +42,7 @@ const ReplCommand CMD_TABLE[] = {
     {"/sticky", "float the prompt above the spinner", "[on|off]"},
     {"/image", "tallest an inline image may be drawn", "[rows]"},
     {"/permission", "how the CLI gates tool calls", "[mode]"},
+    {"/settings", "show and change every setting", NULL},
     {"/resume", "resume a past conversation", NULL},
     {"/fh", "fork into a horizontal tmux split", NULL},
     {"/fs", "alias for /fh", NULL},
@@ -782,6 +784,8 @@ static enum cmd_result run_command(struct session *s, const char *name,
         do_backend(s, arg);
     } else if (!strcmp(name, "/cd")) {
         do_cd(s, arg);
+    } else if (!strcmp(name, "/settings")) {
+        settingsui_run(s);
     } else if (!strcmp(name, "/mux")) {
         do_mux(s, arg);
     } else if (!strcmp(name, "/btw")) {

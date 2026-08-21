@@ -66,6 +66,11 @@ int ui_color(void);
 
 const char *ui_cycle(enum ui_group group, int delta);
 
+// The named colours a group can take, the one it has, and setting it by name.
+int         ui_swatches(const char *const **out);
+const char *ui_swatch(enum ui_group group);
+int         ui_swatch_set(enum ui_group group, const char *name);
+
 void ui_cursor_plain(void);
 void ui_cursor_restore(void);
 

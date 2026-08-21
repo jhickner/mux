@@ -129,19 +129,56 @@ static int saved_swatch(int group)
     return -1;
 }
 
-const char *ui_cycle(enum ui_group group, int delta)
+// Where the group sits in the swatch, found from the palette the first time.
+static int swatch_at(enum ui_group group)
 {
-    static char label[64];
-
-    if (!use_color || group < 0 || group >= GROUP_N)
-        return "";
     if (!cursor[group]) {
         cursor[group] = 1;
         for (int i = 0; i < SWATCH_N; i++)
             if (SWATCH[i].slot == slots[GROUPS[group].roles[0]])
                 cursor[group] = i + 1;
     }
-    int at = (cursor[group] - 1 + delta % SWATCH_N + SWATCH_N) % SWATCH_N;
+    return cursor[group] - 1;
+}
+
+int ui_swatches(const char *const **out)
+{
+    static const char *names[SWATCH_N];
+
+    for (int i = 0; i < SWATCH_N; i++)
+        names[i] = SWATCH[i].name;
+    *out = names;
+    return SWATCH_N;
+}
+
+const char *ui_swatch(enum ui_group group)
+{
+    if (!use_color || group < 0 || group >= GROUP_N)
+        return "";
+    return SWATCH[swatch_at(group)].name;
+}
+
+int ui_swatch_set(enum ui_group group, const char *name)
+{
+    if (!use_color || group < 0 || group >= GROUP_N)
+        return 0;
+
+    for (int i = 0; i < SWATCH_N; i++)
+        if (!strcmp(SWATCH[i].name, name)) {
+            apply_group(group, i);
+            settings_set_str(GROUPS[group].key, SWATCH[i].name);
+            return 1;
+        }
+    return 0;
+}
+
+const char *ui_cycle(enum ui_group group, int delta)
+{
+    static char label[64];
+
+    if (!use_color || group < 0 || group >= GROUP_N)
+        return "";
+    int at = (swatch_at(group) + delta % SWATCH_N + SWATCH_N) % SWATCH_N;
     apply_group(group, at);
     settings_set_str(GROUPS[group].key, SWATCH[at].name);
 
