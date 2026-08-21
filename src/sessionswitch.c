@@ -565,6 +565,10 @@ static int relist(void *ud)
     return 1;
 }
 
+// Where the cursor goes when the list is shown again, or -1 for the row the
+// window is on.
+static int resume_row = -1;
+
 // Returns nonzero when the list should be shown again: a rename leaves the
 // window where it was.
 static int switch_once(void)
@@ -599,6 +603,14 @@ static int switch_once(void)
     for (int i = 0; i < n; i++)
         if (rows[i].kind == ROW_TAB && rows[i].at == workspace_index())
             initial = i;
+    // A close leaves the list where it was, so the next one is under the
+    // cursor already.
+    if (resume_row >= 0) {
+        initial = resume_row < n ? resume_row : n - 1;
+        while (initial > 0 && heading[initial] == PICK_HEADING)
+            initial--;
+        resume_row = -1;
+    }
 
     if (n < MAX_ROWS) {
         struct row *r = &rows[n];
@@ -722,6 +734,8 @@ static int switch_once(void)
         return 0;
     }
 
+    // Closing is done from the list and leaves it open: the window is still
+    // being looked over.
     if (pressed == KEY_CLOSE) {
         // Only this window's own tabs are ours to close.
         if (chosen.kind == ROW_TAB && workspace_count() > 1) {
@@ -730,9 +744,12 @@ static int switch_once(void)
             ui_note("that is the only session here");
             ui_put("\n");
             ui_flush();
+            free(live);
+            return 0;
         }
+        resume_row = picked;
         free(live);
-        return 0;
+        return 1;
     }
 
     switch (chosen.kind) {
