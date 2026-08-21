@@ -1,8 +1,10 @@
 #include "session.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -68,6 +70,7 @@ struct session {
     int      customizations;
     int      fork_session;
     char    *permission;
+    char    *error_note;
     int      idle_busy;
     int      trust_requested;
     int      interrupted;
@@ -120,6 +123,8 @@ static void humanize(long n, char *out, size_t size)
 static struct session *live;
 
 static void remember_model(const struct session *s);
+static int dir_alive(const char *path);
+static int ground_target(const char *gone, char *out, size_t size);
 static void await_model(struct session *s);
 
 static void on_event(void *ud, const backend_event *ev)
@@ -515,6 +520,7 @@ void session_free(struct session *s)
     stream_reset(s);
     free(s->prompt);
     free(s->permission);
+    free(s->error_note);
     free(s->system_extra);
     view_free(&s->view);
     transcript_free(&s->transcript);
@@ -681,7 +687,15 @@ static int restart(struct session *s, const char *resume_id)
     return 1;
 }
 
-int session_start(struct session *s) { return restart(s, s->id[0] ? s->id : NULL); }
+int session_start(struct session *s)
+{
+    // The directory can be gone before the first turn — a session restored into
+    // a worktree that was merged away. Start somewhere that exists instead.
+    char next[4096];
+    if (!dir_alive(s->cwd) && ground_target(s->cwd, next, sizeof next))
+        replace(&s->cwd, next);
+    return restart(s, s->id[0] ? s->id : NULL);
+}
 
 int session_trust_project(struct session *s)
 {
@@ -968,10 +982,159 @@ static void print_footer(struct session *s, double elapsed)
     ui_flush();
 }
 
+// A session's directory can vanish underneath it — a worktree that was merged
+// and then cleaned up. The child is stranded: with no working directory it
+// cannot spawn a shell, so hooks and tools fail with errors that name /bin/sh
+// rather than the folder that went missing. Only a restart somewhere that
+// exists frees it.
+static int dir_alive(const char *path)
+{
+    struct stat st;
+    return path && *path && stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static int nearest_live_dir(const char *path, char *out, size_t size)
+{
+    snprintf(out, size, "%s", path);
+    for (char *slash; (slash = strrchr(out, '/')); ) {
+        if (slash == out)
+            out[1] = '\0';
+        else
+            *slash = '\0';
+        if (dir_alive(out))
+            return 1;
+        if (slash == out)
+            return 0;
+    }
+    return 0;
+}
+
+// The repository a deleted worktree belonged to, which beats landing in
+// whatever container directory happens to survive above it.
+static int main_worktree(const char *near, char *out, size_t size)
+{
+    char cmd[4200];
+    snprintf(cmd, sizeof cmd,
+             "git -C '%s' rev-parse --path-format=absolute --git-common-dir 2>/dev/null",
+             near);
+    FILE *f = popen(cmd, "r");
+    if (!f)
+        return 0;
+    char line[4096] = "";
+    char *got = fgets(line, sizeof line, f);
+    pclose(f);
+    if (!got)
+        return 0;
+    line[strcspn(line, "\n")] = '\0';
+
+    char *slash = strrchr(line, '/');       // .../<repo>/.git -> .../<repo>
+    if (!slash || slash == line || strcmp(slash + 1, ".git") != 0)
+        return 0;
+    *slash = '\0';
+    if (!dir_alive(line))
+        return 0;
+    snprintf(out, size, "%s", line);
+    return 1;
+}
+
+// Where a session whose directory went missing should carry on: the repository
+// the deleted worktree belonged to, else the nearest surviving ancestor.
+static int ground_target(const char *gone, char *out, size_t size)
+{
+    char near[4096];
+    if (!nearest_live_dir(gone, near, sizeof near))
+        return 0;
+    if (main_worktree(near, out, size))
+        return 1;
+    if (!strcmp(near, "/")) {
+        const char *home = getenv("HOME");
+        if (dir_alive(home)) {
+            snprintf(out, size, "%s", home);
+            return 1;
+        }
+    }
+    snprintf(out, size, "%s", near);
+    return 1;
+}
+
+__attribute__((format(printf, 2, 3)))
+static void session_warn(struct session *s, const char *fmt, ...)
+{
+    char text[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(text, sizeof text, fmt, ap);
+    va_end(ap);
+
+    backend_event ev = {.kind = BACKEND_EV_WARNING, .text = text};
+    struct session *was = live;
+    live = s;
+    on_event(s, &ev);
+    live = was;
+}
+
+static void shorten(const char *dir, char *out, size_t size)
+{
+    path_home_relative(dir, out, size);
+    if (!*out)
+        snprintf(out, size, "%s", dir ? dir : "?");
+}
+
+// GROUND_OK: nothing to do. GROUND_MOVED: the child was restarted somewhere
+// that exists. GROUND_LOST: there was nowhere left to go.
+enum { GROUND_LOST, GROUND_OK, GROUND_MOVED };
+
+static int session_reground(struct session *s)
+{
+    const char *dir = s->workdir ? s->workdir : s->cwd;
+    if (dir_alive(dir))
+        return GROUND_OK;
+
+    char gone[4096], shown[512];
+    snprintf(gone, sizeof gone, "%s", dir ? dir : "");
+    shorten(gone, shown, sizeof shown);
+
+    // Only the worktree the agent had moved into is gone: the session's own
+    // directory still holds its history, so this one resumes.
+    if (dir_alive(s->cwd)) {
+        replace(&s->workdir, NULL);
+        if (restart(s, s->id[0] ? s->id : NULL)) {
+            char home[512];
+            shorten(s->cwd, home, sizeof home);
+            session_warn(s, "%s is gone — restarted in %s", shown, home);
+            return GROUND_MOVED;
+        }
+    } else {
+        char next[4096], moved[512];
+        if (ground_target(gone, next, sizeof next)) {
+            shorten(next, moved, sizeof moved);
+            if (session_set_cwd(s, next)) {
+                session_warn(s, "%s is gone — restarted in %s with a fresh context",
+                             shown, moved);
+                return GROUND_MOVED;
+            }
+        }
+    }
+
+    char note[700];
+    snprintf(note, sizeof note,
+             "the working directory %s no longer exists and the session could not "
+             "be restarted elsewhere", shown);
+    replace(&s->error_note, note);
+    session_warn(s, "%s", note);
+    return GROUND_LOST;
+}
+
 int session_turn(struct session *s, const char *text)
 {
     if (!s->agent)
         return 0;
+
+    replace(&s->error_note, NULL);
+    if (!session_reground(s)) {
+        replace(&s->failed_prompt, text);
+        return 0;
+    }
 
     replace(&s->last_block, NULL);
     stream_reset(s);
@@ -1005,7 +1168,13 @@ int session_turn(struct session *s, const char *text)
         replace(&s->failed_prompt, text);
         s->idle_busy = 0;
         agenttabs_errored();
-        const char *detail = s->agent->last_error(s->agent);
+        // The directory can go away mid-turn; then the stderr tail is some
+        // downstream complaint about /bin/sh, not the reason.
+        if (session_reground(s) == GROUND_MOVED)
+            replace(&s->error_note,
+                    "the working directory was deleted mid-turn; the session has "
+                    "been restarted");
+        const char *detail = session_last_error(s);
         if (s->silent)
             return 0;
         if (detail)
@@ -1205,6 +1374,8 @@ int session_last_interrupted(const struct session *s) { return s ? s->interrupte
 
 const char *session_last_error(const struct session *s)
 {
+    if (s && s->error_note)
+        return s->error_note;
     return s && s->agent ? s->agent->last_error(s->agent) : NULL;
 }
 const char *session_last_reply(const struct session *s) { return s->last_reply; }
