@@ -391,9 +391,9 @@ int main(int argc, char **argv)
     session_set_typeahead(NULL, NULL);
     chrome_bind(NULL);
     prompt_free(prompt);
+    viewport_end();
     sessionfork_exit_note(session);
     session_free(session);
-    viewport_end();
     ui_raw(0);
     tty_raw_end();
     return 0;
