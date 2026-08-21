@@ -319,7 +319,7 @@ void status_end(void)
     visible = 0;
     active = 0;
     started = 0;
+    gap = 0;
     sticky_busy = 0;
     ui_esc(UI_CURSOR_SHOW);
-
 }

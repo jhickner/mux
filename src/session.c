@@ -1168,7 +1168,6 @@ static void print_footer(struct session *s, double elapsed)
     ui_put("\n");
     if (wrapped)
         ui_wrapped(s->title, 0, UI_DIM);
-    ui_put("\n");
     ui_flush();
 }
 
