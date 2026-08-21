@@ -440,13 +440,13 @@ static int run(const char *title, const struct pick_item *items, int count,
             break;
         }
         case TK_RIGHT:
-            // The way back in, where left was the way out to this list.
-            if (!shortcuts || !strchr(shortcuts, PICK_KEY_RIGHT))
-                continue;
+            // Right takes the highlighted row, the same as enter. A caller
+            // that asked for it as a shortcut of its own is told which of the
+            // two was pressed; the rest cannot tell them apart.
             if (!v.count || row_heading(&v, v.sel))
                 break;
             result = v.order[v.sel];
-            if (pressed)
+            if (pressed && shortcuts && strchr(shortcuts, PICK_KEY_RIGHT))
                 *pressed = PICK_KEY_RIGHT;
             goto done;
         case TK_NEWLINE:
