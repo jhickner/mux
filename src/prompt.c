@@ -52,6 +52,9 @@ struct prompt {
     int          queued_count;
     int          queued_cap;
     char        *file_root;
+    char      *(*external)(void *ud);
+    void        *external_ud;
+    int          external_taken;
     int        (*idle_fds)(void *ud, int *out, int max);
     int        (*idle_render)(void *ud);
     int        (*idle_busy)(void *ud);
@@ -891,6 +894,8 @@ void prompt_restart_check(struct prompt *p)
         restart_check(p);
 }
 
+static void queue_push(struct prompt *p, char *line);
+
 static char *read_loop(struct prompt *p)
 {
     repaint(p);
@@ -899,6 +904,26 @@ static char *read_loop(struct prompt *p)
     int resizing = 0;
     for (;;) {
         tty_event ev;
+
+        // A line from somewhere other than the keyboard — the chat bridge. It
+        // submits as typed when nothing is half-written, and waits its turn
+        // behind the line being composed when something is.
+        if (p->external) {
+            char *line = p->external(p->external_ud);
+            if (line) {
+                const char *composing = repl_line(&p->repl);
+                if (composing && *composing) {
+                    queue_push(p, line);
+                    repaint(p);
+                    continue;
+                }
+                p->external_taken = 1;
+                chrome_clear();
+                if (prompt_echoes(p, line))
+                    prompt_echo_message(line);
+                return line;
+            }
+        }
 
         // Something animating needs waking on a frame, not on a keystroke.
         int animating = !resizing && p->animate_busy && p->animate_busy(p->animate_ud);
@@ -931,6 +956,7 @@ static char *read_loop(struct prompt *p)
             return NULL;
 
         case KEY_SUBMIT: {
+            p->external_taken = 0;
             char *out = take_line(p);
             chrome_clear();
             if (out && prompt_echoes(p, out))
@@ -953,6 +979,17 @@ char *prompt_read(struct prompt *p)
     char *out = read_loop(p);
     tty_watch(NULL, NULL, NULL);
     return out;
+}
+
+void prompt_set_external(struct prompt *p, char *(*fn)(void *ud), void *ud)
+{
+    p->external = fn;
+    p->external_ud = ud;
+}
+
+int prompt_line_was_external(struct prompt *p)
+{
+    return p && p->external_taken;
 }
 
 static void queue_push(struct prompt *p, char *line)

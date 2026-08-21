@@ -22,6 +22,7 @@
 #include "settings.h"
 #include "sidechannel.h"
 #include "status.h"
+#include "tg.h"
 #include "tty.h"
 #include "ui.h"
 #include "viewport.h"
@@ -66,6 +67,8 @@ static void usage(void)
             "  -e effort  reasoning/thinking effort (default: the last /effort pick, else the CLI's own)\n"
             "  -C dir     working directory for the agent's tools\n"
             "  -s         safe mode: skip skills, CLAUDE.md, MCP servers, hooks\n"
+            "  --telegram also answer over Telegram, in the same session\n"
+            "  --connect telegram   the same thing, spelled out\n"
             "  -r         --resume: pick a past conversation to continue\n"
             "  --session id  resume a specific conversation (used by the fork commands)\n"
             "  --fork     with --session: branch off it instead of writing back to it\n"
@@ -82,7 +85,8 @@ static int idle_fds(void *ud, int *out, int max)
     int fd = session_idle_fd(ud);
     if (fd >= 0 && n < max)
         out[n++] = fd;
-    return n + sidechannel_fds(out + n, max - n);
+    n += sidechannel_fds(out + n, max - n);
+    return n + tg_fds(out + n, max - n);
 }
 
 static void offer_project_trust(struct session *s)
@@ -100,7 +104,17 @@ static int idle_render(void *ud)
 {
     sidechannel_poll();
     sidechannel_tick();
+    // A chat line waiting is something only the prompt can act on, so the read
+    // it is blocked in has to end.
+    if (tg_pending())
+        tty_wake();
     return session_idle_pump(ud);
+}
+
+static char *chat_line(void *ud)
+{
+    (void)ud;
+    return tg_take_line();
 }
 
 static int side_busy(void *ud)  { (void)ud; return sidechannel_busy(); }
@@ -164,6 +178,8 @@ int main(int argc, char **argv)
         {"session", required_argument, NULL, 'S'},
         {"fork",    no_argument,       NULL, 'F'},
         {"restore", required_argument, NULL, 'R'},
+        {"telegram", no_argument,      NULL, 'T'},
+        {"connect", required_argument, NULL, 'N'},
         {"help",    no_argument,       NULL, 'h'},
         {NULL,      0,                 NULL, 0},
     };
@@ -174,6 +190,7 @@ int main(int argc, char **argv)
     const char *dir = NULL;
     const char *session_arg = NULL;
     const char *restore_arg = NULL;
+    int telegram = 0;
     int fork_session = 0;
     int safe_mode = 0;
     int resume = 0;
@@ -190,6 +207,14 @@ int main(int argc, char **argv)
         case 'S': session_arg = optarg; break;
         case 'F': fork_session = 1; break;
         case 'R': restore_arg = optarg; break;
+        case 'T': telegram = 1; break;
+        case 'N':
+            if (strcmp(optarg, "telegram")) {
+                fprintf(stderr, APP_NAME ": --connect takes 'telegram'\n");
+                return 2;
+            }
+            telegram = 1;
+            break;
         default:  usage(); return opt == 'h' ? 0 : 2;
         }
     }
@@ -241,6 +266,16 @@ int main(int argc, char **argv)
 
     int interactive = optind >= argc;
 
+    // With no terminal to share, the chat is the whole front end: no raw mode,
+    // no prompt, nothing drawn.
+    int chat_only = telegram && (!isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO));
+    if (telegram && !interactive) {
+        fprintf(stderr, APP_NAME ": --telegram takes no prompt — it is a session\n");
+        return 2;
+    }
+    if (chat_only)
+        interactive = 0;
+
     if (interactive) {
         restart_arm(safe_mode);
         if (tty_raw_begin() != 0) {
@@ -282,11 +317,30 @@ int main(int argc, char **argv)
 
         session_adopt_id(session, session_arg);
     }
+
+    // Before the agent starts: the bridge has its own conventions to teach it,
+    // and they are part of the system prompt the process is opened with.
+    if (telegram && session && !tg_start(session, chat_only)) {
+        if (chat_only) {
+            session_free(session);
+            return 1;
+        }
+        telegram = 0;
+    }
+
     if (!session || !session_start(session)) {
         tty_raw_end();
         fprintf(stderr, APP_NAME ": could not start the %s CLI — is it on PATH?\n", backend);
         session_free(session);
         return 1;
+    }
+
+    if (chat_only) {
+        session_set_naming(session, 0);
+        tg_run(session);
+        tg_stop();
+        session_free(session);
+        return 0;
     }
 
     if (!interactive) {
@@ -338,6 +392,8 @@ int main(int argc, char **argv)
     prompt_set_replay(prompt, replay, session);
     prompt_set_blank(prompt, blank_line, session);
     prompt_set_animate(prompt, side_busy, side_tick, session);
+    if (telegram)
+        prompt_set_external(prompt, chat_line, NULL);
 
     ui_put("\n");
 
@@ -373,6 +429,14 @@ int main(int argc, char **argv)
             continue;
         }
 
+        // A line the chat sent runs the same way, but its output has to go back
+        // there as well as onto the screen.
+        if (prompt_line_was_external(prompt)) {
+            tg_run_line(line);
+            prompt_restart_check(prompt);
+            continue;
+        }
+
         enum cmd_result r = cmd_dispatch(session, line);
         if (r == CMD_QUIT) {
             free(line);
@@ -388,6 +452,7 @@ int main(int argc, char **argv)
     }
 
     sidechannel_close_all();
+    tg_stop();
     session_set_typeahead(NULL, NULL);
     chrome_bind(NULL);
     prompt_free(prompt);

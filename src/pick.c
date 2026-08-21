@@ -243,6 +243,10 @@ static int run(const char *title, const struct pick_item *items, int count,
     for (int i = 0; i < count; i++)
         v.order[i] = i;
     v.sel = (initial >= 0 && initial < count) ? initial : 0;
+    // Nothing to pick with: a front end that is not the terminal asked, and
+    // there is no keyboard to answer on. Reads as a cancel.
+    if (!tty_is_raw())
+        return -1;
     chrome_modal(paint, &v);
 
     int result = -1;

@@ -239,6 +239,10 @@ void tty_watch(int (*fds)(void *ud, int *out, int max), void (*ready)(void *ud),
     watch_ud = ud;
 }
 
+static int woken;
+
+void tty_wake(void) { woken = 1; }
+
 static int wait_readable(int timeout_ms)
 {
     for (;;) {
@@ -274,6 +278,12 @@ static int wait_readable(int timeout_ms)
             return 0;
         watch_ready(watch_ud);
 
+        // The handler took something the caller has to act on, so the wait ends
+        // here rather than going back to sleep until a key is pressed.
+        if (woken) {
+            woken = 0;
+            return 0;
+        }
         if (timeout_ms >= 0)
             return 0;
     }

@@ -27,6 +27,8 @@ int confirm_run(const char *question)
 {
     if (!question || !*question)
         return 0;
+    if (!tty_is_raw())
+        return 0;               // no keyboard to answer on: taken as "no"
 
     chrome_modal(paint_question, (void *)question);
     for (;;) {

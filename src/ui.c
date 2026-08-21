@@ -246,12 +246,14 @@ void ui_cursor_restore(void)
 static FILE  *sink;
 static char  *sink_buf;
 static size_t sink_len;
+static int    sink_tee;
 
 static void out(const char *s, size_t n)
 {
     if (sink) {
         fwrite(s, 1, n, sink);
-        return;
+        if (!sink_tee)
+            return;
     }
     if (viewport_active()) {
         viewport_write(s, n);
@@ -260,10 +262,17 @@ static void out(const char *s, size_t n)
     fwrite(s, 1, n, stdout);
 }
 
+void ui_sink_begin_tee(void)
+{
+    ui_sink_begin();
+    sink_tee = 1;
+}
+
 void ui_sink_begin(void)
 {
     if (sink)
         return;
+    sink_tee = 0;
     sink_len = 0;
     free(sink_buf);
     sink_buf = NULL;
@@ -288,6 +297,7 @@ char *ui_sink_end(void)
         return NULL;
     fclose(sink);
     sink = NULL;
+    sink_tee = 0;
     char *taken = sink_buf;
     sink_buf = NULL;
     sink_len = 0;

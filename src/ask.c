@@ -129,6 +129,9 @@ static void paint(void *ud)
 
 char *ask_run(const char *title, const char *initial)
 {
+    if (!tty_is_raw())
+        return NULL;            // nothing to type on
+
     struct field f = {.title = title ? title : ""};
     if (initial) {
         snprintf(f.text, sizeof f.text, "%s", initial);

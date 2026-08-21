@@ -54,6 +54,18 @@ void restart_shield_thread(void)
     pthread_sigmask(SIG_BLOCK, &set, NULL);
 }
 
+// Flags the new build has to be given again: the argv is rebuilt from the
+// session, which knows nothing about the front ends attached to it.
+#define RESTART_FLAGS 4
+static const char *extra[RESTART_FLAGS];
+static int         extra_n;
+
+void restart_flag(const char *flag)
+{
+    if (extra_n < RESTART_FLAGS)
+        extra[extra_n++] = flag;
+}
+
 void restart_request(void)
 {
     wanted = 1;
@@ -121,6 +133,8 @@ int restart_exec(struct session *s)
     }
     if (safe_mode)
         argv[n++] = "-s";
+    for (int i = 0; i < extra_n; i++)
+        argv[n++] = arg_copy(extra[i]);
 
     const char *id = session_id(s);
     if (id && *id && session_can_resume(s)) {

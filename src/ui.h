@@ -117,6 +117,9 @@ void  ui_capture_begin(int columns);
 char *ui_capture_end(void);
 
 void  ui_sink_begin(void);
+// As ui_sink_begin, but the terminal still gets what is written: a second front
+// end wants a copy, not the only copy.
+void  ui_sink_begin_tee(void);
 int   ui_sink_rows(void);
 char *ui_sink_end(void);
 
