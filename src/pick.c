@@ -9,13 +9,12 @@
 #include "tty.h"
 #include "ui.h"
 
-#define VISIBLE_MAX 10
-
 struct view {
     int top;
     int visible;
     const char *title;
     const struct pick_item *items;
+    const unsigned char *heading;
     int n;          // every item offered
     int *order;     // the ones the query kept, best first
     int *score;
@@ -53,6 +52,59 @@ static int fuzzy(const char *name, const char *q)
     return score;
 }
 
+static int item_heading(const struct view *v, int i)
+{
+    return v->heading && v->heading[i];
+}
+
+static int row_heading(const struct view *v, int row)
+{
+    return item_heading(v, v->order[row]);
+}
+
+// Headings are passed over: the highlight only ever rests on something that
+// can be chosen.
+static void settle(struct view *v, int dir)
+{
+    for (int i = 0; i < v->count; i++) {
+        if (!row_heading(v, v->sel))
+            return;
+        v->sel += dir;
+        if (v->sel >= v->count)
+            v->sel = 0;
+        else if (v->sel < 0)
+            v->sel = v->count - 1;
+    }
+}
+
+static void step(struct view *v, int dir)
+{
+    if (!v->count)
+        return;
+    v->sel += dir;
+    if (v->sel >= v->count)
+        v->sel = 0;
+    else if (v->sel < 0)
+        v->sel = v->count - 1;
+    settle(v, dir);
+}
+
+// As many rows as the window has room for, once the title, the count line and
+// each group's blank line are taken out.
+static int visible_cap(const struct view *v)
+{
+    int rows = tty_rows() - 3;
+    if (v->heading) {
+        int groups = 0;
+        for (int i = 0; i < v->count; i++)
+            if (row_heading(v, i))
+                groups++;
+        if (groups > 1)
+            rows -= groups - 1;
+    }
+    return rows < 5 ? 5 : rows;
+}
+
 // Rebuild the visible rows for the current query, keeping the highlight on the
 // same item where the query still admits it.
 static void refilter(struct view *v)
@@ -61,11 +113,26 @@ static void refilter(struct view *v)
 
     v->count = 0;
     for (int i = 0; i < v->n; i++) {
+        // A grouped list keeps its order, so every row stays under the
+        // heading that says where it lives. A heading whose group the query
+        // emptied goes with it.
+        if (item_heading(v, i)) {
+            int has = 0;
+            for (int j = i + 1; j < v->n && !item_heading(v, j); j++)
+                if (!v->query[0] || fuzzy(v->items[j].label, v->query) >= 0)
+                    has = 1;
+            if (!has)
+                continue;
+            v->order[v->count] = i;
+            v->score[v->count++] = 0;
+            continue;
+        }
         int s = v->query[0] ? fuzzy(v->items[i].label, v->query) : 0;
         if (s < 0)
             continue;
         int at = v->count++;
-        while (at > 0 && v->score[at - 1] < s) {
+        // Ungrouped lists rank the best match first instead.
+        while (!v->heading && at > 0 && v->score[at - 1] < s) {
             v->order[at] = v->order[at - 1];
             v->score[at] = v->score[at - 1];
             at--;
@@ -80,14 +147,18 @@ static void refilter(struct view *v)
             v->sel = i;
             break;
         }
+    if (v->count)
+        settle(v, 1);
     v->top = 0;
-    v->visible = v->count < VISIBLE_MAX ? v->count : VISIBLE_MAX;
+    int cap = visible_cap(v);
+    v->visible = v->count < cap ? v->count : cap;
     if (v->visible < 1)
         v->visible = 1;
 }
 
 static int run(const char *title, const struct pick_item *items, int count,
-               int initial, const char *shortcuts, int *pressed, int filter);
+               int initial, const unsigned char *heading, const char *shortcuts,
+               int *pressed, int filter);
 
 // A modal section: chrome.c paints it in place of the whole stack.
 static void paint(void *ud)
@@ -133,6 +204,24 @@ static void paint(void *ud)
         end = count;
     for (int row = v->top; row < end; row++) {
         int i = v->order ? v->order[row] : row;
+        if (item_heading(v, i)) {
+            // A blank line sets each group off from the one above it.
+            if (row > v->top) {
+                ui_put("\n");
+                rows++;
+            }
+            ui_esc(ui_style(UI_DIM));
+            ui_put("  ");
+            size_t budget = columns > 3 ? (size_t)(columns - 3) : 1;
+            size_t fit = ui_fit_bytes(items[i].label, budget);
+            ui_putn(items[i].label, fit);
+            if (items[i].label[fit])
+                ui_put("…");
+            ui_esc(ui_style(UI_RESET));
+            ui_put("\n");
+            rows++;
+            continue;
+        }
         int selected = (row == sel);
         ui_esc(ui_style(selected ? UI_ACCENT : UI_RESET));
         ui_put(selected ? "  \xe2\x86\x92 " : "    ");
@@ -186,24 +275,31 @@ static void paint(void *ud)
 
 int pick_run(const char *title, const struct pick_item *items, int count, int initial)
 {
-    return run(title, items, count, initial, NULL, NULL, 0);
+    return run(title, items, count, initial, NULL, NULL, NULL, 0);
 }
 
 int pick_run_filter(const char *title, const struct pick_item *items, int count, int initial)
 {
-    return run(title, items, count, initial, NULL, NULL, 1);
+    return run(title, items, count, initial, NULL, NULL, NULL, 1);
 }
 
 int pick_run_ex(const char *title, const struct pick_item *items, int count,
                 int initial, const char *shortcuts, int *pressed)
 {
-    return run(title, items, count, initial, shortcuts, pressed, 1);
+    return run(title, items, count, initial, NULL, shortcuts, pressed, 1);
+}
+
+int pick_run_groups(const char *title, const struct pick_item *items, int count,
+                    int initial, const unsigned char *heading,
+                    const char *shortcuts, int *pressed)
+{
+    return run(title, items, count, initial, heading, shortcuts, pressed, 1);
 }
 
 int pick_run_keys(const char *title, const struct pick_item *items, int count,
                   int initial, const char *shortcuts, int *pressed)
 {
-    return run(title, items, count, initial, shortcuts, pressed, 0);
+    return run(title, items, count, initial, NULL, shortcuts, pressed, 0);
 }
 
 // Typed bytes go to the query in filter mode; everywhere else they are
@@ -225,7 +321,8 @@ static int type_into(struct view *v, const char *s, size_t n)
 }
 
 static int run(const char *title, const struct pick_item *items, int count,
-               int initial, const char *shortcuts, int *pressed, int filter)
+               int initial, const unsigned char *heading, const char *shortcuts,
+               int *pressed, int filter)
 {
     if (pressed)
         *pressed = 0;
@@ -233,11 +330,10 @@ static int run(const char *title, const struct pick_item *items, int count,
         return -1;
 
     struct view v = {0};
-    v.visible = count < VISIBLE_MAX ? count : VISIBLE_MAX;
     v.title = title;
     v.items = items;
+    v.heading = heading;
     v.n = count;
-    v.count = count;
     v.filter = filter;
     v.order = calloc((size_t)count, sizeof *v.order);
     v.score = calloc((size_t)count, sizeof *v.score);
@@ -246,9 +342,14 @@ static int run(const char *title, const struct pick_item *items, int count,
         free(v.score);
         return -1;
     }
-    for (int i = 0; i < count; i++)
-        v.order[i] = i;
-    v.sel = (initial >= 0 && initial < count) ? initial : 0;
+    refilter(&v);
+    for (int i = 0; i < v.count; i++)
+        if (v.order[i] == initial) {
+            v.sel = i;
+            break;
+        }
+    if (v.count)
+        settle(&v, 1);
     // Nothing to pick with: a front end that is not the terminal asked, and
     // there is no keyboard to answer on. Reads as a cancel.
     if (!tty_is_raw())
@@ -274,16 +375,18 @@ static int run(const char *title, const struct pick_item *items, int count,
         }
         switch (ev.key) {
         case TK_UP:
-            v.sel = v.sel > 0 ? v.sel - 1 : v.count - 1;
+            step(&v, -1);
             break;
         case TK_DOWN:
-            v.sel = v.sel + 1 < v.count ? v.sel + 1 : 0;
+            step(&v, 1);
             break;
         case TK_HOME:
             v.sel = 0;
+            settle(&v, 1);
             break;
         case TK_END:
             v.sel = v.count - 1;
+            settle(&v, -1);
             break;
         case TK_BACKSPACE: {
             if (!filter || !v.query[0])
@@ -294,7 +397,7 @@ static int run(const char *title, const struct pick_item *items, int count,
             break;
         }
         case TK_ENTER:
-            if (!v.count)
+            if (!v.count || row_heading(&v, v.sel))
                 break;
             result = v.order[v.sel];
             goto done;
@@ -318,7 +421,7 @@ static int run(const char *title, const struct pick_item *items, int count,
 
             if (shortcuts && ev.cp > 0 && ev.cp < 128 &&
                 strchr(shortcuts, (int)ev.cp)) {
-                if (!v.count)
+                if (!v.count || row_heading(&v, v.sel))
                     break;
                 result = v.order[v.sel];
                 if (pressed)
@@ -332,10 +435,13 @@ static int run(const char *title, const struct pick_item *items, int count,
                     refilter(&v);
                 break;
             }
-            if (ev.cp >= '1' && ev.cp <= '9' && (int)(ev.cp - '1') < v.count)
+            if (ev.cp >= '1' && ev.cp <= '9' && (int)(ev.cp - '1') < v.count) {
                 v.sel = (int)(ev.cp - '1');
+                settle(&v, 1);
+            }
             break;
         case TK_RESIZE:
+            refilter(&v);
             break;
         default:
             continue;

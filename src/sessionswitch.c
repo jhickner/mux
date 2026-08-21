@@ -1,9 +1,12 @@
 #include "sessionswitch.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -22,6 +25,7 @@
 
 #define KEY_CLOSE  0x18   /* ctrl-x */
 #define KEY_NEW    0x0e   /* ctrl-n */
+#define KEY_GO     0x07   /* ctrl-g */
 
 #define MAX_ROWS 128
 
@@ -29,11 +33,13 @@ enum row_kind {
     ROW_TAB,
     ROW_LIVE,
     ROW_NEW,
+    ROW_HEAD,
 };
 
 struct row {
     enum row_kind kind;
     int  at;            /* index into whichever list the kind names */
+    char cwd[512];      /* what the row is grouped under */
     char label[256];
     char detail[512];
 };
@@ -79,16 +85,14 @@ static void tab_rows(struct row *rows, int *n)
         r->kind = ROW_TAB;
         r->at = i;
 
-        // The directory comes first in every row: it is the thing worth
-        // seeing at a glance, and the one that survives a narrow window.
-        char home[4096];
-        path_home_relative(session_cwd(s), home, sizeof home);
+        // The directory is the row's group, printed once above it.
+        path_home_relative(session_cwd(s), r->cwd, sizeof r->cwd);
         snprintf(r->label, sizeof r->label, "%s %s%s",
                  i == workspace_index() ? "\xe2\x96\xb8" : " ",
                  title && *title ? title : "untitled",
                  i == workspace_index() ? " (here)" : "");
-        snprintf(r->detail, sizeof r->detail, "%s \xc2\xb7 %s %s %s",
-                 home, session_backend(s),
+        snprintf(r->detail, sizeof r->detail, "%s %s %s",
+                 session_backend(s),
                  session_model_short(s, session_model_label(s)),
                  status_mark(status));
     }
@@ -101,20 +105,122 @@ static void live_rows(struct row *rows, int *n, const struct live_session *live,
         if (v->mine || !v->id[0])
             continue;
 
-        char home[4096], when[32];
-        path_home_relative(v->cwd, home, sizeof home);
+        char when[32];
         relative_time(v->ts, when, sizeof when);
+
+        // Under tmux, a pane of this same window is nearer than a window
+        // elsewhere, and the two are worth telling apart: both are taken the
+        // same way, but one is in sight.
+        const char *here = livelist_tmux_window();
+        int near = here[0] && v->window[0] && !strcmp(v->window, here);
+        char where[96] = "";
+        if (near && v->pane_index[0])
+            snprintf(where, sizeof where, "pane %s \xc2\xb7 ", v->pane_index);
+        else if (v->wname[0])
+            snprintf(where, sizeof where, "%s \xc2\xb7 ", v->wname);
 
         struct row *r = &rows[(*n)++];
         r->kind = ROW_LIVE;
         r->at = i;
-        snprintf(r->label, sizeof r->label, "\xe2\x87\x84 %s",
+        path_home_relative(v->cwd, r->cwd, sizeof r->cwd);
+        // The arrow says another mux is holding this one: choosing it takes
+        // it over here, where the rows without an arrow only switch.
+        snprintf(r->label, sizeof r->label, "%s %s",
+                 near ? "\xe2\x87\xa2" : "\xe2\x87\x84",
                  v->title[0] ? v->title : "untitled");
-        snprintf(r->detail, sizeof r->detail,
-                 "%s \xc2\xb7 %s %s \xc2\xb7 another window \xc2\xb7 %s %s",
-                 home, v->backend,
-                 short_model(v->backend, v->label[0] ? v->label : v->model), when,
-                 status_mark(v->status));
+        snprintf(r->detail, sizeof r->detail, "%s %s \xc2\xb7 %s%s %s",
+                 v->backend,
+                 short_model(v->backend, v->label[0] ? v->label : v->model),
+                 where, when, status_mark(v->status));
+    }
+}
+
+// The rows again, gathered under their directory: this window's own directory
+// first, the rest by name. Returns how many rows the grouped list holds.
+static int group_rows(const struct row *in, int n, struct row *out,
+                      unsigned char *heading, int max)
+{
+    struct session *here = workspace_current();
+    char mine[512] = "";
+    if (here)
+        path_home_relative(session_cwd(here), mine, sizeof mine);
+
+    char used[MAX_ROWS] = {0};
+    int m = 0;
+
+    for (;;) {
+        const char *group = NULL;
+        for (int i = 0; i < n; i++) {
+            if (used[i])
+                continue;
+            if (mine[0] && !strcmp(in[i].cwd, mine)) {
+                group = mine;
+                break;
+            }
+            if (!group || strcmp(in[i].cwd, group) < 0)
+                group = in[i].cwd;
+        }
+        if (!group)
+            break;
+
+        if (m < max) {
+            out[m].kind = ROW_HEAD;
+            snprintf(out[m].label, sizeof out[m].label, "%s", group);
+            heading[m] = 1;
+            m++;
+        }
+        for (int i = 0; i < n; i++) {
+            if (used[i] || strcmp(in[i].cwd, group) != 0)
+                continue;
+            used[i] = 1;
+            if (m >= max)
+                continue;
+            out[m] = in[i];
+            snprintf(out[m].label, sizeof out[m].label, "  %s", in[i].label);
+            heading[m] = 0;
+            m++;
+        }
+    }
+    return m;
+}
+
+static int tmux_do(const char *verb, const char *target)
+{
+    pid_t pid = fork();
+    if (pid < 0)
+        return 0;
+    if (pid == 0) {
+        int null = open("/dev/null", O_RDWR);
+        if (null >= 0) {
+            dup2(null, STDOUT_FILENO);
+            dup2(null, STDERR_FILENO);
+            if (null > STDERR_FILENO)
+                close(null);
+        }
+        char *argv[] = {"tmux", (char *)verb, "-t", (char *)target, NULL};
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+        ;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+// Leave the session where it is and put tmux's eyes on it instead.
+static void jump(const struct live_session *v)
+{
+    if (!getenv("TMUX") || !v->pane[0]) {
+        ui_error("that one is not in a tmux pane");
+        ui_put("\n");
+        ui_flush();
+        return;
+    }
+    // The window first: selecting the pane alone would not leave this one.
+    if (!tmux_do("select-window", v->pane) || !tmux_do("select-pane", v->pane)) {
+        ui_error("tmux would not go there");
+        ui_put("\n");
+        ui_flush();
     }
 }
 
@@ -197,25 +303,41 @@ void sessionswitch_run(void)
     struct live_session *live = NULL;
     int nlive = livelist_load(&live);
 
+    struct row *found = calloc(MAX_ROWS, sizeof *found);
     struct row *rows = calloc(MAX_ROWS, sizeof *rows);
-    if (!rows) {
+    unsigned char *heading = calloc(MAX_ROWS, 1);
+    if (!found || !rows || !heading) {
+        free(found);
+        free(rows);
+        free(heading);
         free(live);
         return;
     }
 
-    int n = 0;
-    tab_rows(rows, &n);
-    live_rows(rows, &n, live, nlive);
+    int nfound = 0;
+    tab_rows(found, &nfound);
+    live_rows(found, &nfound, live, nlive);
+
+    int n = group_rows(found, nfound, rows, heading, MAX_ROWS);
+    free(found);
+
+    int initial = 0;
+    for (int i = 0; i < n; i++)
+        if (rows[i].kind == ROW_TAB && rows[i].at == workspace_index())
+            initial = i;
+
     if (n < MAX_ROWS) {
-        struct row *r = &rows[n++];
+        struct row *r = &rows[n];
         r->kind = ROW_NEW;
         snprintf(r->label, sizeof r->label, "+ new session");
         snprintf(r->detail, sizeof r->detail, "pick a backend and model");
+        heading[n++] = 0;
     }
 
     struct pick_item *items = calloc((size_t)n, sizeof *items);
     if (!items) {
         free(rows);
+        free(heading);
         free(live);
         return;
     }
@@ -224,10 +346,12 @@ void sessionswitch_run(void)
         items[i].detail = rows[i].detail;
     }
 
-    char shortcuts[3] = {KEY_CLOSE, KEY_NEW, 0};
+    char shortcuts[4] = {KEY_CLOSE, KEY_NEW, KEY_GO, 0};
     int pressed = 0;
-    int picked = pick_run_ex("sessions \xc2\xb7 ^n new \xc2\xb7 ^x close", items, n,
-                             workspace_index(), shortcuts, &pressed);
+    int picked = pick_run_groups("sessions \xc2\xb7 \xe2\x87\xa2 pane \xc2\xb7 "
+                                 "\xe2\x87\x84 window \xc2\xb7 enter takes it "
+                                 "\xc2\xb7 ^g goes to it \xc2\xb7 ^n new \xc2\xb7 ^x close",
+                                 items, n, initial, heading, shortcuts, &pressed);
 
     struct row chosen = {0};
     if (picked >= 0)
@@ -235,6 +359,7 @@ void sessionswitch_run(void)
 
     free(items);
     free(rows);
+    free(heading);
 
     if (picked < 0) {
         free(live);
@@ -244,6 +369,15 @@ void sessionswitch_run(void)
     if (pressed == KEY_NEW) {
         free(live);
         open_new();
+        return;
+    }
+
+    if (pressed == KEY_GO) {
+        if (chosen.kind == ROW_LIVE)
+            jump(&live[chosen.at]);
+        else if (chosen.kind == ROW_TAB)
+            workspace_show(chosen.at);
+        free(live);
         return;
     }
 
@@ -271,6 +405,8 @@ void sessionswitch_run(void)
         free(live);
         open_new();
         return;
+    case ROW_HEAD:
+        break;
     }
 
     free(live);

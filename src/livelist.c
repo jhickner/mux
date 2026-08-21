@@ -20,6 +20,9 @@
 
 static int  publishing;
 static char dir[4200];
+static char tmux_window[32];
+static char tmux_wname[64];
+static char tmux_pane_index[8];
 
 // A record is named for the process and the slot within it, so one window
 // holding several conversations publishes one file each.
@@ -71,6 +74,63 @@ static int live_dir(char *out, size_t size)
     if (!path_config_dir(base, sizeof base))
         return 0;
     return (size_t)snprintf(out, size, "%s/live", base) < size;
+}
+
+// tmux is asked where we are at most once every few seconds: a window can be
+// renamed, and a pane moved to another window, while mux is running.
+static void tmux_where(void)
+{
+    static long asked;
+    static int  have;
+
+    long now = (long)time(NULL);
+    if (have && now - asked < 5)
+        return;
+    asked = now;
+
+    const char *pane = getenv("TMUX_PANE");
+    if (!getenv("TMUX") || !pane || !*pane)
+        return;
+
+    char cmd[256];
+    snprintf(cmd, sizeof cmd,
+             "tmux display-message -p -t '%s' "
+             "'#{window_id}\t#{window_index}:#{window_name}\t#{pane_index}' 2>/dev/null",
+             pane);
+    FILE *p = popen(cmd, "r");
+    if (!p)
+        return;
+    char line[256];
+    char *got = fgets(line, sizeof line, p);
+    pclose(p);
+    if (!got)
+        return;
+
+    line[strcspn(line, "\n")] = '\0';
+    char *name = strchr(line, '\t');
+    if (!name)
+        return;
+    *name++ = '\0';
+    char *index = strchr(name, '\t');
+    if (index)
+        *index++ = '\0';
+
+    snprintf(tmux_window, sizeof tmux_window, "%s", line);
+    snprintf(tmux_wname, sizeof tmux_wname, "%s", name);
+    snprintf(tmux_pane_index, sizeof tmux_pane_index, "%s", index ? index : "");
+    have = 1;
+}
+
+const char *livelist_tmux_window(void)
+{
+    tmux_where();
+    return tmux_window;
+}
+
+const char *livelist_tmux_window_name(void)
+{
+    tmux_where();
+    return tmux_wname;
 }
 
 void livelist_begin(void)
@@ -129,6 +189,12 @@ void livelist_publish(const struct session *s, const char *status)
     const char *pane = getenv("TMUX_PANE");
     if (pane && *pane)
         cJSON_AddStringToObject(rec, "pane", pane);
+    tmux_where();
+    if (tmux_window[0]) {
+        cJSON_AddStringToObject(rec, "window", tmux_window);
+        cJSON_AddStringToObject(rec, "wname", tmux_wname);
+        cJSON_AddStringToObject(rec, "pane_index", tmux_pane_index);
+    }
 
     char *text = cJSON_PrintUnformatted(rec);
     cJSON_Delete(rec);
@@ -238,6 +304,9 @@ int livelist_load(struct live_session **out)
         copy_str(v->id, sizeof v->id, rec, "id");
         copy_str(v->title, sizeof v->title, rec, "title");
         copy_str(v->status, sizeof v->status, rec, "status");
+        copy_str(v->window, sizeof v->window, rec, "window");
+        copy_str(v->wname, sizeof v->wname, rec, "wname");
+        copy_str(v->pane_index, sizeof v->pane_index, rec, "pane_index");
         copy_str(v->pane, sizeof v->pane, rec, "pane");
         cJSON_Delete(rec);
 

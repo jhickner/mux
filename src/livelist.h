@@ -18,6 +18,9 @@ struct live_session {
     char title[200];
     char status[16];    /* working | finished | errored */
     char pane[32];
+    char window[32];    /* tmux window id, "@3": which window holds it */
+    char wname[64];     /* that window as tmux shows it, "3:mux" */
+    char pane_index[8];
     long ts;
     int  mine;          /* held by this process */
 };
@@ -35,5 +38,10 @@ void livelist_forget(const struct session *s);
 int livelist_load(struct live_session **out);
 
 int livelist_alive(long pid);
+
+// This window as tmux names it, for telling our own panes from other windows'.
+// Both are empty outside tmux.
+const char *livelist_tmux_window(void);
+const char *livelist_tmux_window_name(void);
 
 #endif

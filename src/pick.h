@@ -19,6 +19,12 @@ int pick_run_filter(const char *title, const struct pick_item *items, int count,
 int pick_run_ex(const char *title, const struct pick_item *items, int count,
                 int initial, const char *shortcuts, int *pressed);
 
+// As pick_run_ex, but a nonzero heading[i] makes item i a group header: drawn
+// dim, never selectable, and dropped while a query narrows the list.
+int pick_run_groups(const char *title, const struct pick_item *items, int count,
+                    int initial, const unsigned char *heading,
+                    const char *shortcuts, int *pressed);
+
 int pick_run_keys(const char *title, const struct pick_item *items, int count,
                   int initial, const char *shortcuts, int *pressed);
 
