@@ -1,10 +1,13 @@
 #include "session.h"
 
+#include <fcntl.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "agenttabs.h"
 #include "block.h"
@@ -14,6 +17,8 @@
 #include "gitinfo.h"
 #include "hud.h"
 #include "image.h"
+#include "livelist.h"
+#include "restart.h"
 #include "md.h"
 #include "sessionprefs.h"
 #include "sessionview.h"
@@ -72,7 +77,28 @@ struct session {
     int      trust_requested;
     int      interrupted;
 
+    // A turn running on its own thread. Everything it produces is copied into
+    // `queue` and drawn later by whoever owns the screen.
+    pthread_t       thread;
+    int             running;
+    volatile int    finished;
+    volatile int    abort_request;
+    pthread_mutex_t lock;
+    struct evcopy  *head, *tail;
+    int             wake[2];
+    char           *asked;
+    char           *reply;
+    backend_result  meta;
+    double          started;
+
     struct turnview view;
+};
+
+// One queued event, with every string it borrowed copied.
+struct evcopy {
+    backend_event  ev;
+    char          *text, *name, *input_json, *arg, *diff, *id;
+    struct evcopy *next;
 };
 
 static void replace(char **slot, const char *value)
@@ -122,10 +148,10 @@ static struct session *live;
 static void remember_model(const struct session *s);
 static void await_model(struct session *s);
 
-static void on_event(void *ud, const backend_event *ev)
+// Drawing, and the state that goes with it. Only ever called by whoever owns
+// the screen: for a threaded turn that is the pump, not the turn.
+static void render_event(struct session *s, const backend_event *ev)
 {
-    struct session *s = ud;
-
     if (ev->kind == BACKEND_EV_INIT) {
         replace(&s->resolved, ev->name);
         return;
@@ -281,11 +307,104 @@ static void on_event(void *ud, const backend_event *ev)
     ui_flush();
 }
 
+static void wake_write(struct session *s);
+
+static char *dup_or_null(const char *s)
+{
+    return s ? strdup(s) : NULL;
+}
+
+static void evcopy_free(struct evcopy *e)
+{
+    free(e->text);
+    free(e->name);
+    free(e->input_json);
+    free(e->arg);
+    free(e->diff);
+    free(e->id);
+    free(e);
+}
+
+// Called on the turn's thread: the event and its strings are borrowed for the
+// call, so what is kept is a copy.
+static void enqueue(struct session *s, const backend_event *ev)
+{
+    struct evcopy *e = calloc(1, sizeof *e);
+    if (!e)
+        return;
+    e->ev = *ev;
+    e->ev.text = e->text = dup_or_null(ev->text);
+    e->ev.name = e->name = dup_or_null(ev->name);
+    e->ev.input_json = e->input_json = dup_or_null(ev->input_json);
+    e->ev.arg = e->arg = dup_or_null(ev->arg);
+    e->ev.diff = e->diff = dup_or_null(ev->diff);
+    e->ev.id = e->id = dup_or_null(ev->id);
+
+    pthread_mutex_lock(&s->lock);
+    if (s->tail)
+        s->tail->next = e;
+    else
+        s->head = e;
+    s->tail = e;
+    pthread_mutex_unlock(&s->lock);
+
+    // Whatever the front end is waiting in has to come up for air.
+    wake_write(s);
+}
+
+static struct evcopy *dequeue(struct session *s)
+{
+    pthread_mutex_lock(&s->lock);
+    struct evcopy *e = s->head;
+    if (e) {
+        s->head = e->next;
+        if (!s->head)
+            s->tail = NULL;
+    }
+    pthread_mutex_unlock(&s->lock);
+    return e;
+}
+
+static void queue_drop(struct session *s)
+{
+    struct evcopy *e;
+    while ((e = dequeue(s)))
+        evcopy_free(e);
+}
+
+static void on_event(void *ud, const backend_event *ev)
+{
+    struct session *s = ud;
+    if (s->running) {
+        enqueue(s, ev);
+        return;
+    }
+    render_event(s, ev);
+}
+
+int session_wake_fd(const struct session *s)
+{
+    return s ? s->wake[0] : -1;
+}
+
 int session_idle_fd(const struct session *s)
 {
     if (!s || !s->agent || !s->agent->idle_fd || s->quiet)
         return -1;
     return s->agent->idle_fd(s->agent);
+}
+
+// The two registries a status change goes to: the tmux tab record for the
+// window, and this session's entry in the list every mux can read.
+static void publish(const struct session *s, const char *status)
+{
+    if (!strcmp(status, "working"))
+        agenttabs_working();
+    else if (!strcmp(status, "errored"))
+        agenttabs_errored();
+    else
+        agenttabs_finished();
+    livelist_publish(s, status);
 }
 
 static void tab_busy(struct session *s, int busy)
@@ -294,10 +413,7 @@ static void tab_busy(struct session *s, int busy)
     if (busy == s->idle_busy)
         return;
     s->idle_busy = busy;
-    if (busy)
-        agenttabs_working();
-    else
-        agenttabs_finished();
+    publish(s, busy ? "working" : "finished");
 }
 
 int session_idle_pump(struct session *s)
@@ -380,8 +496,11 @@ static void name_poll(struct session *s)
     if (now - s->named_at < 1.0)
         return;
     s->named_at = now;
-    if (title_lookup(s->id, s->title, sizeof s->title))
+    if (title_lookup(s->id, s->title, sizeof s->title)) {
         status_set_note(s->title);
+        // The name is what the other windows list this session by.
+        publish(s, s->idle_busy ? "working" : "finished");
+    }
 }
 
 static int effort_is_off(const char *effort)
@@ -439,8 +558,16 @@ int session_poll_input(void)
     return interrupt;
 }
 
+// The turn a thread is running, so the one abort predicate the backend offers
+// can tell whose turn is asking. NULL on the main thread, which is where the
+// blocking turns still run.
+static __thread struct session *owner;
+
 static int abort_check(void)
 {
+    if (owner)
+        return owner->abort_request;
+
     name_poll(live);
     quota_poll(live);
     if (live)
@@ -463,6 +590,8 @@ struct session *session_new(const char *backend, const char *cwd, const char *mo
     struct session *s = calloc(1, sizeof *s);
     if (!s)
         return NULL;
+    s->wake[0] = s->wake[1] = -1;
+    pthread_mutex_init(&s->lock, NULL);
     s->backend = strdup(backend && *backend ? backend : "claude");
     if (!s->backend) {
         free(s);
@@ -501,6 +630,21 @@ void session_free(struct session *s)
 {
     if (!s)
         return;
+    livelist_forget(s);
+
+    // A turn still running holds the agent this is about to close.
+    if (s->running) {
+        s->abort_request = 1;
+        pthread_join(s->thread, NULL);
+        s->running = 0;
+        free(s->reply);
+    }
+    queue_drop(s);
+    pthread_mutex_destroy(&s->lock);
+    for (int i = 0; i < 2; i++)
+        if (s->wake[i] >= 0)
+            close(s->wake[i]);
+    free(s->asked);
     if (s->agent)
         s->agent->close(s->agent);
     free(s->backend);
@@ -663,6 +807,7 @@ static void set_id(struct session *s, const char *id)
         if (!s->retitle)
             title_lookup(s->id, s->title, sizeof s->title);
         status_set_note(s->title);
+        publish(s, s->idle_busy ? "working" : "finished");
     }
     agenttabs_forget_hook(id);
 }
@@ -681,7 +826,13 @@ static int restart(struct session *s, const char *resume_id)
     return 1;
 }
 
-int session_start(struct session *s) { return restart(s, s->id[0] ? s->id : NULL); }
+int session_start(struct session *s)
+{
+    if (!restart(s, s->id[0] ? s->id : NULL))
+        return 0;
+    publish(s, "finished");
+    return 1;
+}
 
 int session_trust_project(struct session *s)
 {
@@ -918,8 +1069,10 @@ static void update_title(struct session *s)
         name_poll(s);
         return;
     }
-    if (title_lookup(s->id, s->title, sizeof s->title))
+    if (title_lookup(s->id, s->title, sizeof s->title)) {
         status_set_note(s->title);
+        publish(s, s->idle_busy ? "working" : "finished");
+    }
 }
 
 static void print_footer(struct session *s, double elapsed)
@@ -968,11 +1121,8 @@ static void print_footer(struct session *s, double elapsed)
     ui_flush();
 }
 
-int session_turn(struct session *s, const char *text)
+static void turn_prepare(struct session *s, const char *text)
 {
-    if (!s->agent)
-        return 0;
-
     replace(&s->last_block, NULL);
     stream_reset(s);
     replace(&s->prompt, text);
@@ -980,23 +1130,20 @@ int session_turn(struct session *s, const char *text)
     s->view.after_tool = 0;
     s->view.after_collapse = 0;
     view_cluster_forget(&s->view);
-    live = s;
-    double started = now_seconds();
+    s->started = now_seconds();
     s->idle_busy = 1;
-    agenttabs_working();
-    if (!s->quiet && !s->silent) {
-        set_spin_word(s);
-        status_begin();
-    }
+    s->interrupted = 0;
+    s->abort_request = 0;
+    publish(s, "working");
+}
 
-    backend_result meta = {0};
-    char *reply = s->agent->ask_ex(s->agent, text, &meta);
-    quota_poll(s);
-    double elapsed = now_seconds() - started;
-    live = NULL;
-    if (!s->quiet && !s->silent)
-        status_end();
-
+// Everything a turn leaves behind, once its stream has been drawn: the reply,
+// the accounting, the transcript entry, the footer. Takes `reply`.
+static int turn_finish(struct session *s, char *reply, const backend_result *meta,
+                       double elapsed)
+{
+    const backend_result m = *meta;
+    const char *text = s->prompt ? s->prompt : "";
     const char *id = s->agent->session_id(s->agent);
     if (id)
         set_id(s, id);
@@ -1004,7 +1151,7 @@ int session_turn(struct session *s, const char *text)
     if (!reply) {
         replace(&s->failed_prompt, text);
         s->idle_busy = 0;
-        agenttabs_errored();
+        publish(s, "errored");
         const char *detail = s->agent->last_error(s->agent);
         if (s->silent)
             return 0;
@@ -1027,17 +1174,17 @@ int session_turn(struct session *s, const char *text)
         // A turn can end with no closing text — the last thing it said is the
         // answer then, and if it never said anything the caller still needs a
         // reason, which only stderr can carry once stdout is empty.
-        const char *text = *reply ? reply : (s->last_block ? s->last_block : "");
-        if (*text) {
-            ui_put(text);
+        const char *tail = *reply ? reply : (s->last_block ? s->last_block : "");
+        if (*tail) {
+            ui_put(tail);
             ui_put("\n");
         } else {
             const char *detail = s->agent->last_error(s->agent);
             fprintf(stderr, "%s\n",
-                    detail && *detail    ? detail
-                    : meta.interrupted   ? "the turn was interrupted"
-                    : meta.is_error      ? "the turn ended in an error"
-                                         : "the turn ended without a reply");
+                    detail && *detail ? detail
+                    : m.interrupted   ? "the turn was interrupted"
+                    : m.is_error      ? "the turn ended in an error"
+                                      : "the turn ended without a reply");
         }
     } else if (*reply && !shown) {
         if (s->view.after_activity)
@@ -1045,30 +1192,30 @@ int session_turn(struct session *s, const char *text)
         md_render_kept(reply, 0);
         ui_put("\n");
     }
-    s->interrupted = meta.interrupted;
-    if (meta.interrupted && !s->silent) {
+    s->interrupted = m.interrupted;
+    if (m.interrupted && !s->silent) {
         ui_error("  interrupted");
         ui_put("\n");
     }
 
     if (*reply)
         replace(&s->last_reply, reply);
-    if (meta.is_error) {
+    if (m.is_error) {
         replace(&s->failed_prompt, text);
     } else {
-        transcript_add(&s->transcript, s->backend, text, reply, meta.interrupted);
+        transcript_add(&s->transcript, s->backend, text, reply, m.interrupted);
         replace(&s->failed_prompt, NULL);
     }
     free(reply);
 
     s->turns++;
-    if (meta.cost_usd > 0)
-        s->cost_usd = meta.cost_usd;
+    if (m.cost_usd > 0)
+        s->cost_usd = m.cost_usd;
 
-    if (meta.context_window > 0)
-        s->context_window = meta.context_window;
-    if (meta.context_tokens > 0)
-        s->context_tokens = meta.context_tokens;
+    if (m.context_window > 0)
+        s->context_window = m.context_window;
+    if (m.context_tokens > 0)
+        s->context_tokens = m.context_tokens;
 
     tab_busy(s, session_idle_busy(s));
 
@@ -1080,6 +1227,168 @@ int session_turn(struct session *s, const char *text)
     if (!s->quiet && !s->silent)
         print_footer(s, elapsed);
     return 1;
+}
+
+int session_turn(struct session *s, const char *text)
+{
+    if (!s->agent || s->running)
+        return 0;
+
+    turn_prepare(s, text);
+    live = s;
+    if (!s->quiet && !s->silent) {
+        set_spin_word(s);
+        status_begin();
+    }
+
+    backend_result meta = {0};
+    char *reply = s->agent->ask_ex(s->agent, text, &meta);
+    quota_poll(s);
+    double elapsed = now_seconds() - s->started;
+    live = NULL;
+    if (!s->quiet && !s->silent)
+        status_end();
+
+    return turn_finish(s, reply, &meta, elapsed);
+}
+
+static void wake_write(struct session *s)
+{
+    if (s->wake[1] < 0)
+        return;
+    char byte = 1;
+    ssize_t w = write(s->wake[1], &byte, 1);
+    (void)w;
+}
+
+static void wake_drain(struct session *s)
+{
+    if (s->wake[0] < 0)
+        return;
+    char buf[256];
+    while (read(s->wake[0], buf, sizeof buf) > 0)
+        ;
+}
+
+static int wake_open(struct session *s)
+{
+    if (s->wake[0] >= 0)
+        return 1;
+    if (pipe(s->wake) != 0)
+        return 0;
+    for (int i = 0; i < 2; i++) {
+        fcntl(s->wake[i], F_SETFL, fcntl(s->wake[i], F_GETFL, 0) | O_NONBLOCK);
+        fcntl(s->wake[i], F_SETFD, FD_CLOEXEC);
+    }
+    return 1;
+}
+
+// The turn itself. It draws nothing and touches nothing the screen owns: the
+// events go to the queue, and the reply waits here to be collected.
+static void *turn_thread(void *ud)
+{
+    struct session *s = ud;
+    owner = s;
+    // The restart signal is the main thread's to notice.
+    restart_shield_thread();
+
+    memset(&s->meta, 0, sizeof s->meta);
+    s->reply = s->agent->ask_ex(s->agent, s->asked, &s->meta);
+    s->finished = 1;
+    wake_write(s);
+    return NULL;
+}
+
+int session_turn_begin(struct session *s, const char *text)
+{
+    if (!s || !s->agent || s->running || !wake_open(s))
+        return 0;
+
+    turn_prepare(s, text);
+    replace(&s->asked, text);
+    s->reply = NULL;
+    s->finished = 0;
+    s->running = 1;
+
+    if (pthread_create(&s->thread, NULL, turn_thread, s) != 0) {
+        s->running = 0;
+        return 0;
+    }
+    return 1;
+}
+
+int session_turn_running(const struct session *s)
+{
+    return s && s->running;
+}
+
+double session_turn_elapsed(const struct session *s)
+{
+    return s && s->running ? now_seconds() - s->started : 0;
+}
+
+void session_interrupt(struct session *s)
+{
+    if (s && s->running)
+        s->abort_request = 1;
+}
+
+int session_busy(const struct session *s)
+{
+    if (!s)
+        return 0;
+    return s->running || session_idle_busy(s);
+}
+
+static void drain_events(struct session *s)
+{
+    struct evcopy *e;
+    struct session *was = live;
+    live = s;
+    while ((e = dequeue(s))) {
+        render_event(s, &e->ev);
+        evcopy_free(e);
+    }
+    live = was;
+}
+
+int session_turn_pump(struct session *s)
+{
+    if (!s || !s->running)
+        return 0;
+
+    wake_drain(s);
+    drain_events(s);
+    name_poll(s);
+    quota_poll(s);
+
+    if (!s->finished)
+        return 1;
+
+    pthread_join(s->thread, NULL);
+    s->running = 0;
+    // Anything the turn queued between the last drain and its own end.
+    drain_events(s);
+
+    char *reply = s->reply;
+    s->reply = NULL;
+    turn_finish(s, reply, &s->meta, now_seconds() - s->started);
+    return 0;
+}
+
+void session_turn_wait(struct session *s)
+{
+    while (s && s->running) {
+        if (!session_turn_pump(s))
+            break;
+        struct timespec ts = {0, 20 * 1000000L};
+        nanosleep(&ts, NULL);
+    }
+}
+
+const char *session_title(const struct session *s)
+{
+    return s && s->title[0] ? s->title : NULL;
 }
 
 const char *session_model(const struct session *s)
@@ -1239,6 +1548,12 @@ static const char *auth_description(const struct session *s)
     if (strcmp(source, "none") == 0)
         return "subscription login";
     return source;
+}
+
+void session_spin_word(const struct session *s)
+{
+    if (s)
+        set_spin_word(s);
 }
 
 void session_report(const struct session *s)

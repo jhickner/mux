@@ -25,6 +25,11 @@ enum cmd_result cmd_dispatch(struct session *s, const char *line);
 
 int cmd_is_live(const char *line);
 
+// Whether the line names a command at all, and whether that command is one
+// that ends the window.
+int cmd_is_command(const char *line);
+int cmd_is_quit(const char *line);
+
 // The command puts its own line in the transcript, so echoing it the ordinary
 // way would print it twice.
 int cmd_self_echoes(const char *line);

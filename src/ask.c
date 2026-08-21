@@ -141,8 +141,12 @@ char *ask_run(const char *title, const char *initial)
     chrome_modal(paint, &f);
     for (;;) {
         tty_event ev;
-        if (!tty_read(&ev, -1))
-            continue;
+        if (!tty_read(&ev, -1)) {
+            if (!chrome_modal_interrupted())
+                continue;
+            chrome_modal(NULL, NULL);
+            return NULL;
+        }
 
         switch (ev.key) {
         case TK_TEXT:

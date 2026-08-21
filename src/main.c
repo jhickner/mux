@@ -14,11 +14,15 @@
 #include "gitinfo.h"
 #include "hud.h"
 #include "image.h"
+#include "livelist.h"
 #include "prompt.h"
 #include "restart.h"
+#include "handoff.h"
 #include "scrollback.h"
 #include "session.h"
 #include "sessionfork.h"
+#include "sessionload.h"
+#include "sessionswitch.h"
 #include "settings.h"
 #include "sidechannel.h"
 #include "status.h"
@@ -26,6 +30,7 @@
 #include "tty.h"
 #include "ui.h"
 #include "viewport.h"
+#include "workspace.h"
 #include "vendor/agents/backend.h"
 #include "vendor/repl.h"
 #include "text.h"
@@ -79,12 +84,12 @@ static void usage(void)
             choices);
 }
 
+// Every tab is watched, not just the one on screen: a session left running
+// keeps streaming into its own screen while another is in front.
 static int idle_fds(void *ud, int *out, int max)
 {
-    int n = 0;
-    int fd = session_idle_fd(ud);
-    if (fd >= 0 && n < max)
-        out[n++] = fd;
+    (void)ud;
+    int n = workspace_fds(out, max);
     n += sidechannel_fds(out + n, max - n);
     return n + tg_fds(out + n, max - n);
 }
@@ -102,13 +107,14 @@ static void offer_project_trust(struct session *s)
 
 static int idle_render(void *ud)
 {
+    (void)ud;
     sidechannel_poll();
     sidechannel_tick();
     // A chat line waiting is something only the prompt can act on, so the read
     // it is blocked in has to end.
     if (tg_pending())
         tty_wake();
-    return session_idle_pump(ud);
+    return workspace_pump();
 }
 
 static char *chat_line(void *ud)
@@ -117,30 +123,58 @@ static char *chat_line(void *ud)
     return tg_take_line();
 }
 
-static int side_busy(void *ud)  { (void)ud; return sidechannel_busy(); }
+static int side_busy(void *ud)  { (void)ud; return sidechannel_busy() || workspace_busy(); }
 
+// A frame's worth of everything that moves while the prompt waits: the
+// spinner, the side turns, and whatever the tabs' own turns have produced.
 static void side_tick(void *ud)
 {
     (void)ud;
     sidechannel_poll();
     sidechannel_tick();
+    image_poll();
+    workspace_pump();
+    status_tick();
 }
-static int idle_busy(void *ud)   { return session_idle_busy(ud); }
-static void replay(void *ud)      { session_replay(ud); }
-static void blank_line(void *ud)  { hud_print(ud); }
+static int idle_busy(void *ud)   { (void)ud; return workspace_busy(); }
+static void replay(void *ud)      { (void)ud; session_replay(workspace_current()); }
+static void blank_line(void *ud)  { (void)ud; hud_print(workspace_current()); }
+static void switcher(void *ud)    { (void)ud; sessionswitch_run(); }
+
+// The same signal carries a restart and a request for one of this window's
+// sessions; which it is depends on whether a request is waiting.
+static int takeover_pending(void *ud)
+{
+    (void)ud;
+    return restart_wanted() && handoff_wanted();
+}
+
+static void takeover_run(void *ud)
+{
+    sessionswitch_serve_request();
+    restart_clear();
+    if (sessionswitch_gave_last())
+        prompt_stop(ud);
+}
 
 static int restart_pending(void *ud)
 {
     (void)ud;
-    return restart_wanted();
+    return restart_wanted() && !handoff_wanted();
 }
 
 static int idle_restart(void *ud)
 {
+    (void)ud;
     // Returns only when the new build could not be run at all, in which case
     // this session keeps going on the old one.
     sidechannel_close_all();
-    if (!restart_exec(ud)) {
+    // Only the session in front travels; the others are closed, and their
+    // conversations are in the list to resume from.
+    for (int i = workspace_count() - 1; i >= 0; i--)
+        if (i != workspace_index())
+            workspace_close(i);
+    if (!restart_exec(workspace_current())) {
         ui_error("could not restart — staying on this build");
         ui_put("\n");
         ui_flush();
@@ -151,17 +185,42 @@ static int idle_restart(void *ud)
 static int echo_filter(void *ud, const char *line)
 {
     (void)ud;
-    return !cmd_self_echoes(line);
+    if (cmd_self_echoes(line))
+        return 0;
+    // A line typed behind a running turn is not sent yet, so it is echoed when
+    // it is: the transcript keeps the order the agent saw.
+    if (session_turn_running(workspace_current()) && !cmd_is_command(line) &&
+        !bash_is_command(line))
+        return 0;
+    return 1;
+}
+
+// Escape with nothing typed stops the turn the tab in front is running.
+static int cancel_turn(void *ud)
+{
+    (void)ud;
+    struct session *s = workspace_current();
+    if (!session_turn_running(s))
+        return 0;
+    session_interrupt(s);
+    return 1;
+}
+
+// What a turn leaves for the window to do, drawn into that turn's own screen.
+static void turn_done(struct session *s)
+{
+    cmd_run_deferred(s);
 }
 
 static int live_command(void *ud, const char *line)
 {
+    (void)ud;
     if (!cmd_is_live(line))
         return 0;
     status_pause();
     if (!cmd_self_echoes(line))
         prompt_echo_message(line);
-    cmd_dispatch_live(ud, line);
+    cmd_dispatch_live(workspace_current(), line);
     status_resume();
     return 1;
 }
@@ -305,6 +364,8 @@ int main(int argc, char **argv)
     }
 
     agenttabs_begin(backend);
+    if (interactive || chat_only)
+        livelist_begin();
     struct session *session = session_new(backend, cwd, model, effort);
     if (session) {
         session_set_customizations(session, !safe_mode);
@@ -337,7 +398,25 @@ int main(int argc, char **argv)
 
     if (chat_only) {
         session_set_naming(session, 0);
-        tg_run(session);
+        for (;;) {
+            tg_run(session);
+
+            // A window asked for this conversation. With no terminal here
+            // there is no screen to send with it — only the conversation, and
+            // the agent holding it, which has to be let go first.
+            char id[128];
+            if (!handoff_take_request(id, sizeof id))
+                break;
+            const char *mine = session_id(session);
+            if (!mine || strcmp(mine, id) != 0) {
+                handoff_refuse(id);
+                continue;
+            }
+            tg_stop();
+            session_free(session);
+            handoff_publish(id);
+            return 0;
+        }
         tg_stop();
         session_free(session);
         return 0;
@@ -371,9 +450,16 @@ int main(int argc, char **argv)
 
     status_sticky_set(settings_get_int(SETTING_STICKY, 0));
 
+    // From here on the window owns a set of sessions rather than one, and the
+    // session that was started above is simply the first of them.
+    if (!workspace_begin(session, safe_mode)) {
+        session_free(session);
+        return 1;
+    }
+
     struct prompt *prompt = prompt_new(CMD_TABLE, CMD_COUNT);
     if (!prompt) {
-        session_free(session);
+        workspace_end();
         return 1;
     }
     prompt_file_completion(prompt, cwd);
@@ -385,23 +471,37 @@ int main(int argc, char **argv)
 
     session_set_typeahead(prompt_live_key, prompt);
     chrome_bind(prompt);
-    prompt_set_live_command(prompt, live_command, session);
+    chrome_tabs(workspace_strip_rows, workspace_strip_paint);
+    chrome_modal_interrupt(handoff_wanted);
+    prompt_set_live_command(prompt, live_command, NULL);
     prompt_set_echo_filter(prompt, echo_filter, NULL);
-    prompt_set_idle(prompt, idle_fds, idle_render, idle_busy, session);
-    prompt_set_restart(prompt, restart_pending, idle_restart, session);
-    prompt_set_replay(prompt, replay, session);
-    prompt_set_blank(prompt, blank_line, session);
-    prompt_set_animate(prompt, side_busy, side_tick, session);
+    prompt_set_idle(prompt, idle_fds, idle_render, idle_busy, NULL);
+    prompt_set_restart(prompt, restart_pending, idle_restart, NULL);
+    prompt_set_takeover(prompt, takeover_pending, takeover_run, prompt);
+    prompt_set_switcher(prompt, switcher, NULL);
+    prompt_set_cancel(prompt, cancel_turn, NULL);
+    workspace_on_finish(turn_done);
+    prompt_set_replay(prompt, replay, NULL);
+    prompt_set_blank(prompt, blank_line, NULL);
+    prompt_set_animate(prompt, side_busy, side_tick, NULL);
     if (telegram)
         prompt_set_external(prompt, chat_line, NULL);
 
     ui_put("\n");
 
-    if (resume)
-        cmd_resume(session);
-    hud_print(session);
+    if (!resume || !cmd_resume(session))
+        hud_print(session);
+
+    // Started on a conversation that already exists — a fork, or a window
+    // opened for one from the command line. What was said in it belongs on the
+    // screen; a restart brings its own, which is already up.
+    if (!resume && session_arg && !restore_arg)
+        sessionload_into(session);
 
     for (;;) {
+        session = workspace_current();
+        if (!session)
+            break;
 
         offer_project_trust(session);
 
@@ -414,14 +514,22 @@ int main(int argc, char **argv)
         if (!line)
             break;
 
+        // The switcher runs inside the read, so the tab this line was typed at
+        // is not necessarily the one the loop started on.
+        session = workspace_current();
+        if (!session) {
+            free(line);
+            break;
+        }
+
         if (bash_is_command(line)) {
             bash_run(line);
             gitinfo_forget();
             char *text = bash_take_context();
             if (text) {
-                status_sticky_prompt(line);
-                session_turn(session, text);
-                cmd_run_deferred(session);
+                // The command is what the sticky prompt shows; what the agent
+                // is asked is its output.
+                workspace_send(workspace_index(), text, line);
                 free(text);
             }
             free(line);
@@ -432,7 +540,20 @@ int main(int argc, char **argv)
         // A line the chat sent runs the same way, but its output has to go back
         // there as well as onto the screen.
         if (prompt_line_was_external(prompt)) {
+            // The chat's line runs on this thread, so a turn already in flight
+            // at that session has to end first.
+            workspace_settle(tg_session());
             tg_run_line(line);
+            prompt_restart_check(prompt);
+            continue;
+        }
+
+        // A command typed behind a running turn either applies now or waits
+        // for it, the way one typed during a turn always has.
+        if (session_turn_running(session) && cmd_is_command(line) &&
+            !cmd_is_quit(line)) {
+            cmd_dispatch_live(session, line);
+            free(line);
             prompt_restart_check(prompt);
             continue;
         }
@@ -442,11 +563,8 @@ int main(int argc, char **argv)
             free(line);
             break;
         }
-        if (r == CMD_NOT_A_COMMAND) {
-            status_sticky_prompt(line);
-            session_turn(session, line);
-            cmd_run_deferred(session);
-        }
+        if (r == CMD_NOT_A_COMMAND)
+            workspace_send(workspace_index(), line, NULL);
         free(line);
         prompt_restart_check(prompt);
     }
@@ -455,10 +573,12 @@ int main(int argc, char **argv)
     tg_stop();
     session_set_typeahead(NULL, NULL);
     chrome_bind(NULL);
+    chrome_tabs(NULL, NULL);
     prompt_free(prompt);
     viewport_end();
-    sessionfork_exit_note(session);
-    session_free(session);
+    for (int i = 0; i < workspace_count(); i++)
+        sessionfork_exit_note(workspace_at(i));
+    workspace_end();
     ui_raw(0);
     tty_raw_end();
     return 0;

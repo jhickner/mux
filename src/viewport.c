@@ -38,6 +38,7 @@ static char **chrome_rows;
 static int    chrome_n, chrome_cap;
 static int    chrome_caret_row, chrome_caret_col = -1;
 
+static int held;
 static int active;
 static int handed;              /* the alt screen was left up for a successor */
 static int suspended;
@@ -335,6 +336,88 @@ int viewport_ends_blank(void)
         return row_is_blank(last, strlen(last));
     }
     return 1;
+}
+
+struct viewport_state {
+    struct item *items;
+    int    nitems, items_cap;
+    char  *open_buf;
+    size_t open_len, open_cap;
+    viewport_render_fn open_render;
+    void  *open_ud;
+    void (*open_free)(void *);
+    int    open_wrapped;
+    int    scrolled;
+};
+
+void viewport_hold(int on)
+{
+    held = on ? 1 : 0;
+}
+
+struct viewport_state *viewport_state_new(void)
+{
+    return calloc(1, sizeof(struct viewport_state));
+}
+
+void viewport_state_free(struct viewport_state *st)
+{
+    if (!st)
+        return;
+    for (int i = 0; i < st->nitems; i++)
+        item_free(&st->items[i]);
+    free(st->items);
+    free(st->open_buf);
+    if (st->open_free && st->open_ud)
+        st->open_free(st->open_ud);
+    free(st);
+}
+
+void viewport_stash(struct viewport_state *st)
+{
+    if (!st)
+        return;
+    st->items = items;
+    st->nitems = nitems;
+    st->items_cap = items_cap;
+    st->open_buf = open_buf;
+    st->open_len = open_len;
+    st->open_cap = open_cap;
+    st->open_render = open_render;
+    st->open_ud = open_ud;
+    st->open_free = open_free;
+    st->open_wrapped = open_wrapped;
+    st->scrolled = scrolled;
+
+    items = NULL;
+    nitems = items_cap = 0;
+    open_buf = NULL;
+    open_len = open_cap = 0;
+    open_render = NULL;
+    open_ud = NULL;
+    open_free = NULL;
+    open_wrapped = 0;
+    scrolled = 0;
+    dirty = 1;
+}
+
+void viewport_adopt(struct viewport_state *st)
+{
+    if (!st)
+        return;
+    items = st->items;
+    nitems = st->nitems;
+    items_cap = st->items_cap;
+    open_buf = st->open_buf;
+    open_len = st->open_len;
+    open_cap = st->open_cap;
+    open_render = st->open_render;
+    open_ud = st->open_ud;
+    open_free = st->open_free;
+    open_wrapped = st->open_wrapped;
+    scrolled = st->scrolled;
+    memset(st, 0, sizeof *st);
+    dirty = 1;
 }
 
 void viewport_clear(void)
@@ -652,7 +735,7 @@ void viewport_forget(void)
 
 void viewport_paint(void)
 {
-    if (!active || suspended)
+    if (!active || suspended || held)
         return;
 
     int H = tty_rows(), W = tty_screen_columns();

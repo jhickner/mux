@@ -69,6 +69,22 @@ void  viewport_item_update(unsigned mark);
 typedef char *(*viewport_encode_fn)(void *ud);
 void viewport_item_persist(unsigned mark, const char *kind, viewport_encode_fn encode);
 
+// A screen held aside. A window with several sessions gives each one of these
+// and swaps them whole, so a session that is not on screen still has somewhere
+// to draw and comes back exactly as it was left.
+struct viewport_state;
+
+struct viewport_state *viewport_state_new(void);
+void viewport_state_free(struct viewport_state *st);
+
+// Nothing reaches the terminal while a screen other than the one showing is in
+// place: a background session's own drawing must not paint over the window.
+void viewport_hold(int on);
+
+// The screen goes into `st` and what is left is empty; `adopt` puts one back.
+void viewport_stash(struct viewport_state *st);
+void viewport_adopt(struct viewport_state *st);
+
 void viewport_scroll(int delta);
 void viewport_scroll_end(void);
 int  viewport_scrolled(void);

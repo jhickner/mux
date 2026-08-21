@@ -57,6 +57,27 @@ int session_take_trust_request(struct session *s);
 
 int session_turn(struct session *s, const char *text);
 
+// The same turn, run on its own thread so the window is free while it happens.
+// Nothing is drawn from that thread: the events it produces are queued and
+// drawn by session_turn_pump(), which the front end calls when the descriptor
+// below wakes. A session with a turn in flight must be pumped this way and not
+// through session_idle_pump(), which would take the turn's own stream.
+int  session_turn_begin(struct session *s, const char *text);
+int  session_turn_running(const struct session *s);
+int  session_turn_pump(struct session *s);
+int  session_wake_fd(const struct session *s);
+double session_turn_elapsed(const struct session *s);
+
+// Waits for a threaded turn to end, drawing what it produces as it waits. For
+// a front end that has to run a turn of its own on this thread.
+void session_turn_wait(struct session *s);
+
+// Abandon the turn in flight, as escape does to one in the foreground.
+void session_interrupt(struct session *s);
+
+// A turn of its own, or work the agent still has running.
+int  session_busy(const struct session *s);
+
 int  session_idle_fd(const struct session *s);
 
 int  session_idle_pump(struct session *s);
@@ -89,6 +110,8 @@ int session_resume(struct session *s, const char *id);
 
 void session_adopt_id(struct session *s, const char *id);
 
+const char *session_title(const struct session *s);
+
 const char *session_model(const struct session *s);
 const char *session_id(const struct session *s);
 
@@ -113,6 +136,10 @@ int         session_last_interrupted(const struct session *s);
 int session_context_percent(const struct session *s);
 
 long session_context_window(const struct session *s);
+
+// Sets the spinner's word from this session's effort. For the front end that
+// runs the spinner itself, around a turn of its own.
+void session_spin_word(const struct session *s);
 
 void session_report(const struct session *s);
 

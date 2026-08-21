@@ -14,6 +14,9 @@ void restart_request(void);
 
 int restart_wanted(void);
 
+// The signal carried something else this time: drop the request.
+void restart_clear(void);
+
 int restart_exec(struct session *s);
 
 #endif

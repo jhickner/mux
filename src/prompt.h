@@ -52,6 +52,21 @@ void prompt_set_echo_filter(struct prompt *p, int (*fn)(void *ud, const char *li
                             void *ud);
 int  prompt_echoes(struct prompt *p, const char *line);
 
+// Something that cannot wait for a quiet prompt the way a restart can: another
+// window is asking for one of this window's sessions.
+void prompt_set_takeover(struct prompt *p, int (*pending)(void *ud), void (*run)(void *ud),
+                         void *ud);
+
+// Escape or ctrl-C on an empty line. Nonzero means it was taken — a turn was
+// running and has been asked to stop.
+void prompt_set_cancel(struct prompt *p, int (*fn)(void *ud), void *ud);
+
+// Left arrow on an empty line.
+void prompt_set_switcher(struct prompt *p, void (*fn)(void *ud), void *ud);
+
+// Ends the read in progress with no line, as ctrl-D does.
+void prompt_stop(struct prompt *p);
+
 void prompt_set_restart(struct prompt *p, int (*pending)(void *ud), int (*run)(void *ud),
                         void *ud);
 
