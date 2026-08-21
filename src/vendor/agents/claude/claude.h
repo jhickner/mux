@@ -545,6 +545,35 @@ static void cl_note_session(claude_client *c, cJSON *ev) {
         snprintf(c->session_id, sizeof c->session_id, "%s", sid->valuestring);
 }
 
+/* Every turn opens with an init and closes with a result, whether this client
+ * asked for it or the CLI started it on its own. A finished background task
+ * announces its turn with a notification first, so each notification arriving
+ * between turns says one more turn is coming.
+ *
+ * Turns run one at a time and in the order they were asked for, so an init can
+ * be attributed as it arrives: announced turns come first, and the send waiting
+ * for a turn takes the first one nobody announced.
+ *
+ * The warm-up reads the same stream before any send, so it keeps this count
+ * too: an announcement dropped there leaves its turn unclaimed, and the send
+ * that follows takes that turn's empty result as its answer. */
+static void cl_turn_opened(claude_client *c) {
+    c->turn_open = 1;
+    if (c->notified > 0) {
+        c->notified--;
+        c->turn_mine = 0;
+    } else if (c->awaiting) {
+        c->awaiting = 0;
+        c->turn_mine = 1;
+    } else {
+        c->turn_mine = 0;
+    }
+}
+
+static void cl_turn_announced(claude_client *c) {
+    if (!c->turn_open) c->notified++;
+}
+
 static const char *cl_kind_label(claude_event_kind k) {
     switch (k) {
     case CLAUDE_EV_ASSISTANT:   return "assistant";
@@ -702,28 +731,11 @@ static int cl_handle_line(claude_client *c, const char *line, char **out) {
     cJSON *type = cJSON_GetObjectItemCaseSensitive(ev, "type");
     const char *ts = (type && cJSON_IsString(type)) ? type->valuestring : "";
     if (strcmp(ts, "system") == 0) {
-        /* Every turn opens with an init and closes with a result, whether this
-         * client asked for it or the CLI started it on its own. A finished
-         * background task announces its turn with a notification first, so each
-         * notification arriving between turns says one more turn is coming.
-         *
-         * Turns run one at a time and in the order they were asked for, so an
-         * init can be attributed as it arrives: announced turns come first, and
-         * the send waiting for a turn takes the first one nobody announced. */
         const char *sub = cJSON_GetStringValue(cJSON_GetObjectItem(ev, "subtype"));
         if (sub && strcmp(sub, "init") == 0) {
-            c->turn_open = 1;
-            if (c->notified > 0) {
-                c->notified--;
-                c->turn_mine = 0;
-            } else if (c->awaiting) {
-                c->awaiting = 0;
-                c->turn_mine = 1;
-            } else {
-                c->turn_mine = 0;
-            }
-        } else if (sub && strcmp(sub, "task_notification") == 0 && !c->turn_open) {
-            c->notified++;
+            cl_turn_opened(c);
+        } else if (sub && strcmp(sub, "task_notification") == 0) {
+            cl_turn_announced(c);
         } else if (sub && strcmp(sub, "background_tasks_changed") == 0) {
             /* The event carries the whole outstanding set, so it replaces the
              * count rather than adjusting it. */
@@ -776,6 +788,17 @@ static int cl_handle_line(claude_client *c, const char *line, char **out) {
         int mine = c->turn_open ? c->turn_mine : c->awaiting;
         c->turn_open = 0;
         c->turn_mine = 0;
+        /* The CLI names the turns it started for itself, and one of those never
+         * answers a send however the counting came out: the init it arrived on
+         * was the one this send was still owed, so the wait resumes rather than
+         * ends on an empty reply. */
+        cJSON *origin = cJSON_GetObjectItemCaseSensitive(ev, "origin");
+        const char *kind = origin ? cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(origin, "kind")) : NULL;
+        if (kind && *kind && strcmp(kind, "user") != 0) {
+            if (mine) c->awaiting = 1;
+            mine = 0;
+        }
         /* A turn the CLI ran on its own answers nobody here: its text is not a
          * reply to hand back, and its figures are not the caller's accounting. */
         if (mine) {
@@ -871,6 +894,15 @@ static void *cl_warm(void *arg) {
         cl_note_effort(c, ev);
         const char *type = cJSON_GetStringValue(
             cJSON_GetObjectItemCaseSensitive(ev, "type"));
+        const char *sub = cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(ev, "subtype"));
+        if (type && !strcmp(type, "system") && sub) {
+            if (!strcmp(sub, "init")) cl_turn_opened(c);
+            else if (!strcmp(sub, "task_notification")) cl_turn_announced(c);
+        } else if (type && !strcmp(type, "result")) {
+            c->turn_open = 0;
+            c->turn_mine = 0;
+        }
         cJSON *response = cJSON_GetObjectItemCaseSensitive(ev, "response");
         const char *request_id = response ? cJSON_GetStringValue(
             cJSON_GetObjectItemCaseSensitive(response, "request_id")) : NULL;
