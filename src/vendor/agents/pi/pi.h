@@ -55,7 +55,9 @@ pi_client *pi_start(const pi_opts *opts);
 char *pi_send(pi_client *c, const char *user_text);
 
 typedef struct {
-    int interrupted;   /* the abort predicate ended the operation */
+    int interrupted;    /* the abort predicate ended the operation            */
+    double cost_usd;    /* cumulative for the session, summed over the turns  */
+    long context_tokens;/* the newest request, as pi counted it               */
 } pi_result;
 
 /* As pi_send, but also fills *meta (zeroed first). `meta` may be NULL. */
@@ -148,6 +150,10 @@ struct pi_client {
     char *buf;
     size_t len, cap;
     char session_id[128];
+    /* pi prices each assistant message on its own, so the running total is
+     * ours to keep. A reset starts it over, the way a new session should. */
+    double cost_usd;
+    long context_tokens;
 };
 
 void pi_set_verbose(pi_client *c, int on) { if (c) c->verbose = on; }
@@ -279,6 +285,21 @@ static void pi_consume_event(pi_client *c, cJSON *ev, char **acc, int *settled) 
                 pi_event out = { .kind = PI_EV_THINKING, .text = d };
                 pi_emit(c, &out);
             }
+        }
+    } else if (!strcmp(type->valuestring, "message_end")) {
+        /* Only assistant messages are billed; tool results and the echoed
+         * prompt carry no usage. */
+        cJSON *msg = cJSON_GetObjectItemCaseSensitive(ev, "message");
+        const char *role = cJSON_GetStringValue(
+            cJSON_GetObjectItemCaseSensitive(msg, "role"));
+        cJSON *usage = (role && !strcmp(role, "assistant"))
+                     ? cJSON_GetObjectItemCaseSensitive(msg, "usage") : NULL;
+        if (usage) {
+            cJSON *cost = cJSON_GetObjectItemCaseSensitive(usage, "cost");
+            cJSON *total = cJSON_GetObjectItemCaseSensitive(cost, "total");
+            if (cJSON_IsNumber(total)) c->cost_usd += total->valuedouble;
+            cJSON *tokens = cJSON_GetObjectItemCaseSensitive(usage, "totalTokens");
+            if (cJSON_IsNumber(tokens)) c->context_tokens = (long)tokens->valuedouble;
         }
     } else if (!strcmp(type->valuestring, "tool_execution_start")) {
         const char *name = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(ev, "toolName"));
@@ -483,6 +504,7 @@ char *pi_send_ex(pi_client *c, const char *user_text, pi_result *meta) {
     }
     if (!accepted) { free(answer); return NULL; }
     if (!c->session_id[0]) pi_refresh_id(c);
+    if (meta) { meta->cost_usd = c->cost_usd; meta->context_tokens = c->context_tokens; }
     return answer ? answer : strdup("");
 }
 
@@ -494,6 +516,8 @@ int pi_reset(pi_client *c) {
     if (!c) return 0;
     int id = pi_command(c, "new_session", NULL);
     if (!id || !pi_wait_response(c, id)) return 0;
+    c->cost_usd = 0;
+    c->context_tokens = 0;
     c->session_id[0] = '\0';
     pi_refresh_id(c);
     return 1;
@@ -595,7 +619,11 @@ static char *pi_backend_ask_ex(Backend *b, const char *user, backend_result *met
     pi_result pr = {0};
     char *reply = pi_send_ex(cx->c, user, &pr);
     backend_flush(&cx->st);
-    if (meta) meta->interrupted = pr.interrupted;
+    if (meta) {
+        meta->interrupted = pr.interrupted;
+        meta->cost_usd = pr.cost_usd;
+        meta->context_tokens = pr.context_tokens;
+    }
     return reply;
 }
 static char *pi_backend_ask(Backend *b, const char *user) {
