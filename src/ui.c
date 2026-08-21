@@ -931,32 +931,10 @@ void ui_error(const char *fmt, ...)
     va_end(ap);
 }
 
-// A block opened while output is being captured or sunk elsewhere would take
-// an entry of its own in a transcript none of its rows reach, so it is skipped
-// and the matching end is remembered.
-#define BLOCK_MAX 8
-
-static int block_kept[BLOCK_MAX];
-static int block_depth;
-
-void ui_block_begin(int before, int after)
+// Output on its way somewhere other than the transcript: a modal painting into
+// its block, or a renderer being measured. An entry opened for it would hold
+// no rows, so the viewport declines to open one.
+int ui_diverted(void)
 {
-    int at = block_depth++;
-    int keep = !capture_depth && !sink_depth;
-    if (at < BLOCK_MAX)
-        block_kept[at] = keep;
-    else
-        keep = 0;
-    if (keep)
-        viewport_item_begin(NULL, NULL, NULL, before, after);
-}
-
-void ui_block_end(void)
-{
-    if (block_depth == 0)
-        return;
-    int at = --block_depth;
-    if (at < BLOCK_MAX && block_kept[at])
-        viewport_item_end();
-    ui_flush();
+    return capture_depth || sink_depth;
 }

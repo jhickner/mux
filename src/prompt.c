@@ -415,8 +415,9 @@ void prompt_echo_message(const char *text)
     }
     // Kept, so the bar and its wrap are laid out again at a new width.
     if (e) {
-        unsigned mark = viewport_item_begin(echo_render, e, echo_free,
-                                            e->gap, echo_pad_after(e));
+        unsigned mark = viewport_item_begin(&(struct viewport_entry){
+            .render = echo_render, .ud = e, .free_ud = echo_free, .reflow = 1,
+            .pad_before = e->gap, .pad_after = echo_pad_after(e)});
         echo_paint(e);
         viewport_item_end();
         viewport_item_persist(mark, PROMPT_ECHO_KIND, echo_encode);
@@ -442,8 +443,9 @@ void prompt_echo_load(const cJSON *st)
         free(e);
         return;
     }
-    unsigned mark = viewport_item_begin(echo_render, e, echo_free,
-                                        e->gap, echo_pad_after(e));
+    unsigned mark = viewport_item_begin(&(struct viewport_entry){
+        .render = echo_render, .ud = e, .free_ud = echo_free, .reflow = 1,
+        .pad_before = e->gap, .pad_after = echo_pad_after(e)});
     echo_paint(e);
     viewport_item_end();
     viewport_item_persist(mark, PROMPT_ECHO_KIND, echo_encode);

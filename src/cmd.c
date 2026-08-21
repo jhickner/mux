@@ -128,12 +128,13 @@ static void reply(int error, const char *fmt, ...)
     vsnprintf(text, sizeof text, fmt, ap);
     va_end(ap);
 
-    ui_block_begin(1, 1);
+    viewport_item_begin(VIEWPORT_ROWS(1, 1));
     if (error)
         ui_error("%s", text);
     else
         ui_note("%s", text);
-    ui_block_end();
+    viewport_item_end();
+    ui_flush();
 }
 
 #define reply_note(...)  reply(0, __VA_ARGS__)
@@ -196,10 +197,11 @@ static void note_identity(const struct session *s)
     else if (window > 0)
         snprintf(ctx, sizeof ctx, " \xc2\xb7 %ldK context", window / 1000);
 
-    ui_block_begin(1, 1);
+    viewport_item_begin(VIEWPORT_ROWS(1, 1));
     ui_note("%s \xc2\xb7 %s%s%s", session_backend(s),
             session_model_short(s, session_model_label(s)), effort, ctx);
-    ui_block_end();
+    viewport_item_end();
+    ui_flush();
 }
 
 // A picker is a modal on the keyboard, so there has to be one and it has to be
@@ -243,7 +245,7 @@ static void do_model(struct session *s, const char *arg)
 
     const char *model = strcmp(chosen, "default") == 0 ? NULL : chosen;
     if (!session_set_model(s, model)) {
-        ui_error("could not restart on %s", chosen);
+        reply_error("could not restart on %s", chosen);
         return;
     }
     note_identity(s);
@@ -316,8 +318,6 @@ static void do_backend(struct session *s, const char *arg)
 
     if (retry) {
         reply_note("retrying the failed turn with %s", arg);
-        ui_put("\n\n");
-        ui_flush();
         session_turn(s, retry);
         free(retry);
     }
@@ -383,6 +383,7 @@ static void do_mux(struct session *s, const char *arg)
         reply_note("/mux <prompt> — asks the whole matrix at once; "
                    "/mux config to change it, /mux make <what> to have one "
                    "laid out for you");
+        viewport_item_begin(VIEWPORT_ROWS(1, 1));
         ui_note("%s", muxcfg_active());
         ui_put("\n");
         for (int i = 0; i < n; i++) {
@@ -394,6 +395,7 @@ static void do_mux(struct session *s, const char *arg)
                 ui_note("  %s", label);
             ui_put("\n");
         }
+        viewport_item_end();
         ui_flush();
         return;
     }
@@ -481,10 +483,11 @@ static void do_image(struct session *s, const char *arg)
     if (image_available()) {
         reply_note("inline images: up to %d rows tall", image_rows());
     } else {
-        ui_block_begin(1, 1);
+        viewport_item_begin(VIEWPORT_ROWS(1, 1));
         ui_note("inline images: up to %d rows tall, but this terminal has no "
                 "graphics support", image_rows());
-        ui_block_end();
+        viewport_item_end();
+        ui_flush();
     }
 }
 
@@ -524,9 +527,10 @@ int cmd_resume(struct session *s)
             viewport_clear();
             hud_print(s);
             sessionload_into(s);
-            ui_block_begin(1, 1);
+            viewport_item_begin(VIEWPORT_ROWS(1, 1));
             ui_bar(ui_style(UI_DIM), "resumed \xc2\xb7 %s", list[index].label);
-            ui_block_end();
+            viewport_item_end();
+            ui_flush();
             resumed = 1;
         } else {
             reply_error("could not resume that conversation");
@@ -547,9 +551,10 @@ static void do_new(struct session *s, const char *arg)
     }
 
     status_sticky_prompt(NULL);
-    ui_block_begin(1, 1);
+    viewport_item_begin(VIEWPORT_ROWS(1, 1));
     ui_bar(ui_style(UI_DIM), "new conversation");
-    ui_block_end();
+    viewport_item_end();
+    ui_flush();
 }
 
 static void do_cd(struct session *s, const char *arg)
@@ -591,16 +596,17 @@ static void do_cd(struct session *s, const char *arg)
 
     status_sticky_prompt(NULL);
     path_home_relative(resolved, shown, sizeof shown);
-    ui_block_begin(1, 1);
+    viewport_item_begin(VIEWPORT_ROWS(1, 1));
     ui_bar(ui_style(UI_DIM), "new conversation in %s", shown);
-    ui_block_end();
+    viewport_item_end();
+    ui_flush();
 }
 
 static void do_copy(struct session *s, const char *arg)
 {
     (void)arg;
     const char *reply = session_last_reply(s);
-    ui_block_begin(1, 1);
+    viewport_item_begin(VIEWPORT_ROWS(1, 1));
     if (!reply) {
         ui_note("nothing to copy yet");
     } else if (copy_to_clipboard(reply)) {
@@ -608,7 +614,8 @@ static void do_copy(struct session *s, const char *arg)
     } else {
         ui_error("could not reach the clipboard");
     }
-    ui_block_end();
+    viewport_item_end();
+    ui_flush();
 }
 
 static void do_split(struct session *s, const char *arg)
@@ -623,7 +630,7 @@ static void do_split(struct session *s, const char *arg)
 
 static void do_rename(struct session *s, const char *arg)
 {
-    ui_block_begin(1, 1);
+    viewport_item_begin(VIEWPORT_ROWS(1, 1));
     if (arg && *arg) {
         if (session_rename(s, arg))
             ui_note("renamed to %s", session_title(s));
@@ -634,7 +641,8 @@ static void do_rename(struct session *s, const char *arg)
     } else {
         ui_error("nothing to name it from yet");
     }
-    ui_block_end();
+    viewport_item_end();
+    ui_flush();
 }
 
 static int split_command(const char *line, char *name, size_t size, const char **arg)
@@ -932,7 +940,7 @@ static void do_help(struct session *s, const char *arg)
     (void)s;
     (void)arg;
 
-    ui_block_begin(1, 1);
+    viewport_item_begin(VIEWPORT_ROWS(1, 1));
     help_heading("commands");
     for (size_t i = 0; i < COUNT(COMMANDS); i++) {
         if (COMMANDS[i].flags & CMD_HIDDEN)
@@ -959,5 +967,6 @@ static void do_help(struct session *s, const char *arg)
     help_row("", "any slash command not listed above goes to the agent CLI, so");
     help_row("", "/w, /todo and the rest work here. start with -s to run without");
     help_row("", "them; /session shows what is active.");
-    ui_block_end();
+    viewport_item_end();
+    ui_flush();
 }

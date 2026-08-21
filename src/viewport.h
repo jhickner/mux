@@ -24,16 +24,33 @@ void viewport_write(const char *s, size_t n);
 // again at any width. Output not wrapped this way soft-wraps on a resize.
 typedef void (*viewport_render_fn)(void *ud, int cols);
 
-// `before` and `after` are the blank rows the entry wants above and below
-// itself. An entry never draws its own padding: the seam between two entries
-// takes the larger of what the two sides ask for, and blank rows already there
-// count toward it, so a run of padded entries is separated by one row rather
-// than two or none.
+// What an entry is, declared the same way whatever it holds: how it draws,
+// whether it may be drawn again, and the blank rows it wants around it.
 //
+// `reflow` asks for render() again when the width changes; without it the rows
+// stand as they were first printed. An entry never draws its own padding: the
+// seam between two entries takes the larger of what the two sides ask for, and
+// blank rows already there count toward it, so a run of padded entries is
+// separated by one row rather than two or none.
+struct viewport_entry {
+    viewport_render_fn render;      /* NULL: nothing to draw it again with */
+    void              *ud;
+    void             (*free_ud)(void *);
+    int                reflow;
+    int                pad_before;
+    int                pad_after;
+};
+
+// The common case, written out where it is used: printed rows that nothing
+// redraws, asking for the blank rows around them.
+#define VIEWPORT_ROWS(before, after) \
+    (&(struct viewport_entry){.pad_before = (before), .pad_after = (after)})
+
 // Returns the mark of the entry it opens. Taking it beforehand names the wrong
 // entry: opening one first closes any unwrapped output as an entry of its own.
-unsigned viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud)(void *),
-                             int before, int after);
+// Zero when nothing was opened: output going somewhere other than the
+// transcript, or no viewport at all.
+unsigned viewport_item_begin(const struct viewport_entry *e);
 void viewport_item_end(void);
 
 // Hand the terminal to a child and take it back.

@@ -210,7 +210,9 @@ static void render_event(struct session *s, const backend_event *ev)
         if (ev->text && *ev->text) {
             status_pause();
             paused = 1;
+            viewport_item_begin(VIEWPORT_ROWS(1, 1));
             ui_note("%s", ev->text);
+            viewport_item_end();
         }
         break;
 
@@ -501,9 +503,10 @@ static int adopt_title(struct session *s)
     publish(s, s->idle_busy ? "working" : "finished");
     if (s->announce_title) {
         s->announce_title = 0;
-        ui_block_begin(1, 1);
+        viewport_item_begin(VIEWPORT_ROWS(1, 1));
         ui_note("renamed to %s", s->title);
-        ui_block_end();
+        viewport_item_end();
+        ui_flush();
     }
     return 1;
 }
@@ -686,9 +689,10 @@ void session_replay(struct session *s)
         if (t->assistant && *t->assistant)
             md_render_kept(t->assistant, 0);
         if (t->interrupted) {
-            ui_block_begin(0, 1);
+            viewport_item_begin(VIEWPORT_ROWS(0, 1));
             ui_error("  interrupted");
-            ui_block_end();
+            viewport_item_end();
+            ui_flush();
         }
     }
     ui_flush();
@@ -1152,11 +1156,23 @@ static void update_title(struct session *s)
     adopt_title(s);
 }
 
-static void print_footer(struct session *s, double elapsed)
+// What a turn cost, kept so a narrower pane lays it out again: whether the
+// title fits beside the numbers is a question about the width it is drawn at.
+struct footer {
+    double elapsed;
+    long   tokens;
+    long   window;
+    double cost;
+    char   title[128];
+};
+
+static void footer_render(void *ud, int cols)
 {
+    const struct footer *f = ud;
+
     char used[32], window[32];
-    humanize(s->context_tokens, used, sizeof used);
-    humanize(s->context_window, window, sizeof window);
+    humanize(f->tokens, used, sizeof used);
+    humanize(f->window, window, sizeof window);
 
     char line[384];
     size_t n = 0;
@@ -1167,22 +1183,22 @@ static void print_footer(struct session *s, double elapsed)
                 n += (size_t)w < sizeof line - n ? (size_t)w : sizeof line - n - 1;             \
         } while (0)
 
-    APPEND("%.0fs", elapsed);
-    if (s->context_window > 0) {
-        int percent = (int)((double)s->context_tokens * 100.0 / (double)s->context_window);
-        APPEND(" · %s / %s (%d%%)", used, window, percent);
-    } else if (s->context_tokens > 0) {
-        APPEND(" · %s", used);
+    APPEND("%.0fs", f->elapsed);
+    if (f->window > 0) {
+        int percent = (int)((double)f->tokens * 100.0 / (double)f->window);
+        APPEND(" \xc2\xb7 %s / %s (%d%%)", used, window, percent);
+    } else if (f->tokens > 0) {
+        APPEND(" \xc2\xb7 %s", used);
     }
-    if (s->cost_usd > 0)
-        APPEND(" · $%.4f", s->cost_usd);
+    if (f->cost > 0)
+        APPEND(" \xc2\xb7 $%.4f", f->cost);
 
     int wrapped = 0;
-    if (s->title[0]) {
-        int room = ui_columns() - 1;
-        size_t want = ui_cells(line) + ui_cells(" · ") + ui_cells(s->title);
+    if (f->title[0]) {
+        int room = cols - 1;
+        size_t want = ui_cells(line) + ui_cells(" \xc2\xb7 ") + ui_cells(f->title);
         if (room > 0 && want <= (size_t)room)
-            APPEND(" · %s", s->title);
+            APPEND(" \xc2\xb7 %s", f->title);
         else
             wrapped = 1;
     }
@@ -1193,7 +1209,24 @@ static void print_footer(struct session *s, double elapsed)
     ui_esc(ui_style(UI_RESET));
     ui_put("\n");
     if (wrapped)
-        ui_wrapped(s->title, 0, UI_DIM);
+        ui_wrapped(f->title, 0, UI_DIM);
+}
+
+static void print_footer(struct session *s, double elapsed)
+{
+    struct footer *f = calloc(1, sizeof *f);
+    if (!f)
+        return;
+    f->elapsed = elapsed;
+    f->tokens = s->context_tokens;
+    f->window = s->context_window;
+    f->cost = s->cost_usd;
+    snprintf(f->title, sizeof f->title, "%s", s->title);
+
+    viewport_item_begin(&(struct viewport_entry){
+        .render = footer_render, .ud = f, .free_ud = free, .reflow = 1});
+    footer_render(f, ui_columns());
+    viewport_item_end();
     ui_flush();
 }
 
@@ -1404,12 +1437,13 @@ static int turn_finish(struct session *s, char *reply, const backend_result *met
                 fprintf(stderr, "the %s process stopped responding\n", s->backend);
             return 0;
         }
-        ui_block_begin(1, 1);
+        viewport_item_begin(VIEWPORT_ROWS(1, 1));
         if (detail)
             ui_error("%s: %s", s->backend, detail);
         else
             ui_error("the %s process stopped responding", s->backend);
-        ui_block_end();
+        viewport_item_end();
+        ui_flush();
         return 0;
     }
 
@@ -1450,9 +1484,10 @@ static int turn_finish(struct session *s, char *reply, const backend_result *met
     }
     s->interrupted = m.interrupted;
     if (m.interrupted && !s->silent) {
-        ui_block_begin(0, 1);
+        viewport_item_begin(VIEWPORT_ROWS(0, 1));
         ui_error("  interrupted");
-        ui_block_end();
+        viewport_item_end();
+        ui_flush();
     }
 
     if (*reply)
@@ -1872,7 +1907,7 @@ void session_report(const struct session *s)
     humanize(s->context_window, window, sizeof window);
 
     const char *auth = auth_description(s);
-    ui_block_begin(1, 1);
+    viewport_item_begin(VIEWPORT_ROWS(1, 1));
     ui_note("  backend  %s", s->backend);
     ui_note("  model    %s", session_model(s));
     if (session_can_set_effort(s))
@@ -1912,5 +1947,6 @@ void session_report(const struct session *s)
                 auth && strcmp(auth, "subscription login") == 0
                     ? "  (list price; the subscription is not billed per token)"
                     : "");
-    ui_block_end();
+    viewport_item_end();
+    ui_flush();
 }

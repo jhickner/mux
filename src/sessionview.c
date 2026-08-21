@@ -122,7 +122,9 @@ static char *keep_encode(void *ud)
 // Opens the entry, draws it once, closes it. Returns its mark.
 static unsigned keep(struct keep *k)
 {
-    unsigned mark = viewport_item_begin(keep_render, k, keep_free, k->gap, 0);
+    unsigned mark = viewport_item_begin(&(struct viewport_entry){
+        .render = keep_render, .ud = k, .free_ud = keep_free, .reflow = 1,
+        .pad_before = k->gap});
     keep_render(k, ui_columns());
     viewport_item_end();
     viewport_item_persist(mark, VIEW_KEEP_KIND, keep_encode);

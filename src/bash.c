@@ -275,7 +275,9 @@ void bash_ran_load(const cJSON *st)
     const char *out = scrollback_str(st, "out");
     r->out = *out ? strdup(out) : NULL;
 
-    unsigned mark = viewport_item_begin(ran_render, r, ran_free, 0, 1);
+    unsigned mark = viewport_item_begin(&(struct viewport_entry){
+        .render = ran_render, .ud = r, .free_ud = ran_free, .reflow = 1,
+        .pad_after = 1});
     ran_render(r, ui_columns());
     viewport_item_end();
     viewport_item_persist(mark, BASH_RAN_KIND, ran_encode);
@@ -288,7 +290,9 @@ static unsigned keep_ran(void)
     if (!r)
         return 0;
 
-    unsigned mark = viewport_item_begin(ran_render, r, ran_free, 0, 1);
+    unsigned mark = viewport_item_begin(&(struct viewport_entry){
+        .render = ran_render, .ud = r, .free_ud = ran_free, .reflow = 1,
+        .pad_after = 1});
     ran_render(r, ui_columns());
     viewport_item_end();
     viewport_item_persist(mark, BASH_RAN_KIND, ran_encode);

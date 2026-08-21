@@ -429,7 +429,9 @@ static void emit(struct side *c, int status)
         return;
     }
 
-    unsigned mark = viewport_item_begin(btw_render, b, btw_free, b->gap, 1);
+    unsigned mark = viewport_item_begin(&(struct viewport_entry){
+        .render = btw_render, .ud = b, .free_ud = btw_free, .reflow = 1,
+        .pad_before = b->gap, .pad_after = 1});
     btw_render(b, ui_columns());
     viewport_item_end();
     viewport_item_persist(mark, SIDECHANNEL_BTW_KIND, btw_encode);
@@ -450,7 +452,9 @@ void sidechannel_btw_load(const cJSON *st)
         return;
     }
 
-    unsigned mark = viewport_item_begin(btw_render, b, btw_free, b->gap, 1);
+    unsigned mark = viewport_item_begin(&(struct viewport_entry){
+        .render = btw_render, .ud = b, .free_ud = btw_free, .reflow = 1,
+        .pad_before = b->gap, .pad_after = 1});
     btw_render(b, ui_columns());
     viewport_item_end();
     viewport_item_persist(mark, SIDECHANNEL_BTW_KIND, btw_encode);

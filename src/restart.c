@@ -219,8 +219,9 @@ int restart_exec(struct session *s)
         argv[0] = arg;
     }
 
+    viewport_item_begin(VIEWPORT_ROWS(1, 1));
     ui_bar(ui_style(UI_DIM), "restarting");
-    ui_put("\n");
+    viewport_item_end();
     ui_flush();
 
     // The rest of the window travels too: the successor opens a tab for each

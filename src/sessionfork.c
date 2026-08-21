@@ -11,6 +11,7 @@
 #include "app.h"
 #include "session.h"
 #include "ui.h"
+#include "viewport.h"
 
 static char program[4096] = APP_NAME;
 
@@ -60,15 +61,19 @@ static int run(char *const argv[], const char *out_path)
 int sessionfork_run(const struct session *s, enum fork_where where)
 {
     if (!getenv("TMUX")) {
+        viewport_item_begin(VIEWPORT_ROWS(1, 1));
         ui_error("forking needs tmux");
-        ui_put("\n");
+        viewport_item_end();
+        ui_flush();
         return 0;
     }
 
     if (!session_can_resume(s)) {
+        viewport_item_begin(VIEWPORT_ROWS(1, 1));
         ui_error("%s cannot resume a conversation, so there is nothing to fork",
                  session_backend(s));
-        ui_put("\n");
+        viewport_item_end();
+        ui_flush();
         return 0;
     }
     const char *id = session_id(s);
@@ -106,8 +111,9 @@ int sessionfork_run(const struct session *s, enum fork_where where)
         return 0;
     }
 
+    viewport_item_begin(VIEWPORT_ROWS(1, 1));
     ui_bar(ui_style(UI_DIM), "forked");
-    ui_put("\n");
+    viewport_item_end();
     ui_flush();
     return 1;
 }
@@ -115,8 +121,9 @@ int sessionfork_run(const struct session *s, enum fork_where where)
 int sessionfork_shell(const struct session *s, enum fork_where where, int quiet)
 {
     if (!getenv("TMUX")) {
+        viewport_item_begin(VIEWPORT_ROWS(1, 1));
         ui_error("splitting needs tmux");
-        ui_put("\n");
+        viewport_item_end();
         ui_flush();
         return 0;
     }
@@ -145,8 +152,9 @@ int sessionfork_shell(const struct session *s, enum fork_where where, int quiet)
         return 0;
     }
     if (!quiet) {
+        viewport_item_begin(VIEWPORT_ROWS(1, 1));
         ui_bar(ui_style(UI_DIM), "split");
-        ui_put("\n");
+        viewport_item_end();
         ui_flush();
     }
     return 1;
@@ -178,8 +186,9 @@ void sessionfork_exit_note(const struct session *s)
         n += (size_t)wrote;
     }
 
+    viewport_item_begin(VIEWPORT_ROWS(1, 1));
     ui_bar(ui_style(UI_DIM), "resume this conversation:");
-
     ui_printf("%s%s%s\n", ui_style(UI_DIM), cmd, ui_style(UI_RESET));
+    viewport_item_end();
     ui_flush();
 }

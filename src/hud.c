@@ -9,6 +9,7 @@
 #include "session.h"
 #include "tg.h"
 #include "ui.h"
+#include "viewport.h"
 #include "text.h"
 #include "workspace.h"
 
@@ -117,8 +118,9 @@ void hud_print(const struct session *s)
     if (!s)
         return;
     int cols = ui_columns();
+    viewport_item_begin(VIEWPORT_ROWS(1, 1));
     row_identity(s, cols);
     row_location(s, cols);
-    ui_put("\n");
+    viewport_item_end();
     ui_flush();
 }

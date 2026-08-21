@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "text.h"
 #include "tty.h"
 #include "ui.h"
 #include "vendor/cJSON.h"
@@ -15,6 +16,7 @@ struct item {
     viewport_render_fn render;
     void  *ud;
     void (*free_ud)(void *);
+    int    reflow;              /* render() again at a new width */
     char **rows;
     int    nrows;
     int    cols;
@@ -32,6 +34,7 @@ static size_t open_len, open_cap;
 static viewport_render_fn open_render;
 static void  *open_ud;
 static void (*open_free)(void *);
+static int    open_reflow;
 static int    open_wrapped;
 static int    open_pad_after;   /* blank rows the entry being written wants below it */
 static int    open_paid;        /* its seam was settled when it was opened */
@@ -313,11 +316,36 @@ static void pad_seam(int before, int own)
         blank_push();
 }
 
+// Rows nobody opened an entry for: a stray print, or one this module has not
+// been taught about yet. They stand as one entry per line, which is what the
+// store was before entries were declared at all. Set MUX_STRICT_ENTRIES to
+// have them named in <config>/loose-rows.log, so a new one shows up as
+// something to declare rather than as spacing that quietly goes wrong.
+static void loose_row(const char *body, size_t n)
+{
+    if (!getenv("MUX_STRICT_ENTRIES"))
+        return;
+    while (n && (body[n - 1] == '\n' || body[n - 1] == '\r'))
+        n--;
+    if (!n)
+        return;                 /* a blank line separates, it does not print */
+
+    char path[4200];
+    if (!path_config_file(path, sizeof path, "loose-rows.log"))
+        return;
+    FILE *f = fopen(path, "a");
+    if (!f)
+        return;
+    fprintf(f, "%.*s\n", (int)(n > 120 ? 120 : n), body);
+    fclose(f);
+}
+
 static void open_close(int cols)
 {
     // A wrapped entry paid its seam when it was opened; a raw line pays here,
     // where its own leading blank is finally known.
     if (!open_paid) {
+        loose_row(open_buf ? open_buf : "", open_len);
         const char *body = open_buf ? open_buf : "";
         pad_seam(0, row_is_blank(body, open_len) ? 1 : 0);
     }
@@ -330,20 +358,27 @@ static void open_close(int cols)
     it->render = open_render;
     it->ud = open_ud;
     it->free_ud = open_free;
+    it->reflow = open_reflow;
     rows_set(it, open_buf ? open_buf : "", cols);
 
     open_len = 0;
     open_render = NULL;
     open_ud = NULL;
     open_free = NULL;
+    open_reflow = 0;
     tail_pad = open_pad_after;
     open_pad_after = 0;
     open_paid = 0;
 }
 
-unsigned viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud)(void *),
-                             int before, int after)
+unsigned viewport_item_begin(const struct viewport_entry *e)
 {
+    static const struct viewport_entry none;
+    if (!e)
+        e = &none;
+    void *ud = e->ud;
+    void (*free_ud)(void *) = e->free_ud;
+
     // Counted past the limit, so begin and end pair up and an overflow cannot
     // pop somebody else's frame.
     // A render callback counts as an enclosing frame: it may not open an entry
@@ -362,30 +397,35 @@ unsigned viewport_item_begin(viewport_render_fn render, void *ud, void (*free_ud
         return 0;
     }
 
+    // Rows that never reach the transcript get no entry, and no padding
+    // either: it would land in whatever is taking the output instead.
+    int diverted = ui_diverted();
+
     if (viewport_active() && open_len)
         open_close(0);
-    if (viewport_active()) {
-        pad_seam(before, 0);
+    if (viewport_active() && !diverted) {
+        pad_seam(e->pad_before, 0);
         open_paid = 1;
-    } else {
+    } else if (!viewport_active() && !diverted) {
         // Nothing is kept, so the seam is printed as it is reached. Only what
         // is owed on the way in: a pad below the last entry printed has
         // nothing after it to be separated from.
-        int want = before > tail_pad ? before : tail_pad;
+        int want = e->pad_before > tail_pad ? e->pad_before : tail_pad;
         for (int i = 0; i < want; i++)
             ui_put("\n");
-        tail_pad = after;
+        tail_pad = e->pad_after;
     }
-    open_render = render;
+    open_render = e->render;
     open_ud = ud;
     open_free = free_ud;
-    open_pad_after = after;
+    open_reflow = e->reflow;
+    open_pad_after = e->pad_after;
 
     // With no viewport there is no entry to own the payload; item_end frees it.
     // No entry means no mark either: an id handed out now would be taken by
     // whichever entry is opened next, and the caller would be amending
     // somebody else's payload through it.
-    open_wrapped = viewport_active();
+    open_wrapped = viewport_active() && !diverted;
     return open_wrapped ? next_id : 0;
 }
 
@@ -685,7 +725,7 @@ static int wrap_count(const char *s, int W)
 // Re-renders the entry if the width changed. Raw entries keep their rows.
 static void item_rows(struct item *it, int W)
 {
-    if (!it->render || it->cols == W)
+    if (!it->render || !it->reflow || it->cols == W)
         return;
     ui_capture_begin(W);
     in_render++;

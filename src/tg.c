@@ -43,6 +43,7 @@
 #include "text.h"
 #include "tty.h"
 #include "ui.h"
+#include "viewport.h"
 
 #define TG_LIMIT    4000        // Telegram caps a message at 4096 characters
 #define MAX_ATTACH  8
@@ -938,7 +939,9 @@ static void note_up(const char *fmt, ...)
         fprintf(stderr, APP_NAME ": %s\n", line);
         return;
     }
+    viewport_item_begin(VIEWPORT_ROWS(1, 1));
     ui_note("%s", line);
+    viewport_item_end();
     ui_flush();
 }
 

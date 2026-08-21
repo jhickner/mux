@@ -12,6 +12,7 @@
 #include "session.h"
 #include "sessionview.h"
 #include "ui.h"
+#include "viewport.h"
 #include "vendor/agents/backend.h"
 #include "vendor/cJSON.h"
 
@@ -280,8 +281,9 @@ int sessionload_replay(const char *backend, const char *cwd, const char *id,
         return 0;
 
     if (skip) {
+        viewport_item_begin(VIEWPORT_ROWS(1, 1));
         ui_bar(ui_style(UI_DIM), "\xe2\x80\xa6 %d earlier turns not shown", skip);
-        ui_put("\n");
+        viewport_item_end();
     }
 
     char   *line = NULL;

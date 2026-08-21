@@ -693,7 +693,9 @@ int fanout_run(struct session *s, const char *prompt)
     unsigned mark = 0;
     int      kept = viewport_active();
     if (kept) {
-        mark = viewport_item_begin(board_render, b, board_free, 1, 1);
+        mark = viewport_item_begin(&(struct viewport_entry){
+            .render = board_render, .ud = b, .free_ud = board_free, .reflow = 1,
+            .pad_before = 1, .pad_after = 1});
         board_render(b, ui_columns());
         viewport_item_end();
     }

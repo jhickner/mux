@@ -166,8 +166,9 @@ static void offer_project_trust(struct session *s)
     if (!session_take_trust_request(s))
         return;
     if (confirm_run("trust this folder in codex?") && !session_trust_project(s)) {
+        viewport_item_begin(VIEWPORT_ROWS(1, 1));
         ui_error("could not trust this folder or reload Codex");
-        ui_put("\n");
+        viewport_item_end();
         ui_flush();
     }
 }
@@ -225,15 +226,17 @@ static void another(void *ud)
     if (!here)
         return;
     if (n >= WORKSPACE_MAX) {
+        viewport_item_begin(VIEWPORT_ROWS(1, 1));
         ui_note("this window is already holding as many sessions as it can");
-        ui_put("\n");
+        viewport_item_end();
         ui_flush();
         return;
     }
     if (workspace_spawn(session_backend(here), session_model(here), session_effort(here),
                         session_cwd(here), NULL) < 0) {
+        viewport_item_begin(VIEWPORT_ROWS(1, 1));
         ui_error("could not start another %s CLI", session_backend(here));
-        ui_put("\n");
+        viewport_item_end();
         ui_flush();
         return;
     }
@@ -291,10 +294,11 @@ static int idle_restart(void *ud)
     // The whole window travels: the session in front carries the screen, and
     // the rest are named in a file the new build opens a tab from.
     if (!restart_exec(workspace_current())) {
+        viewport_item_begin(VIEWPORT_ROWS(1, 1));
         ui_error("could not restart: no runnable %s at %s or on PATH — "
                  "staying on this build",
                  APP_NAME, sessionfork_program());
-        ui_put("\n");
+        viewport_item_end();
         ui_flush();
     }
     return 0;
@@ -610,8 +614,6 @@ int main(int argc, char **argv)
     prompt_set_animate(prompt, side_busy, side_tick, NULL);
     if (telegram)
         prompt_set_external(prompt, chat_line, NULL);
-
-    ui_put("\n");
 
     if (!resume || !cmd_resume(session))
         hud_print(session);

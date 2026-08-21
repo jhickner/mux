@@ -373,7 +373,8 @@ void image_placed_load(const cJSON *st)
     p->img_w = scrollback_int(st, "w");
     p->img_h = scrollback_int(st, "h");
 
-    unsigned mark = viewport_item_begin(placed_render, p, free, 0, 0);
+    unsigned mark = viewport_item_begin(&(struct viewport_entry){
+        .render = placed_render, .ud = p, .free_ud = free, .reflow = 1});
     place(p->id, p->indent, p->img_w, p->img_h);
     viewport_item_end();
     viewport_item_persist(mark, IMAGE_PLACED_KIND, placed_encode);
@@ -389,7 +390,8 @@ static unsigned place_kept(uint32_t id, int indent, int img_w, int img_h)
         p->indent = indent;
         p->img_w = img_w;
         p->img_h = img_h;
-        mark = viewport_item_begin(placed_render, p, free, 0, 0);
+        mark = viewport_item_begin(&(struct viewport_entry){
+        .render = placed_render, .ud = p, .free_ud = free, .reflow = 1});
     }
     place(id, indent, img_w, img_h);
     if (p) {
