@@ -630,17 +630,16 @@ static void do_split(struct session *s, const char *arg)
 
 static void do_rename(struct session *s, const char *arg)
 {
+    int named = arg && *arg;
+    enum session_rename why = session_rename(s, named ? arg : NULL);
+
     viewport_item_begin(VIEWPORT_ROWS(1, 1));
-    if (arg && *arg) {
-        if (session_rename(s, arg))
-            ui_note("renamed to %s", session_title(s));
-        else
-            ui_error("could not use that name");
-    } else if (session_rename(s, NULL)) {
+    if (why != SESSION_RENAME_OK)
+        ui_error("%s", session_rename_error(why));
+    else if (named)
+        ui_note("renamed to %s", session_title(s));
+    else
         ui_note("naming this session again");
-    } else {
-        ui_error("nothing to name it from yet");
-    }
     viewport_item_end();
     ui_flush();
 }

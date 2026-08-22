@@ -123,9 +123,23 @@ void session_adopt_id(struct session *s, const char *id);
 
 const char *session_title(const struct session *s);
 
+// Why a rename did not happen. They are told apart because the reasons want
+// different things of the user: one is a wait, one is a different name, one is
+// a broken store.
+enum session_rename {
+    SESSION_RENAME_OK,
+    SESSION_RENAME_NO_ID,       /* the conversation has no id to file it under */
+    SESSION_RENAME_BAD_NAME,    /* nothing left once trimmed, or too long */
+    SESSION_RENAME_NO_STORE,    /* written, and not there when read back */
+    SESSION_RENAME_NO_SOURCE,   /* asked for a model's name with no turn to go on */
+};
+
 // Names this session. With a name, it is set outright; with none, the model is
-// asked to name it again from the last turn. Nonzero if the rename took.
-int session_rename(struct session *s, const char *name);
+// asked to name it again from the last turn.
+enum session_rename session_rename(struct session *s, const char *name);
+
+// What to tell the user, for anything but OK.
+const char *session_rename_error(enum session_rename why);
 
 const char *session_model(const struct session *s);
 const char *session_id(const struct session *s);

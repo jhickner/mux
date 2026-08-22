@@ -544,24 +544,44 @@ static void name_poll(struct session *s)
     adopt_title(s);
 }
 
-int session_rename(struct session *s, const char *name)
+const char *session_rename_error(enum session_rename why)
+{
+    switch (why) {
+    case SESSION_RENAME_NO_ID:
+        return "this conversation has no id yet — it gets one when the first "
+               "turn ends, and the name is filed under it";
+    case SESSION_RENAME_BAD_NAME:
+        return "a name has to be 1 to 80 characters once quotes, spaces and a "
+               "trailing period come off";
+    case SESSION_RENAME_NO_STORE:
+        return "the name would not stay written — check ~/.config/" APP_NAME
+               "/titles";
+    case SESSION_RENAME_NO_SOURCE:
+        return "nothing to name it from yet — the model names it from a turn";
+    case SESSION_RENAME_OK:
+        break;
+    }
+    return "renamed";
+}
+
+enum session_rename session_rename(struct session *s, const char *name)
 {
     if (!s || !s->id[0])
-        return 0;
+        return SESSION_RENAME_NO_ID;
 
     if (name && *name) {
         if (!title_set(s->id, name))
-            return 0;
+            return SESSION_RENAME_BAD_NAME;
         s->stale_title[0] = '\0';
         if (!adopt_title(s))
-            return 0;
+            return SESSION_RENAME_NO_STORE;
         s->named = 1;
         s->retitle = 0;
-        return 1;
+        return SESSION_RENAME_OK;
     }
 
     if (!s->prompt)
-        return 0;
+        return SESSION_RENAME_NO_SOURCE;
 
     const char *model = s->resolved && *s->resolved ? s->resolved : s->model;
     title_request(s->id, s->backend, model, s->cwd, s->prompt, s->last_reply);
@@ -572,7 +592,7 @@ int session_rename(struct session *s, const char *name)
     s->named_at = now_seconds();
     s->announce_title = 1;
     status_set_note(NULL);
-    return 1;
+    return SESSION_RENAME_OK;
 }
 
 static int effort_is_off(const char *effort)

@@ -453,7 +453,12 @@ static void rename_row(const struct row *r, struct live_session *live)
     if (!name)
         return;
 
-    int ok = tab ? session_rename(tab, name) : title_set(v->id, name);
+    // A session this window holds knows why it could not take the name; one on
+    // disk is only a line in the titles file.
+    enum session_rename why = tab ? session_rename(tab, name)
+                                  : title_set(v->id, name) ? SESSION_RENAME_OK
+                                                           : SESSION_RENAME_BAD_NAME;
+    int ok = why == SESSION_RENAME_OK;
     if (ok && v)
         snprintf(v->title, sizeof v->title, "%s", name);
     // A rename takes the name for the session it was for; the note on screen
@@ -461,7 +466,7 @@ static void rename_row(const struct row *r, struct live_session *live)
     if (ok && tab && tab != workspace_current())
         status_set_note(session_title(workspace_current()));
     if (!ok) {
-        ui_error("could not use that name");
+        ui_error("%s", session_rename_error(why));
         ui_put("\n");
         ui_flush();
     }
